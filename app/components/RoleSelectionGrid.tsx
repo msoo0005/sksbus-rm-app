@@ -16,7 +16,7 @@ const sidePadding = 10;
 
 // Calculate card size: (screen width - total margins) / number of columns
 // We use (numColumns + 1) * cardMargin for total space for 2 outer and 1 inner margin
-const cardWidth = ((width - (numColumns + 1) * cardMargin) / numColumns)- sidePadding - cardMargin;
+const cardWidth = ((width - (numColumns + 1) * cardMargin) / numColumns) - sidePadding - cardMargin;
 const cardHeight = ((height - headerHeight - (numRows+ 1) * cardMargin) / numRows - headerHeight) - cardMargin;
 
 
@@ -116,7 +116,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
-    shadowRadius: 6,
+    shadowRadius: 1,
   },
   cardTitle: {
     fontWeight: 'bold',
