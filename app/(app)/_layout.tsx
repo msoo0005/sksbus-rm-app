@@ -16,6 +16,7 @@ export default function RootLayout() {
       <Stack.Screen name="rm-manager" options={{ title: 'R&M Manager' }} />
       <Stack.Screen name="technician" options={{ title: 'Technician' }} />
       <Stack.Screen name="inventory" options={{ title: 'Inventory Manager' }} />
+      <Stack.Screen name="form" options={{ title: 'Report Form' }} />
     </Stack>
   );
 }

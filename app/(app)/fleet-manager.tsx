@@ -53,7 +53,7 @@ export default function FleetManagerScreen(){
         {report_type.map((report) => (
           <Pressable
             key={report.id}
-            onPress={() => router.push(`./${report.id}`)}>
+            onPress={() => router.push(`./form`)}>
             {({ pressed }) => (
                 <View
                   style={{
