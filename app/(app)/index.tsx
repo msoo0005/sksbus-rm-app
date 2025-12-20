@@ -7,7 +7,6 @@ const headerHeight = 0.1* height;
 const sidePadding = 10
 
 export default function HomeScreen() {  
-
   return (
     <SafeAreaView style={{flex:1}}>
       <View style = {styles.container}>
@@ -20,7 +19,6 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
     justifyContent: 'center', // Centers the grid vertically
     alignItems: 'center', // Centers the grid horizontally,
     padding: sidePadding,
