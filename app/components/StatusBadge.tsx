@@ -1,39 +1,51 @@
 import { StyleSheet, Text, View, ViewStyle } from 'react-native';
 
+type StatusType =
+  | 'repair'
+  | 'problem'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'critical';
+
 type StatusBadgeProps = {
-  label: string;
-  type: 'repair' | 'problem' | 'low' | 'medium' | 'high' | 'critical';
+  label?: string;
+  type: StatusType;
 };
 
 export default function StatusBadge({ label, type }: StatusBadgeProps) {
-  const badgeStyle: ViewStyle = STATUS_COLORS[type] || STATUS_COLORS[type];
+  const badgeStyle = STATUS_COLORS[type];
 
   return (
     <View style={[styles.badge, badgeStyle]}>
-      <Text style={styles.text}>{label}</Text>
+      <Text style={styles.text}>
+        {label ?? formatLabel(type)}
+      </Text>
     </View>
   );
 }
 
-const STATUS_COLORS: Record<StatusBadgeProps['type'], ViewStyle> = {
-  repair: { backgroundColor: '#111' },
+const formatLabel = (value: string) =>
+  value.charAt(0).toUpperCase() + value.slice(1);
+
+const STATUS_COLORS: Record<StatusType, ViewStyle> = {
+  repair: { backgroundColor: '#111827' },
   problem: { backgroundColor: '#D64545' },
   low: { backgroundColor: '#4CAF50' },
-  medium: { backgroundColor: '#FFC107' },
+  medium: { backgroundColor: '#F59E0B' },
   high: { backgroundColor: '#FF5722' },
   critical: { backgroundColor: '#D32F2F' },
 };
 
 const styles = StyleSheet.create({
   badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginRight: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
   },
   text: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
 });

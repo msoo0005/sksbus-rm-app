@@ -1,4 +1,10 @@
-// ../types/report.ts
+export type PartUsed = {
+  id: number;
+  name: string;
+  code: string;
+  qty: number;
+};
+
 export type Report = {
   id: number;
   type: 'repair' | 'problem';
@@ -19,4 +25,15 @@ export type Report = {
     at: string;
     reason?: string;
   };
+
+  // Photos
+  beforePhotos?: string[];
+  afterPhotos?: string[];
+
+  // Technician job progress
+  workPerformed?: string;
+  partsUsed?: PartUsed[];
+
+  // History
+  jobHistory?: { date: string; workPerformed: string }[];
 };

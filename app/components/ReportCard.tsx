@@ -21,23 +21,35 @@ export default function ReportCard({
   currentTech,
 }: ReportCardProps) {
   const isDeclined = report.audit?.action === 'declined';
-  const showAccept =
-    onAccept && report.status === 'open' && !report.assigned;
+
+  const showAccept = !!(
+    onAccept &&
+    report.status === 'open' &&
+    !report.assigned
+  );
+
+  const showManagerActions = !!(
+    onApprove &&
+    onDecline &&
+    report.status === 'pending'
+  );
 
   return (
     <View style={styles.card}>
       {/* Header */}
       <View style={styles.header}>
-        <View>
+        <View style={styles.headerLeft}>
           <Text style={styles.title}>Report #{report.id}</Text>
+
           <View style={styles.badges}>
-            <StatusBadge label={report.type} type={report.type} />
-            <StatusBadge label={report.severity} type={report.severity} />
-            {isDeclined && (
-              <StatusBadge label="Declined" type="critical" />
-            )}
+            {/* Uses StatusBadge default label formatting */}
+            <StatusBadge type={report.type} />
+            <StatusBadge type={report.severity} />
+
+            {isDeclined && <StatusBadge type="critical" label="Declined" />}
           </View>
         </View>
+
         <Text style={styles.date}>{report.date}</Text>
       </View>
 
@@ -45,14 +57,13 @@ export default function ReportCard({
       <Text style={styles.meta}>Vehicle: {report.vehicle}</Text>
       <Text style={styles.meta}>Location: {report.location}</Text>
 
-      {report.reportedBy && (
+      {!!report.reportedBy && (
         <Text style={styles.meta}>Reported by: {report.reportedBy}</Text>
       )}
 
-      {report.assigned && (
+      {!!report.assigned && (
         <Text style={styles.meta}>
-          Assigned to:{' '}
-          {report.assigned === currentTech ? 'You' : report.assigned}
+          Assigned to: {report.assigned === currentTech ? 'You' : report.assigned}
         </Text>
       )}
 
@@ -67,36 +78,33 @@ export default function ReportCard({
 
       {/* Actions */}
       <View style={styles.actionRow}>
-        <Pressable
-          style={styles.button}
-          onPress={() => onViewDetails?.(report)}
-        >
-          <Eye size={16} />
+        <Pressable style={styles.button} onPress={() => onViewDetails?.(report)}>
+          <Eye size={16} color="#111827" />
           <Text style={styles.buttonText}>View Details</Text>
         </Pressable>
 
         {showAccept && (
           <Pressable
             style={[styles.button, styles.acceptButton]}
-            onPress={() => onAccept(report)}
+            onPress={() => onAccept?.(report)}
           >
             <Text style={styles.whiteText}>Accept Job</Text>
           </Pressable>
         )}
       </View>
 
-      {onApprove && onDecline && report.status === 'pending' && (
+      {showManagerActions && (
         <View style={styles.managerRow}>
           <Pressable
             style={[styles.button, styles.approveButton]}
-            onPress={() => onApprove(report)}
+            onPress={() => onApprove?.(report)}
           >
             <Text style={styles.whiteText}>Approve</Text>
           </Pressable>
 
           <Pressable
             style={[styles.button, styles.declineButton]}
-            onPress={() => onDecline(report)}
+            onPress={() => onDecline?.(report)}
           >
             <Text style={styles.whiteText}>Decline</Text>
           </Pressable>
@@ -106,7 +114,6 @@ export default function ReportCard({
   );
 }
 
-
 const styles = StyleSheet.create({
   card: {
     backgroundColor: '#fff',
@@ -115,16 +122,45 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 16,
   },
+
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    gap: 10,
   },
-  title: { fontSize: 18, fontWeight: '700' },
-  badges: { flexDirection: 'row', marginTop: 6, gap: 6 },
-  date: { fontSize: 12, color: '#666' },
+  headerLeft: {
+    flex: 1,
+  },
 
-  meta: { marginTop: 8, color: '#666' },
-  description: { marginTop: 12, fontSize: 14 },
+  title: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+  },
+
+  badges: {
+    flexDirection: 'row',
+    marginTop: 6,
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+
+  date: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
+
+  meta: {
+    marginTop: 8,
+    color: '#666',
+  },
+
+  description: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#111827',
+  },
 
   declineBox: {
     marginTop: 12,
@@ -142,7 +178,11 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 16,
   },
-  managerRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  managerRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
 
   button: {
     flex: 1,
@@ -169,7 +209,6 @@ const styles = StyleSheet.create({
     borderColor: '#E53935',
   },
 
-  buttonText: { fontWeight: '600' },
+  buttonText: { fontWeight: '600', color: '#111827' },
   whiteText: { color: '#fff', fontWeight: '600' },
-  assigned: { marginTop: 10, fontSize: 12, color: '#666' },
 });

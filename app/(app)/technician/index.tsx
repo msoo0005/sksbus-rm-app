@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useRouter } from 'expo-router';
+import { useMemo, useState } from 'react';
 import { ScrollView } from 'react-native';
-import ConfirmActionModal from '../components/ConfirmActionModal';
-import JobDetailsModal from '../components/JobDetailsModal';
-import ReportCard from '../components/ReportCard';
-import SegmentedTabs from '../components/SegmentedTabs';
-import { Report } from '../types/report';
+
+import ConfirmActionModal from '../../components/ConfirmActionModal';
+import ReportCard from '../../components/ReportCard';
+import SegmentedTabs from '../../components/SegmentedTabs';
+import { Report } from '../../types/report';
 
 const INITIAL_REPORTS: Report[] = [
   {
@@ -18,6 +19,7 @@ const INITIAL_REPORTS: Report[] = [
     date: '10/13/2025, 2:20 PM',
     assigned: 'Technician B',
     status: 'open',
+    beforePhotos: [],
   },
   {
     id: 5,
@@ -28,62 +30,34 @@ const INITIAL_REPORTS: Report[] = [
     description: 'Warning light on dashboard, needs diagnostic check.',
     date: '10/14/2025, 4:00 PM',
     status: 'open',
+    beforePhotos: [],
   },
 ];
 
 const CURRENT_TECH = 'Technician B';
 
-export default function TechnicianJobsScreen() {
+export default function TechnicianScreen() {
+  const router = useRouter();
+
   const [reports, setReports] = useState<Report[]>(INITIAL_REPORTS);
   const [tab, setTab] = useState<'available' | 'myJobs' | 'completed'>('available');
-
-  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
-  const [detailsVisible, setDetailsVisible] = useState(false);
 
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [acceptReport, setAcceptReport] = useState<Report | null>(null);
 
-  // ----- View details -----
-  const handleViewDetails = (report: Report) => {
-    setSelectedReport(report);
-    setDetailsVisible(true);
-  };
-
-  // ----- Request accept confirmation -----
-  const requestAccept = (report: Report) => {
-    setAcceptReport(report);
-    setConfirmVisible(true);
-  };
-
-  // ----- Confirm accept -----
-  const confirmAccept = () => {
-    if (!acceptReport) return;
-
-    setReports(prev =>
-      prev.map(r =>
-        r.id === acceptReport.id
-          ? { ...r, assigned: CURRENT_TECH }
-          : r
-      )
-    );
-
-    setConfirmVisible(false);
-    setAcceptReport(null);
-  };
-
-  // ----- Filters -----
-  const availableJobs = reports.filter(
-    r => r.status === 'open' && !r.assigned
+  const availableJobs = useMemo(
+    () => reports.filter(r => r.status === 'open' && !r.assigned),
+    [reports]
   );
 
-  const myJobs = reports.filter(
-    r => r.assigned === CURRENT_TECH && r.status === 'open'
+  const myJobs = useMemo(
+    () => reports.filter(r => r.assigned === CURRENT_TECH && r.status === 'open'),
+    [reports]
   );
 
-  const completedJobs = reports.filter(
-    r =>
-      r.status === 'closed' &&
-      r.assigned === CURRENT_TECH
+  const completedJobs = useMemo(
+    () => reports.filter(r => r.status === 'closed' && r.assigned === CURRENT_TECH),
+    [reports]
   );
 
   const tabs = [
@@ -93,11 +67,33 @@ export default function TechnicianJobsScreen() {
   ];
 
   const displayedReports =
-    tab === 'available'
-      ? availableJobs
-      : tab === 'myJobs'
-      ? myJobs
-      : completedJobs;
+    tab === 'available' ? availableJobs : tab === 'myJobs' ? myJobs : completedJobs;
+
+  const handleViewDetails = (report: Report) => {
+    // ✅ Available & Completed are view-only, My Jobs is editable
+    const mode: 'view' | 'edit' = tab === 'myJobs' ? 'edit' : 'view';
+
+    router.push({
+      pathname: `/technician/job/[id]`,
+      params: { id: report.id, mode },
+    });
+  };
+
+  const requestAccept = (report: Report) => {
+    setAcceptReport(report);
+    setConfirmVisible(true);
+  };
+
+  const confirmAccept = () => {
+    if (!acceptReport) return;
+
+    setReports(prev =>
+      prev.map(r => (r.id === acceptReport.id ? { ...r, assigned: CURRENT_TECH } : r))
+    );
+
+    setConfirmVisible(false);
+    setAcceptReport(null);
+  };
 
   return (
     <>
@@ -114,12 +110,6 @@ export default function TechnicianJobsScreen() {
           />
         ))}
       </ScrollView>
-
-      <JobDetailsModal
-        visible={detailsVisible}
-        report={selectedReport}
-        onClose={() => setDetailsVisible(false)}
-      />
 
       <ConfirmActionModal
         visible={confirmVisible}
