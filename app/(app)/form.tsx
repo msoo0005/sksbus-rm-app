@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import DropDownPicker from 'react-native-dropdown-picker';
+import ImagePickerField from '../components/ImagePicker';
 import MapSelector from '../components/map';
 
 export default function ReportFormScreen() {
@@ -25,6 +26,18 @@ export default function ReportFormScreen() {
     { label: 'High - Urgent', value: 'high' },
     { label: 'Critical - Immediate', value: 'critical' },
   ]);
+
+  const [formData, setFormData] = useState<{
+    photos?: string[];        // <-- change from photo?: string
+    description?: string;
+    vehicle?: string;
+    priority?: string;
+    location?: { latitude: number; longitude: number } | null;
+  }>({
+    photos: [],               // initialize as empty array
+    location: null,
+  });
+
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -59,6 +72,15 @@ export default function ReportFormScreen() {
         style={styles.input}
         placeholder="e.g., Main Depot, Route 5, Customer Site"
         placeholderTextColor="#9CA3AF"
+      />
+
+      {/* Photos */}
+      <Text style={styles.label}>
+        Photos <Text style={styles.required}>*</Text>
+      </Text>
+      <ImagePickerField
+        value={formData.photos || []}
+        onChange={(uris) => setFormData({ ...formData, photos: uris })}
       />
 
       {/* Priority */}
