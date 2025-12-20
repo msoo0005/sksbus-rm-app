@@ -1,15 +1,18 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-type TabKey = 'pending' | 'open' | 'closed' ;
-
-type SegmentedTabsProps = {
-  value: TabKey;
-  onChange: (value: TabKey) => void;
-  tabs: { key: TabKey; label: string }[];
+type SegmentedTabsProps<T extends string> = {
+  value: T;
+  onChange: (value: T) => void;
+  tabs: { key: T; label: string }[];
 };
 
-export default function SegmentedTabs({ value, onChange, tabs }: SegmentedTabsProps) {
+
+export default function SegmentedTabs<T extends string>({
+  value,
+  onChange,
+  tabs
+}: SegmentedTabsProps<T>) {
   return (
     <View style={styles.container}>
       {tabs.map(tab => (
