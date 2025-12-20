@@ -6,7 +6,7 @@ type StatusBadgeProps = {
 };
 
 export default function StatusBadge({ label, type }: StatusBadgeProps) {
-  const badgeStyle: ViewStyle = STATUS_COLORS[type] || STATUS_COLORS.medium;
+  const badgeStyle: ViewStyle = STATUS_COLORS[type] || STATUS_COLORS[type];
 
   return (
     <View style={[styles.badge, badgeStyle]}>

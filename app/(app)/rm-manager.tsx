@@ -1,71 +1,155 @@
 import { useState } from 'react';
 import { ScrollView } from 'react-native';
+import ConfirmActionModal from '../components/ConfirmActionModal';
+import DeclineReasonModal from '../components/DeclineReasonModal';
+import JobDetailsModal from '../components/JobDetailsModal';
 import ReportCard from '../components/ReportCard';
 import SegmentedTabs from '../components/SegmentedTabs';
+import { Report } from '../types/report';
 
-type Report = {
-  id: number;
-  type: 'repair' | 'problem';
-  severity: 'medium' | 'high' | 'low' | 'critical';
-  vehicle: string;
-  location: string;
-  description: string;
-  date: string;
-  assigned?: string;
-  status: 'pending' | 'open' | 'closed';
-};
+const MANAGER_NAME = 'RM Manager A';
 
-const REPORTS: Report[] = [
-  {
-    id: 2,
-    type: 'repair',
-    severity: 'low',
-    vehicle: 'V-003',
-    location: 'Route 12',
-    description:
-      'Scheduled 50,000 km service due. Needs oil change, filter replacement, and brake inspection.',
-    date: '10/13/2025, 2:20 PM',
-    assigned: 'Technician B',
-    status: 'open',
-  },
+const INITIAL_REPORTS: Report[] = [
   {
     id: 5,
     type: 'problem',
     severity: 'critical',
     vehicle: 'V-004',
     location: 'Route 8',
-    description:
-      'Warning light on dashboard, needs diagnostic check.',
+    description: 'Warning light on dashboard, needs diagnostic check.',
     date: '10/14/2025, 4:00 PM',
-    status: 'open',
+    status: 'pending',
+    reportedBy: 'Driver John Tan',
   },
 ];
 
 export default function RMManagerScreen() {
-  const [tab, setTab] = useState<'open' | 'closed' | 'pending'>('open');
+  const [reports, setReports] = useState<Report[]>(INITIAL_REPORTS);
+  const [tab, setTab] = useState<'pending' | 'open' | 'closed'>('pending');
 
-  const openCount = REPORTS.filter(r => r.status === 'open').length;
-  const closedCount = REPORTS.filter(r => r.status === 'closed').length;
-  const pendingCount = REPORTS.filter(r => r.status === 'pending').length;
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [detailsVisible, setDetailsVisible] = useState(false);
 
-  const tabs = [
-    { label: `Pending (${pendingCount})`, key: 'pending' as const },
-    { label: `Open (${openCount})`, key: 'open' as const },
-    { label: `Closed (${closedCount})`, key: 'closed' as const },
-    
-  ];
+  const [approveTarget, setApproveTarget] = useState<Report | null>(null);
+  const [approveVisible, setApproveVisible] = useState(false);
+
+  const [declineTarget, setDeclineTarget] = useState<Report | null>(null);
+  const [declineVisible, setDeclineVisible] = useState(false);
+
+  // ----- Counts -----
+  const pendingCount = reports.filter(r => r.status === 'pending').length;
+  const openCount = reports.filter(r => r.status === 'open').length;
+  const closedCount = reports.filter(r => r.status === 'closed').length;
+
+  // ----- Approve -----
+  const requestApprove = (report: Report) => {
+    setApproveTarget(report);
+    setApproveVisible(true);
+  };
+
+  const confirmApprove = () => {
+    if (!approveTarget) return;
+
+    setReports(prev =>
+      prev.map(r =>
+        r.id === approveTarget.id
+          ? {
+              ...r,
+              status: 'open',
+              audit: {
+                action: 'approved',
+                by: MANAGER_NAME,
+                at: new Date().toISOString(),
+              },
+            }
+          : r
+      )
+    );
+
+    setApproveVisible(false);
+    setApproveTarget(null);
+  };
+
+  // ----- Decline -----
+  const requestDecline = (report: Report) => {
+    setDeclineTarget(report);
+    setDeclineVisible(true);
+  };
+
+  const submitDecline = (reason: string) => {
+    if (!declineTarget) return;
+
+    setReports(prev =>
+      prev.map(r =>
+        r.id === declineTarget.id
+          ? {
+              ...r,
+              status: 'closed',
+              audit: {
+                action: 'declined',
+                by: MANAGER_NAME,
+                at: new Date().toISOString(),
+                reason,
+              },
+            }
+          : r
+      )
+    );
+
+    setDeclineVisible(false);
+    setDeclineTarget(null);
+  };
+
+  const filteredReports = reports.filter(r => r.status === tab);
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: '#f9f9f9' }}>
-      <SegmentedTabs
-        value={tab}
-        onChange={setTab}
-        tabs={tabs}
+    <>
+      <ScrollView style={{ flex: 1, backgroundColor: '#f9f9f9' }}>
+        <SegmentedTabs
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { key: 'pending', label: `Pending (${pendingCount})` },
+            { key: 'open', label: `Open (${openCount})` },
+            { key: 'closed', label: `Closed (${closedCount})` },
+          ]}
+        />
+
+        {filteredReports.map(report => (
+          <ReportCard
+            key={report.id}
+            report={report}
+            onViewDetails={r => {
+              setSelectedReport(r);
+              setDetailsVisible(true);
+            }}
+            onApprove={tab === 'pending' ? requestApprove : undefined}
+            onDecline={tab === 'pending' ? requestDecline : undefined}
+          />
+        ))}
+      </ScrollView>
+
+      <JobDetailsModal
+        visible={detailsVisible}
+        report={selectedReport}
+        onClose={() => setDetailsVisible(false)}
       />
 
-      {REPORTS.filter(r => r.status === tab).map(report => (
-        <ReportCard key={report.id} report={report} />
-      ))}
-    </ScrollView>
+      <ConfirmActionModal
+        visible={approveVisible}
+        title="Approve Job"
+        message="Are you sure you want to approve this job?"
+        confirmLabel="Approve Job"
+        confirmColor="#4CAF50"
+        onCancel={() => setApproveVisible(false)}
+        onConfirm={confirmApprove}
+      />
+
+      <DeclineReasonModal
+        visible={declineVisible}
+        onCancel={() => setDeclineVisible(false)}
+        onSubmit={submitDecline}
+      />
+    </>
   );
 }

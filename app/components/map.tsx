@@ -168,7 +168,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   addressText: {
-    marginTop: 6,
+    margin: 6,
     fontSize: 13,
     color: '#374151',
   },

@@ -1,55 +1,111 @@
-// components/ReportCard.tsx
 import { Eye } from 'lucide-react-native';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Report } from '../types/report';
 import StatusBadge from './StatusBadge';
-
-type Report = {
-  id: number;
-  type: 'repair' | 'problem';
-  severity: 'medium' | 'high' | 'low' | 'critical';
-  vehicle: string;
-  location: string;
-  description: string;
-  date: string;
-  assigned?: string;
-};
 
 type ReportCardProps = {
   report: Report;
+  onViewDetails?: (report: Report) => void;
+  onAccept?: (report: Report) => void;
+  onApprove?: (report: Report) => void;
+  onDecline?: (report: Report) => void;
+  currentTech?: string;
 };
 
-export default function ReportCard({ report }: ReportCardProps) {
+export default function ReportCard({
+  report,
+  onViewDetails,
+  onAccept,
+  onApprove,
+  onDecline,
+  currentTech,
+}: ReportCardProps) {
+  const isDeclined = report.audit?.action === 'declined';
+  const showAccept =
+    onAccept && report.status === 'open' && !report.assigned;
+
   return (
     <View style={styles.card}>
+      {/* Header */}
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Report #{report.id}</Text>
           <View style={styles.badges}>
             <StatusBadge label={report.type} type={report.type} />
-            <StatusBadge label={report.severity} type="medium" />
+            <StatusBadge label={report.severity} type={report.severity} />
+            {isDeclined && (
+              <StatusBadge label="Declined" type="critical" />
+            )}
           </View>
         </View>
         <Text style={styles.date}>{report.date}</Text>
       </View>
 
+      {/* Meta */}
       <Text style={styles.meta}>Vehicle: {report.vehicle}</Text>
       <Text style={styles.meta}>Location: {report.location}</Text>
 
-      <Text style={styles.description}>{report.description}</Text>
-
-      <Pressable style={styles.button}>
-        <Eye size={16} />
-        <Text style={styles.buttonText}>View Details</Text>
-      </Pressable>
+      {report.reportedBy && (
+        <Text style={styles.meta}>Reported by: {report.reportedBy}</Text>
+      )}
 
       {report.assigned && (
-        <Text style={styles.assigned}>
-          Assigned to: {report.assigned}
+        <Text style={styles.meta}>
+          Assigned to:{' '}
+          {report.assigned === currentTech ? 'You' : report.assigned}
         </Text>
+      )}
+
+      <Text style={styles.description}>{report.description}</Text>
+
+      {isDeclined && (
+        <View style={styles.declineBox}>
+          <Text style={styles.declineTitle}>Decline Reason</Text>
+          <Text style={styles.declineText}>{report.audit?.reason}</Text>
+        </View>
+      )}
+
+      {/* Actions */}
+      <View style={styles.actionRow}>
+        <Pressable
+          style={styles.button}
+          onPress={() => onViewDetails?.(report)}
+        >
+          <Eye size={16} />
+          <Text style={styles.buttonText}>View Details</Text>
+        </Pressable>
+
+        {showAccept && (
+          <Pressable
+            style={[styles.button, styles.acceptButton]}
+            onPress={() => onAccept(report)}
+          >
+            <Text style={styles.whiteText}>Accept Job</Text>
+          </Pressable>
+        )}
+      </View>
+
+      {onApprove && onDecline && report.status === 'pending' && (
+        <View style={styles.managerRow}>
+          <Pressable
+            style={[styles.button, styles.approveButton]}
+            onPress={() => onApprove(report)}
+          >
+            <Text style={styles.whiteText}>Approve</Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.button, styles.declineButton]}
+            onPress={() => onDecline(report)}
+          >
+            <Text style={styles.whiteText}>Decline</Text>
+          </Pressable>
+        </View>
       )}
     </View>
   );
 }
+
 
 const styles = StyleSheet.create({
   card: {
@@ -58,50 +114,62 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     padding: 16,
     borderRadius: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
-  title: {
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  badges: {
-    flexDirection: 'row',
-    marginTop: 6,
-  },
-  date: {
-    fontSize: 12,
-    color: '#666',
-  },
-  meta: {
-    marginTop: 8,
-    color: '#666',
-  },
-  description: {
+  title: { fontSize: 18, fontWeight: '700' },
+  badges: { flexDirection: 'row', marginTop: 6, gap: 6 },
+  date: { fontSize: 12, color: '#666' },
+
+  meta: { marginTop: 8, color: '#666' },
+  description: { marginTop: 12, fontSize: 14 },
+
+  declineBox: {
     marginTop: 12,
-    fontSize: 14,
+    padding: 12,
+    backgroundColor: '#FFF3F3',
+    borderRadius: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#E53935',
   },
-  button: {
+  declineTitle: { fontWeight: '700', color: '#E53935' },
+  declineText: { marginTop: 4, color: '#333' },
+
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
     marginTop: 16,
+  },
+  managerRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+
+  button: {
+    flex: 1,
     padding: 12,
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 12,
+    alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 6,
   },
-  buttonText: {
-    fontWeight: '600',
+
+  acceptButton: {
+    backgroundColor: '#4CAF50',
+    borderColor: '#4CAF50',
   },
-  assigned: {
-    marginTop: 10,
-    fontSize: 12,
-    color: '#666',
+  approveButton: {
+    backgroundColor: '#4CAF50',
+    borderColor: '#4CAF50',
   },
+  declineButton: {
+    backgroundColor: '#E53935',
+    borderColor: '#E53935',
+  },
+
+  buttonText: { fontWeight: '600' },
+  whiteText: { color: '#fff', fontWeight: '600' },
+  assigned: { marginTop: 10, fontSize: 12, color: '#666' },
 });

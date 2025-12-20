@@ -1,21 +1,12 @@
 import { useState } from 'react';
 import { ScrollView } from 'react-native';
+import ConfirmActionModal from '../components/ConfirmActionModal';
+import JobDetailsModal from '../components/JobDetailsModal';
 import ReportCard from '../components/ReportCard';
 import SegmentedTabs from '../components/SegmentedTabs';
+import { Report } from '../types/report';
 
-type Report = {
-  id: number;
-  type: 'repair' | 'problem';
-  severity: 'medium' | 'high' | 'low' | 'critical';
-  vehicle: string;
-  location: string;
-  description: string;
-  date: string;
-  assigned?: string;
-  status: 'pending' | 'open' | 'closed';
-};
-
-const REPORTS: Report[] = [
+const INITIAL_REPORTS: Report[] = [
   {
     id: 2,
     type: 'repair',
@@ -40,14 +31,60 @@ const REPORTS: Report[] = [
   },
 ];
 
-const CURRENT_TECH = 'Technician B'; // replace with actual logged-in technician
+const CURRENT_TECH = 'Technician B';
 
 export default function TechnicianJobsScreen() {
+  const [reports, setReports] = useState<Report[]>(INITIAL_REPORTS);
   const [tab, setTab] = useState<'available' | 'myJobs' | 'completed'>('available');
 
-  const availableJobs = REPORTS.filter(r => r.status === 'open' && !r.assigned);
-  const myJobs = REPORTS.filter(r => r.assigned === CURRENT_TECH && r.status === 'open');
-  const completedJobs = REPORTS.filter(r => r.status === 'closed' && r.assigned === CURRENT_TECH);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [detailsVisible, setDetailsVisible] = useState(false);
+
+  const [confirmVisible, setConfirmVisible] = useState(false);
+  const [acceptReport, setAcceptReport] = useState<Report | null>(null);
+
+  // ----- View details -----
+  const handleViewDetails = (report: Report) => {
+    setSelectedReport(report);
+    setDetailsVisible(true);
+  };
+
+  // ----- Request accept confirmation -----
+  const requestAccept = (report: Report) => {
+    setAcceptReport(report);
+    setConfirmVisible(true);
+  };
+
+  // ----- Confirm accept -----
+  const confirmAccept = () => {
+    if (!acceptReport) return;
+
+    setReports(prev =>
+      prev.map(r =>
+        r.id === acceptReport.id
+          ? { ...r, assigned: CURRENT_TECH }
+          : r
+      )
+    );
+
+    setConfirmVisible(false);
+    setAcceptReport(null);
+  };
+
+  // ----- Filters -----
+  const availableJobs = reports.filter(
+    r => r.status === 'open' && !r.assigned
+  );
+
+  const myJobs = reports.filter(
+    r => r.assigned === CURRENT_TECH && r.status === 'open'
+  );
+
+  const completedJobs = reports.filter(
+    r =>
+      r.status === 'closed' &&
+      r.assigned === CURRENT_TECH
+  );
 
   const tabs = [
     { label: `Available (${availableJobs.length})`, key: 'available' as const },
@@ -55,19 +92,44 @@ export default function TechnicianJobsScreen() {
     { label: `Completed (${completedJobs.length})`, key: 'completed' as const },
   ];
 
-  // Determine which reports to show based on selected tab
-  const displayedReports = 
-    tab === 'available' ? availableJobs :
-    tab === 'myJobs' ? myJobs :
-    completedJobs;
+  const displayedReports =
+    tab === 'available'
+      ? availableJobs
+      : tab === 'myJobs'
+      ? myJobs
+      : completedJobs;
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: '#f9f9f9' }}>
-      <SegmentedTabs value={tab} onChange={setTab} tabs={tabs} />
+    <>
+      <ScrollView style={{ flex: 1, backgroundColor: '#f9f9f9' }}>
+        <SegmentedTabs value={tab} onChange={setTab} tabs={tabs} />
 
-      {displayedReports.map(report => (
-        <ReportCard key={report.id} report={report} />
-      ))}
-    </ScrollView>
+        {displayedReports.map(report => (
+          <ReportCard
+            key={report.id}
+            report={report}
+            currentTech={CURRENT_TECH}
+            onViewDetails={handleViewDetails}
+            onAccept={tab === 'available' ? requestAccept : undefined}
+          />
+        ))}
+      </ScrollView>
+
+      <JobDetailsModal
+        visible={detailsVisible}
+        report={selectedReport}
+        onClose={() => setDetailsVisible(false)}
+      />
+
+      <ConfirmActionModal
+        visible={confirmVisible}
+        title="Accept Job"
+        message="Are you sure you want to accept this job? It will be assigned to you."
+        confirmLabel="Accept Job"
+        confirmColor="#4CAF50"
+        onCancel={() => setConfirmVisible(false)}
+        onConfirm={confirmAccept}
+      />
+    </>
   );
 }
