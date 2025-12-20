@@ -6,36 +6,46 @@ type StatusType =
   | 'low'
   | 'medium'
   | 'high'
-  | 'critical';
+  | 'critical'
+  | 'inStock'
+  | 'lowStock';
 
 type StatusBadgeProps = {
   label?: string;
   type: StatusType;
 };
 
+const STATUS_STYLES: Record<
+  StatusType,
+  { container: ViewStyle; text?: { color?: string } }
+> = {
+  repair: { container: { backgroundColor: '#111827' }, text: { color: '#FFFFFF' } },
+  problem: { container: { backgroundColor: '#D64545' }, text: { color: '#FFFFFF' } },
+  low: { container: { backgroundColor: '#4CAF50' }, text: { color: '#FFFFFF' } },
+  medium: { container: { backgroundColor: '#F59E0B' }, text: { color: '#FFFFFF' } },
+  high: { container: { backgroundColor: '#FF5722' }, text: { color: '#FFFFFF' } },
+  critical: { container: { backgroundColor: '#D32F2F' }, text: { color: '#FFFFFF' } },
+
+  inStock: { container: { backgroundColor: '#111827' }, text: { color: '#FFFFFF' } },
+  lowStock: { container: { backgroundColor: '#E5E7EB' }, text: { color: '#111827' } },
+};
+
+const formatLabel = (value: string) => {
+  // If you ever use "inStock" without a label, make it nicer
+  if (value === 'inStock') return 'In Stock';
+  if (value === 'lowStock') return 'Low Stock';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+};
+
 export default function StatusBadge({ label, type }: StatusBadgeProps) {
-  const badgeStyle = STATUS_COLORS[type];
+  const style = STATUS_STYLES[type];
 
   return (
-    <View style={[styles.badge, badgeStyle]}>
-      <Text style={styles.text}>
-        {label ?? formatLabel(type)}
-      </Text>
+    <View style={[styles.badge, style.container]}>
+      <Text style={[styles.text, style.text]}>{label ?? formatLabel(type)}</Text>
     </View>
   );
 }
-
-const formatLabel = (value: string) =>
-  value.charAt(0).toUpperCase() + value.slice(1);
-
-const STATUS_COLORS: Record<StatusType, ViewStyle> = {
-  repair: { backgroundColor: '#111827' },
-  problem: { backgroundColor: '#D64545' },
-  low: { backgroundColor: '#4CAF50' },
-  medium: { backgroundColor: '#F59E0B' },
-  high: { backgroundColor: '#FF5722' },
-  critical: { backgroundColor: '#D32F2F' },
-};
 
 const styles = StyleSheet.create({
   badge: {
@@ -46,6 +56,5 @@ const styles = StyleSheet.create({
   text: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#FFFFFF',
   },
 });
