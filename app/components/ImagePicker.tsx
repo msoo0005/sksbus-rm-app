@@ -1,29 +1,45 @@
-import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
-import React, { useEffect, useMemo, useState } from 'react';
+// components/ImagePicker.tsx (LOCAL ONLY)
+import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-    Alert,
-    Image,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
-} from 'react-native';
+  Alert,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+
+export type LocalMedia = {
+  localUri: string;
+  mime_type: string;
+};
 
 type Props = {
   title: string;
   required?: boolean;
 
-  value?: string[];
-  onChange?: (uris: string[]) => void;
+  value?: LocalMedia[];
+  onChange?: (media: LocalMedia[]) => void;
 
   readOnly?: boolean;
 
   captureLabel?: string;
   uploadLabel?: string;
   showUploadButton?: boolean;
+
+  disabled?: boolean; // e.g. disable while submitting
 };
+
+function guessMime(uri: string) {
+  const lower = uri.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".heic")) return "image/heic";
+  return "image/jpeg";
+}
 
 export default function ImagePickerField({
   title,
@@ -31,26 +47,27 @@ export default function ImagePickerField({
   value = [],
   onChange,
   readOnly = false,
-  captureLabel = 'Capture Photo',
-  uploadLabel = 'Upload Photo',
+  captureLabel = "Capture Photo",
+  uploadLabel = "Upload Photo",
   showUploadButton = true,
+  disabled = false,
 }: Props) {
-  const [images, setImages] = useState<string[]>(value);
+  const [items, setItems] = useState<LocalMedia[]>(value);
 
-  useEffect(() => setImages(value), [value]);
+  useEffect(() => setItems(value), [value]);
 
   const countText = useMemo(() => {
-    const n = images.length;
-    return `${n} photo${n === 1 ? '' : 's'}`;
-  }, [images.length]);
+    const n = items.length;
+    return `${n} photo${n === 1 ? "" : "s"}`;
+  }, [items.length]);
 
-  const commit = (next: string[]) => {
-    setImages(next);
+  const commit = (next: LocalMedia[]) => {
+    setItems(next);
     onChange?.(next);
   };
 
   const addImage = async (fromCamera: boolean) => {
-    if (readOnly) return;
+    if (readOnly || disabled) return;
 
     const permission = fromCamera
       ? await ImagePicker.requestCameraPermissionsAsync()
@@ -58,8 +75,8 @@ export default function ImagePickerField({
 
     if (!permission.granted) {
       Alert.alert(
-        'Permission required',
-        `Permission to access ${fromCamera ? 'camera' : 'gallery'} is required!`
+        "Permission required",
+        `Permission to access ${fromCamera ? "camera" : "gallery"} is required!`
       );
       return;
     }
@@ -71,14 +88,18 @@ export default function ImagePickerField({
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
         });
 
-    if (!result.canceled && result.assets?.length) {
-      commit([...images, result.assets[0].uri]);
-    }
+    if (result.canceled || !result.assets?.length) return;
+
+    const asset = result.assets[0];
+    const localUri = asset.uri;
+    const mime_type = asset.mimeType ?? guessMime(localUri);
+
+    commit([...items, { localUri, mime_type }]);
   };
 
   const removeImage = (index: number) => {
-    if (readOnly) return;
-    commit(images.filter((_, i) => i !== index));
+    if (readOnly || disabled) return;
+    commit(items.filter((_, i) => i !== index));
   };
 
   return (
@@ -94,37 +115,45 @@ export default function ImagePickerField({
       </View>
 
       {!readOnly && (
-        <Pressable style={styles.bigButton} onPress={() => addImage(true)}>
+        <Pressable
+          style={[styles.bigButton, disabled && styles.disabled]}
+          onPress={() => addImage(true)}
+          disabled={disabled}
+        >
           <Ionicons name="camera-outline" size={18} color="#111827" />
           <Text style={styles.bigButtonText}>{captureLabel}</Text>
         </Pressable>
       )}
 
       {!readOnly && showUploadButton && (
-        <Pressable style={styles.bigButton} onPress={() => addImage(false)}>
+        <Pressable
+          style={[styles.bigButton, disabled && styles.disabled]}
+          onPress={() => addImage(false)}
+          disabled={disabled}
+        >
           <Ionicons name="cloud-upload-outline" size={18} color="#111827" />
           <Text style={styles.bigButtonText}>{uploadLabel}</Text>
         </Pressable>
       )}
 
-      {images.length > 0 && (
+      {items.length > 0 && (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           style={styles.previewRow}
           contentContainerStyle={styles.previewContent}
         >
-          {images.map((uri, idx) => (
-            <View key={`${uri}-${idx}`} style={styles.thumbWrap}>
-              {/* ✅ Clip everything to the rounded thumbnail so delete stays INSIDE */}
+          {items.map((m, idx) => (
+            <View key={`${m.localUri}-${idx}`} style={styles.thumbWrap}>
               <View style={styles.thumbClip}>
-                <Image source={{ uri }} style={styles.thumb} />
+                <Image source={{ uri: m.localUri }} style={styles.thumb} />
 
                 {!readOnly && (
                   <Pressable
                     style={styles.deleteBtn}
                     onPress={() => removeImage(idx)}
                     hitSlop={10}
+                    disabled={disabled}
                   >
                     <Text style={styles.deleteText}>×</Text>
                   </Pressable>
@@ -140,97 +169,81 @@ export default function ImagePickerField({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: "#FFFFFF",
     borderRadius: 18,
     padding: 18,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: "#E5E7EB",
   },
   headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: 14,
   },
   title: {
     fontSize: 20,
-    fontWeight: '700',
-    color: '#111827',
+    fontWeight: "700",
+    color: "#111827",
   },
-  asterisk: { color: '#111827' },
+  asterisk: { color: "#111827" },
   pill: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
-    backgroundColor: '#FFFFFF',
+    borderColor: "#E5E7EB",
+    backgroundColor: "#FFFFFF",
   },
   pillText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#111827',
+    fontWeight: "600",
+    color: "#111827",
   },
   bigButton: {
     height: 54,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderColor: "#E5E7EB",
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: 10,
     marginBottom: 12,
   },
+  disabled: { opacity: 0.55 },
   bigButtonText: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#111827',
+    fontWeight: "700",
+    color: "#111827",
   },
-  previewRow: {
-    marginTop: 4,
-  },
-
-  // ✅ Gives the row a bit of breathing space so nothing touches edges
-  previewContent: {
-    paddingRight: 4,
-  },
-
-  thumbWrap: {
-    marginRight: 10,
-  },
-
-  // ✅ This is the key: a clipping container with same radius
+  previewRow: { marginTop: 4 },
+  previewContent: { paddingRight: 4 },
+  thumbWrap: { marginRight: 10 },
   thumbClip: {
     width: 86,
     height: 86,
     borderRadius: 14,
-    overflow: 'hidden',
-    position: 'relative',
+    overflow: "hidden",
+    position: "relative",
   },
-
-  thumb: {
-    width: '100%',
-    height: '100%',
-  },
-
-  // ✅ Put it INSIDE (positive inset), not outside (negative)
+  thumb: { width: "100%", height: "100%" },
   deleteBtn: {
-    position: 'absolute',
+    position: "absolute",
     top: 6,
     right: 6,
     width: 26,
     height: 26,
     borderRadius: 13,
-    backgroundColor: '#EF4444',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#EF4444",
+    alignItems: "center",
+    justifyContent: "center",
   },
   deleteText: {
-    color: '#fff',
+    color: "#fff",
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: "800",
     lineHeight: 16,
   },
 });

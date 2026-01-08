@@ -4,9 +4,9 @@ import { useSession } from './ctx';
 SplashScreen.preventAutoHideAsync();
 
 export function SplashScreenController() {
-  const { isLoading } = useSession();
+  const { loading } = useSession();
 
-  if (!isLoading) {
+  if (!loading) {
     SplashScreen.hide();
   }
 

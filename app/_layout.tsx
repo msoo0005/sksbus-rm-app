@@ -1,30 +1,32 @@
-import { Stack } from 'expo-router';
-
-import { SessionProvider, useSession } from './ctx';
-import { SplashScreenController } from './splash';
+import { Stack } from "expo-router";
+import { AuthProvider, useSession } from "./ctx";
+import { SplashScreenController } from "./splash";
 
 export default function Root() {
-  // Set up the auth context and render your layout inside of it.
   return (
-    <SessionProvider>
+    <AuthProvider>
       <SplashScreenController />
       <RootNavigator />
-    </SessionProvider>
+    </AuthProvider>
   );
 }
 
-// Create a new component that can access the SessionProvider context later.
 function RootNavigator() {
-  const { session } = useSession();
+  const { session, dbUser, loading } = useSession();
+
+  if (loading) return null;
+
+  // ✅ only let user into (app) if we ALSO have dbUser
+  const isAuthed = !!session && !!dbUser;
 
   return (
-    <Stack >
-      <Stack.Protected guard={!!session}  >
-        <Stack.Screen options={{headerShown: false}} name="(app)" />
+    <Stack>
+      <Stack.Protected guard={isAuthed}>
+        <Stack.Screen name="(app)" options={{ headerShown: false }} />
       </Stack.Protected>
 
-      <Stack.Protected guard={!session}>
-        <Stack.Screen name="sign-in" />
+      <Stack.Protected guard={!isAuthed}>
+        <Stack.Screen name="sign-in" options={{ headerShown: false }} />
       </Stack.Protected>
     </Stack>
   );

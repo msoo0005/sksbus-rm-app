@@ -1,21 +1,10 @@
 // FleetManagerScreen.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useRouter } from 'expo-router';
-import React from 'react';
-import { Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo } from 'react';
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Card, CardContent } from '../components/card';
 
-const { width, height } = Dimensions.get('window');
-const cardMargin = 10;
-const numColumns = 1;
-const numRows = 3;
-const headerHeight = 0.1 * height;
-const sidePadding = 10;
-
-const cardWidth =
-  ((width - (numColumns + 1) * cardMargin) / numColumns) - sidePadding - cardMargin;
-const cardHeight =
-  ((height - (numRows + 1) * cardMargin) / numRows - headerHeight) - cardMargin;
 
 // ✅ define a strict type (optional but recommended)
 type ReportType = 'problem' | 'repair' | 'accident';
@@ -57,6 +46,28 @@ export default function FleetManagerScreen() {
     },
   ];
 
+  const { width, height } = useWindowDimensions();
+  
+    const layout = useMemo(() => {
+      const cardMargin = 10;
+      const sidePadding = 10;
+  
+      // Example: 2 columns in landscape, 1 column in portrait (tweak to taste)
+      const isLandscape = width > height;
+      const numColumns = isLandscape ? 1 : 1;
+  
+      // Compute available width INSIDE the padded container
+      const containerWidth = width - sidePadding * 2;
+  
+      const cardWidth =
+        (containerWidth - cardMargin * (numColumns * 2)) / numColumns;
+  
+      // Height can be a ratio (more stable than “numRows” math)
+      const cardHeight = isLandscape ? 270 : 190;
+  
+      return { cardWidth, cardHeight, cardMargin };
+    }, [width, height]);
+
   return (
     <View style={styles.gridContainer}>
       {report_type.map((report) => (
@@ -78,7 +89,10 @@ export default function FleetManagerScreen() {
                 ],
               }}
             >
-              <Card style={[styles.card, pressed && styles.cardPressed]}>
+              <Card style={[styles.card, {
+                  width: layout.cardWidth,
+                  margin: layout.cardMargin,
+                 },   pressed && styles.cardPressed]}>
                 <CardContent style={styles.cardContent}>
                   <View style={[styles.iconWrapper, { backgroundColor: report.color }]}>
                     <FontAwesome5 name={report.icon as any} size={40} color="#fff" />
@@ -101,15 +115,12 @@ const styles = StyleSheet.create({
   gridContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    padding: sidePadding,
+    padding: 10,
   },
   card: {
-    width: cardWidth,
-    height: cardHeight,
     backgroundColor: '#fff',
     borderRadius: 12,
     padding: 15,
-    margin: cardMargin,
     elevation: 6,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },

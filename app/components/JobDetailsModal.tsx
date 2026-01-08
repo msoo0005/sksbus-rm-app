@@ -1,5 +1,5 @@
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Report } from '../types/report';
+import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Report } from "../types/report";
 
 type Props = {
   visible: boolean;
@@ -7,10 +7,18 @@ type Props = {
   onClose: () => void;
 };
 
+function formatAuditTime(iso?: string) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso; // fallback if weird format
+  return d.toLocaleString();
+}
+
 export default function JobDetailsModal({ visible, report, onClose }: Props) {
   if (!report) return null;
 
-  const declined = report.audit?.action === 'declined';
+  const declined = report.audit?.action === "declined";
+  const approved = report.audit?.action === "approved";
 
   return (
     <Modal visible={visible} transparent animationType="fade">
@@ -18,41 +26,36 @@ export default function JobDetailsModal({ visible, report, onClose }: Props) {
         <View style={styles.modal}>
           <Text style={styles.title}>Report #{report.id}</Text>
 
-          {/* Vehicle & Location */}
           <Text>Vehicle: {report.vehicle}</Text>
           <Text>Location: {report.location}</Text>
 
-          {/* Reporter */}
-          {report.reportedBy && (
-            <Text>Reported by: {report.reportedBy}</Text>
-          )}
+          {report.reportedBy && <Text>Reported by: {report.reportedBy}</Text>}
 
-          {/* Assigned Technician */}
-          {report.assigned && (
-            <Text>
-              Assigned to:{' '}
-              {report.assigned}
-            </Text>
-          )}
+          {report.assigned && <Text>Assigned to: {report.assigned}</Text>}
 
-          {/* Description */}
           <Text style={{ marginTop: 10 }}>{report.description}</Text>
 
-          {/* Decline audit */}
+          {/* Approved audit */}
+          {approved && (
+            <View style={[styles.auditBox, styles.auditBoxApproved]}>
+              <Text style={[styles.auditTitle, styles.auditTitleApproved]}>Approved Audit</Text>
+              <Text>By: {report.audit?.by ?? "—"}</Text>
+              <Text>At: {formatAuditTime(report.audit?.at)}</Text>
+            </View>
+          )}
+
+          {/* Declined audit */}
           {declined && (
             <View style={styles.auditBox}>
               <Text style={styles.auditTitle}>Declined Audit</Text>
-              <Text>By: {report.audit?.by}</Text>
-              <Text>
-                At: {new Date(report.audit!.at).toLocaleString()}
-              </Text>
+              <Text>By: {report.audit?.by ?? "—"}</Text>
+              <Text>At: {formatAuditTime(report.audit?.at)}</Text>
               <Text style={{ marginTop: 6 }}>
-                Reason: {report.audit?.reason}
+                Reason: {report.audit?.reason?.trim() ? report.audit?.reason : "No reason provided."}
               </Text>
             </View>
           )}
 
-          {/* Close button */}
           <Pressable style={styles.close} onPress={onClose}>
             <Text>Close</Text>
           </Pressable>
@@ -65,32 +68,38 @@ export default function JobDetailsModal({ visible, report, onClose }: Props) {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
   },
   modal: {
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     padding: 20,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
   },
-  title: { fontSize: 18, fontWeight: '700', marginBottom: 12 },
+  title: { fontSize: 18, fontWeight: "700", marginBottom: 12 },
 
   auditBox: {
     marginTop: 16,
     padding: 12,
-    backgroundColor: '#FFF3F3',
+    backgroundColor: "#FFF3F3",
     borderRadius: 12,
     borderLeftWidth: 4,
-    borderLeftColor: '#E53935',
+    borderLeftColor: "#E53935",
   },
-  auditTitle: { fontWeight: '700', color: '#E53935' },
+  auditTitle: { fontWeight: "700", color: "#E53935" },
+
+  auditBoxApproved: {
+    backgroundColor: "#F2FFF4",
+    borderLeftColor: "#4CAF50",
+  },
+  auditTitleApproved: { color: "#2E7D32" },
 
   close: {
     marginTop: 20,
     padding: 12,
-    alignItems: 'center',
+    alignItems: "center",
     borderRadius: 12,
-    backgroundColor: '#eee',
+    backgroundColor: "#eee",
   },
 });

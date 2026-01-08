@@ -1,7 +1,7 @@
-import { Eye } from 'lucide-react-native';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Report } from '../types/report';
-import StatusBadge from './StatusBadge';
+import { Eye } from "lucide-react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Report } from "../types/report";
+import StatusBadge from "./StatusBadge";
 
 type ReportCardProps = {
   report: Report;
@@ -20,19 +20,13 @@ export default function ReportCard({
   onDecline,
   currentTech,
 }: ReportCardProps) {
-  const isDeclined = report.audit?.action === 'declined';
+  const isDeclined = report.audit?.action === "declined";
 
-  const showAccept = !!(
-    onAccept &&
-    report.status === 'open' &&
-    !report.assigned
-  );
+  const showAccept = !!(onAccept && report.status === "open" && !report.assigned);
 
-  const showManagerActions = !!(
-    onApprove &&
-    onDecline &&
-    report.status === 'pending'
-  );
+  const showManagerActions = !!(onApprove && onDecline && report.status === "pending");
+
+  const declineReason = report.audit?.reason?.trim();
 
   return (
     <View style={styles.card}>
@@ -42,10 +36,8 @@ export default function ReportCard({
           <Text style={styles.title}>Report #{report.id}</Text>
 
           <View style={styles.badges}>
-            {/* Uses StatusBadge default label formatting */}
             <StatusBadge type={report.type} />
             <StatusBadge type={report.severity} />
-
             {isDeclined && <StatusBadge type="critical" label="Declined" />}
           </View>
         </View>
@@ -57,13 +49,11 @@ export default function ReportCard({
       <Text style={styles.meta}>Vehicle: {report.vehicle}</Text>
       <Text style={styles.meta}>Location: {report.location}</Text>
 
-      {!!report.reportedBy && (
-        <Text style={styles.meta}>Reported by: {report.reportedBy}</Text>
-      )}
+      {!!report.reportedBy && <Text style={styles.meta}>Reported by: {report.reportedBy}</Text>}
 
       {!!report.assigned && (
         <Text style={styles.meta}>
-          Assigned to: {report.assigned === currentTech ? 'You' : report.assigned}
+          Assigned to: {report.assigned === currentTech ? "You" : report.assigned}
         </Text>
       )}
 
@@ -72,7 +62,9 @@ export default function ReportCard({
       {isDeclined && (
         <View style={styles.declineBox}>
           <Text style={styles.declineTitle}>Decline Reason</Text>
-          <Text style={styles.declineText}>{report.audit?.reason}</Text>
+          <Text style={styles.declineText}>
+            {declineReason ? declineReason : "No reason provided."}
+          </Text>
         </View>
       )}
 
@@ -84,10 +76,7 @@ export default function ReportCard({
         </Pressable>
 
         {showAccept && (
-          <Pressable
-            style={[styles.button, styles.acceptButton]}
-            onPress={() => onAccept?.(report)}
-          >
+          <Pressable style={[styles.button, styles.acceptButton]} onPress={() => onAccept?.(report)}>
             <Text style={styles.whiteText}>Accept Job</Text>
           </Pressable>
         )}
@@ -95,17 +84,11 @@ export default function ReportCard({
 
       {showManagerActions && (
         <View style={styles.managerRow}>
-          <Pressable
-            style={[styles.button, styles.approveButton]}
-            onPress={() => onApprove?.(report)}
-          >
+          <Pressable style={[styles.button, styles.approveButton]} onPress={() => onApprove?.(report)}>
             <Text style={styles.whiteText}>Approve</Text>
           </Pressable>
 
-          <Pressable
-            style={[styles.button, styles.declineButton]}
-            onPress={() => onDecline?.(report)}
-          >
+          <Pressable style={[styles.button, styles.declineButton]} onPress={() => onDecline?.(report)}>
             <Text style={styles.whiteText}>Decline</Text>
           </Pressable>
         </View>
@@ -116,7 +99,7 @@ export default function ReportCard({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     marginHorizontal: 16,
     marginBottom: 16,
     padding: 16,
@@ -124,62 +107,60 @@ const styles = StyleSheet.create({
   },
 
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
     gap: 10,
   },
-  headerLeft: {
-    flex: 1,
-  },
+  headerLeft: { flex: 1 },
 
   title: {
     fontSize: 18,
-    fontWeight: '700',
-    color: '#111827',
+    fontWeight: "700",
+    color: "#111827",
   },
 
   badges: {
-    flexDirection: 'row',
+    flexDirection: "row",
     marginTop: 6,
     gap: 6,
-    flexWrap: 'wrap',
+    flexWrap: "wrap",
   },
 
   date: {
     fontSize: 12,
-    color: '#666',
+    color: "#666",
     marginTop: 2,
   },
 
   meta: {
     marginTop: 8,
-    color: '#666',
+    color: "#666",
   },
 
   description: {
     marginTop: 12,
     fontSize: 14,
-    color: '#111827',
+    color: "#111827",
   },
 
   declineBox: {
     marginTop: 12,
     padding: 12,
-    backgroundColor: '#FFF3F3',
+    backgroundColor: "#FFF3F3",
     borderRadius: 12,
     borderLeftWidth: 4,
-    borderLeftColor: '#E53935',
+    borderLeftColor: "#E53935",
   },
-  declineTitle: { fontWeight: '700', color: '#E53935' },
-  declineText: { marginTop: 4, color: '#333' },
+  declineTitle: { fontWeight: "700", color: "#E53935" },
+  declineText: { marginTop: 4, color: "#333" },
 
   actionRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 10,
     marginTop: 16,
   },
   managerRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 10,
     marginTop: 12,
   },
@@ -188,27 +169,27 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 12,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: "#ddd",
     borderRadius: 12,
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'center',
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
     gap: 6,
   },
 
   acceptButton: {
-    backgroundColor: '#4CAF50',
-    borderColor: '#4CAF50',
+    backgroundColor: "#4CAF50",
+    borderColor: "#4CAF50",
   },
   approveButton: {
-    backgroundColor: '#4CAF50',
-    borderColor: '#4CAF50',
+    backgroundColor: "#4CAF50",
+    borderColor: "#4CAF50",
   },
   declineButton: {
-    backgroundColor: '#E53935',
-    borderColor: '#E53935',
+    backgroundColor: "#E53935",
+    borderColor: "#E53935",
   },
 
-  buttonText: { fontWeight: '600', color: '#111827' },
-  whiteText: { color: '#fff', fontWeight: '600' },
+  buttonText: { fontWeight: "600", color: "#111827" },
+  whiteText: { color: "#fff", fontWeight: "600" },
 });

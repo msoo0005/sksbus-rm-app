@@ -1,46 +1,88 @@
-import { createContext, use, type PropsWithChildren } from 'react';
+import * as SecureStore from "expo-secure-store";
+import React from "react";
+import { api } from "./api/client";
 
-import { useStorageState } from './useStorageState';
+type DbUser = {
+  user_id: number;
+  user_role: string;
+  user_name: string;
+  user_email: string;
+};
 
-const AuthContext = createContext<{
-  signIn: () => void;
-  signOut: () => void;
-  session?: string | null;
-  isLoading: boolean;
-}>({
-  signIn: () => null,
-  signOut: () => null,
-  session: null,
-  isLoading: false,
-});
+type SessionContextType = {
+  session: string | null; // accessToken
+  dbUser: DbUser | null;
+  loading: boolean;
+  signInWithTokens: (tokens: {
+    accessToken: string;
+    idToken?: string;
+    refreshToken?: string;
+  }) => Promise<void>;
+  signOut: () => Promise<void>; // ✅ clears local tokens only (no browser)
+};
 
-// Use this hook to access the user info.
+const SessionContext = React.createContext<SessionContextType | null>(null);
+
 export function useSession() {
-  const value = use(AuthContext);
-  if (!value) {
-    throw new Error('useSession must be wrapped in a <SessionProvider />');
-  }
-
-  return value;
+  const ctx = React.useContext(SessionContext);
+  if (!ctx) throw new Error("useSession must be used within AuthProvider");
+  return ctx;
 }
 
-export function SessionProvider({ children }: PropsWithChildren) {
-  const [[isLoading, session], setSession] = useStorageState('session');
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [loading, setLoading] = React.useState(true);
+  const [session, setSession] = React.useState<string | null>(null);
+  const [dbUser, setDbUser] = React.useState<DbUser | null>(null);
+
+  React.useEffect(() => {
+    (async () => {
+      const token = await SecureStore.getItemAsync("accessToken");
+      if (token) {
+        setSession(token);
+        try {
+          const me = await api.me();
+          setDbUser(me);
+        } catch {
+          await Promise.all([
+            SecureStore.deleteItemAsync("accessToken"),
+            SecureStore.deleteItemAsync("idToken"),
+            SecureStore.deleteItemAsync("refreshToken"),
+          ]);
+          setSession(null);
+          setDbUser(null);
+        }
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  const signInWithTokens = React.useCallback(
+    async (tokens: { accessToken: string; idToken?: string; refreshToken?: string }) => {
+      await SecureStore.setItemAsync("accessToken", tokens.accessToken);
+      if (tokens.idToken) await SecureStore.setItemAsync("idToken", tokens.idToken);
+      if (tokens.refreshToken) await SecureStore.setItemAsync("refreshToken", tokens.refreshToken);
+
+      setSession(tokens.accessToken);
+
+      const me = await api.me();
+      setDbUser(me);
+    },
+    []
+  );
+
+  const signOut = React.useCallback(async () => {
+    await Promise.all([
+      SecureStore.deleteItemAsync("accessToken"),
+      SecureStore.deleteItemAsync("idToken"),
+      SecureStore.deleteItemAsync("refreshToken"),
+    ]);
+    setSession(null);
+    setDbUser(null);
+  }, []);
 
   return (
-    <AuthContext.Provider
-      value={{
-        signIn: () => {
-          // Perform sign-in logic here
-          setSession('xxx');
-        },
-        signOut: () => {
-          setSession(null);
-        },
-        session,
-        isLoading,
-      }}>
+    <SessionContext.Provider value={{ session, dbUser, loading, signInWithTokens, signOut }}>
       {children}
-    </AuthContext.Provider>
+    </SessionContext.Provider>
   );
 }
