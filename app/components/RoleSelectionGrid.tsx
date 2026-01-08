@@ -65,6 +65,17 @@ export default function RoleSelectionGrid({ allowedRoles }: Props) {
     },
   ];
 
+  const handleRolePress = (roleId: string) => {
+    // ✅ new flow for Fleet Manager only
+    if (roleId === "fleet-manager") {
+      router.push("./project-selector");
+      return;
+    }
+
+    // ✅ other roles keep existing behaviour
+    router.push(`./${roleId}` as any);
+  };
+
   return (
     <View style={styles.gridContainer}>
       {roles.map((role) => {
@@ -74,7 +85,7 @@ export default function RoleSelectionGrid({ allowedRoles }: Props) {
           <Pressable
             key={role.id}
             disabled={!enabled}
-            onPress={() => enabled && router.push(`./${role.id}`)}
+            onPress={() => handleRolePress(role.id)}
             style={{ opacity: enabled ? 1 : 0.45 }}
           >
             {({ pressed }) => (
@@ -151,7 +162,6 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   card: {
-    flex: 1,
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 15,
