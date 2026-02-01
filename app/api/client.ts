@@ -36,9 +36,13 @@ export async function clearStoredTokens() {
   ]);
 }
 
+/**
+ * Access-token request (kept for future use if you reconfigure the authoriser).
+ * NOTE: your current API Gateway authoriser accepts ID tokens (because /me works with idToken).
+ */
 export async function request<T = any>(
   path: string,
-  init: RequestInit = {}
+  init: RequestInit = {},
 ): Promise<T> {
   const token = await getAccessToken();
 
@@ -69,10 +73,13 @@ export async function request<T = any>(
   return data as T;
 }
 
-// Use ID token when you want Cognito groups reliably
+/**
+ * ID-token request (your authoriser expects this right now).
+ * Use this for all protected endpoints.
+ */
 async function requestWithIdToken<T = any>(
   path: string,
-  init: RequestInit = {}
+  init: RequestInit = {},
 ): Promise<T> {
   const idToken = await getIdToken();
   if (!idToken) throw new Error("Missing idToken");
@@ -112,17 +119,21 @@ export type ReportStatus = "submitted" | "open" | "closed";
 export type ReviewAction = "approved" | "declined";
 
 export const api = {
-  // health
+  // health (public)
   health: () => request<{ status: string }>("/health"),
 
-  // auth/user
+  // auth/user (protected)
   me: () => requestWithIdToken<DbMe>("/me"),
 
-  // buses
+  // buses (protected)
   buses: () => requestWithIdToken<any[]>("/buses"),
 
   // ===== REPORTS =====
-  listReports: (params?: { status?: ReportStatus; mine?: boolean; type?: string }) => {
+  listReports: (params?: {
+    status?: ReportStatus;
+    mine?: boolean;
+    type?: string;
+  }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.mine) qs.set("mine", "1");
@@ -132,18 +143,20 @@ export const api = {
     return requestWithIdToken<any[]>(`/reports${suffix}`);
   },
 
-  getReport: (reportId: number) => requestWithIdToken<any>(`/reports/${reportId}`),
+  getReport: (reportId: number) =>
+    requestWithIdToken<any>(`/reports/${reportId}`),
 
-  // ✅ Ensure report_status defaults to "submitted" for brand new reports
+  // ✅ FIX: this endpoint is protected by your authoriser → use ID token
   createReport: (body: any) =>
-    request<{ report_id: number }>("/reports", {
+    requestWithIdToken<{ report_id: number }>("/reports", {
       method: "POST",
       body: JSON.stringify({
         report_status: "submitted",
-        ...body, // allow caller to override if needed
+        ...body,
       }),
     }),
 
+  // ✅ FIX: protected → use ID token
   updateReportStatus: (
     reportId: number,
     body: {
@@ -152,43 +165,55 @@ export const api = {
       report_review_by?: string | null;
       report_review_reason?: string | null;
       report_review_at?: string | null;
-    }
+    },
   ) =>
-    request<{ success: true }>(`/reports/${reportId}/status`, {
+    requestWithIdToken<{ success: true }>(`/reports/${reportId}/status`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
 
+  /**
+   * NOTE:
+   * Your Lambda router currently does NOT implement POST /reports/{id}/review.
+   * Keeping this function is fine, but it will 404 unless you add the route.
+   */
   reviewReport: (
     reportId: number,
-    body: { action: ReviewAction; by: string; reason?: string }
+    body: { action: ReviewAction; by: string; reason?: string },
   ) =>
-    request<{ success: true }>(`/reports/${reportId}/review`, {
+    requestWithIdToken<{ success: true }>(`/reports/${reportId}/review`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
+  // ✅ FIX: protected → use ID token
   createJobForReport: (reportId: number, body: { job_desc?: string | null }) =>
-    request<{ job_id: number }>(`/reports/${reportId}/job`, {
+    requestWithIdToken<{ job_id: number }>(`/reports/${reportId}/job`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
-  // report media
-  listReportMedia: (reportId: number) => requestWithIdToken<any[]>(`/reports/${reportId}/media`),
+  // report media (protected)
+  listReportMedia: (reportId: number) =>
+    requestWithIdToken<any[]>(`/reports/${reportId}/media`),
 
+  // ✅ FIX: protected → use ID token
   presignReportMedia: (reportId: number, mime: string) =>
-    request<{
+    requestWithIdToken<{
       uploadUrl: string;
       s3_bucket: string;
       s3_key: string;
     }>(`/reports/${reportId}/media/presign?mime=${encodeURIComponent(mime)}`),
 
+  // ✅ FIX: protected → use ID token
   confirmReportMedia: (reportId: number, body: any) =>
-    request<{ success: true }>(`/reports/${reportId}/media/confirm`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    requestWithIdToken<{ success: true }>(
+      `/reports/${reportId}/media/confirm`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
 
   // ===== JOBS =====
   listJobs: (params?: { status?: string }) => {
@@ -200,48 +225,58 @@ export const api = {
 
   getJob: (jobId: number) => requestWithIdToken<any>(`/jobs/${jobId}`),
 
+  // ✅ FIX: protected → use ID token
   assignJob: (jobId: number) =>
-    request<{ success: true }>(`/jobs/${jobId}/assign`, {
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/assign`, {
       method: "PATCH",
     }),
 
-  listJobParts: (jobId: number) => requestWithIdToken<any[]>(`/jobs/${jobId}/parts`),
+  listJobParts: (jobId: number) =>
+    requestWithIdToken<any[]>(`/jobs/${jobId}/parts`),
 
+  // ✅ FIX: protected → use ID token
   addJobPart: (jobId: number, body: any) =>
-    request<{ success: true }>(`/jobs/${jobId}/parts`, {
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/parts`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
+  // ✅ FIX: protected → use ID token
   updateJobStatus: (jobId: number, body: any) =>
-    request<{ success: true }>(`/jobs/${jobId}/status`, {
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/status`, {
       method: "PATCH",
+      body: JSON.stringify(body),
     }),
 
-  listJobHistory: (jobId: number) => requestWithIdToken<any[]>(`/jobs/${jobId}/history`),
+  listJobHistory: (jobId: number) =>
+    requestWithIdToken<any[]>(`/jobs/${jobId}/history`),
 
+  // ✅ FIX: protected → use ID token
   addJobHistory: (jobId: number, body: any) =>
-    request<{ success: true }>(`/jobs/${jobId}/history`, {
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/history`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
-  listJobMedia: (jobId: number) => requestWithIdToken<any[]>(`/jobs/${jobId}/media`),
+  listJobMedia: (jobId: number) =>
+    requestWithIdToken<any[]>(`/jobs/${jobId}/media`),
 
+  // ✅ FIX: protected → use ID token
   presignJobMedia: (jobId: number, mime: string) =>
-    request<{
+    requestWithIdToken<{
       uploadUrl: string;
       s3_bucket: string;
       s3_key: string;
     }>(`/jobs/${jobId}/media/presign?mime=${encodeURIComponent(mime)}`),
 
+  // ✅ FIX: protected → use ID token
   confirmJobMedia: (jobId: number, body: any) =>
-    request<{ success: true }>(`/jobs/${jobId}/media/confirm`, {
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/media/confirm`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
-  // parts
+  // ===== PARTS =====
   parts: (params?: { limit?: number }) => {
     const qs = new URLSearchParams();
     if (params?.limit != null) qs.set("limit", String(params.limit));
@@ -249,17 +284,20 @@ export const api = {
     return requestWithIdToken<any[]>(`/parts${suffix}`);
   },
 
+  // ✅ FIX: protected → use ID token
   createPart: (body: any) =>
-    request<{ success: true }>("/parts", {
+    requestWithIdToken<{ success: true }>("/parts", {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
+  // ✅ FIX: protected → use ID token
   updatePart: (partId: number, body: any) =>
-    request<{ success: true }>(`/parts/${partId}`, {
+    requestWithIdToken<{ success: true }>(`/parts/${partId}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
 
+  // Expose request for any special cases
   request,
 };

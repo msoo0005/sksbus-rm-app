@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
-import { ScrollView } from "react-native";
+import React, { useCallback, useEffect, useState } from "react";
+import { Alert, RefreshControl, ScrollView, Text, View } from "react-native";
 
+import { api } from "../api/client"; // ✅ adjust if your api.ts path differs
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import DeclineReasonModal from "../components/DeclineReasonModal";
 import JobDetailsModal from "../components/JobDetailsModal";
@@ -11,72 +12,67 @@ import { Report } from "../types/report";
 
 type Tab = "pending" | "open" | "closed";
 
-// -------------------- MOCK DATA --------------------
-const INITIAL_REPORTS: Report[] = [
-  {
-    id: 101,
-    type: "problem",
-    severity: "high",
-    vehicle: "BUS101",
-    location: "Depot - Bay 3",
-    description: "Engine warning light appeared during route. Needs diagnostic scan.",
-    date: "12/24/2025, 9:10 AM",
-    status: "pending",
-    reportedBy: "Driver A (john.tan@company.com)",
-  },
-  {
-    id: 102,
-    type: "repair",
-    severity: "medium",
-    vehicle: "BUS205",
-    location: "Route 8 - Stop 12",
-    description: "Brakes squealing. Likely pads worn, schedule inspection.",
-    date: "12/24/2025, 9:40 AM",
-    status: "pending",
-    reportedBy: "Driver B (amy.lim@company.com)",
-  },
-  {
-    id: 103,
-    type: "accident",
-    severity: "critical",
-    vehicle: "BUS333",
-    location: "Highway Exit 5",
-    description: "Minor collision, rear bumper damage. No injuries reported.",
-    date: "12/24/2025, 10:05 AM",
-    status: "open",
-    reportedBy: "Driver C (mike.ng@company.com)",
-    assigned: "Technician A",
-    audit: {
-      action: "approved",
-      by: "RM Manager",
-      at: new Date().toISOString(),
-    },
-  },
-  {
-    id: 104,
-    type: "problem",
-    severity: "low",
-    vehicle: "BUS150",
-    location: "Depot - Bay 1",
-    description: "Cabin AC not cold. Can be checked during next service.",
-    date: "12/23/2025, 4:25 PM",
-    status: "closed",
-    reportedBy: "Driver D (sara.lee@company.com)",
-    audit: {
-      action: "declined",
-      by: "RM Manager",
-      at: new Date(Date.now() - 1000 * 60 * 60 * 6).toISOString(),
-      reason: "Duplicate report already raised for this bus.",
-    },
-  },
-];
+function formatDate(isoLike?: string | null) {
+  if (!isoLike) return "—";
+  const d = new Date(isoLike);
+  if (Number.isNaN(d.getTime())) return String(isoLike);
+  return d.toLocaleString();
+}
+
+function normaliseStatusToUi(raw?: string | null): Report["status"] {
+  const s = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (!s || s === "submitted" || s === "pending") return "pending";
+  if (s === "open") return "open";
+  if (s === "closed") return "closed";
+  return "pending";
+}
+
+/**
+ * Maps your Lambda listReports rows -> UI Report
+ * listReports returns:
+ *  report_id, report_type, report_desc, report_location, report_priority, report_status, report_uploaded_at,
+ *  bus_id, reporter_name, reporter_email,
+ *  report_review_action, report_review_reason, report_review_by, report_review_at
+ */
+function mapApiRowToReport(r: any): Report {
+  const reportedBy =
+    r.reporter_name || r.reporter_email
+      ? `${r.reporter_name ?? "Unknown"} (${r.reporter_email ?? "—"})`
+      : undefined;
+
+  const audit = r.report_review_action
+    ? {
+        action: String(r.report_review_action) as any, // approved | declined
+        by: r.report_review_by ?? undefined,
+        at: r.report_review_at ?? undefined,
+        reason: r.report_review_reason ?? undefined,
+      }
+    : undefined;
+
+  return {
+    id: Number(r.report_id),
+    type: (r.report_type ?? "problem") as Report["type"],
+    severity: (r.report_priority ?? "medium") as Report["severity"],
+    vehicle: String(r.bus_id ?? "—"),
+    location: String(r.report_location ?? "—"),
+    description: String(r.report_desc ?? "—"),
+    date: formatDate(r.report_uploaded_at),
+    status: normaliseStatusToUi(r.report_status),
+    reportedBy,
+    audit,
+  };
+}
 
 export default function RMManagerScreen() {
   const { dbUser } = useSession() as any;
   const MANAGER_NAME = dbUser?.user_name ?? "RM Manager";
 
   const [tab, setTab] = useState<Tab>("pending");
-  const [reports, setReports] = useState<Report[]>(INITIAL_REPORTS);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [detailsVisible, setDetailsVisible] = useState(false);
@@ -87,24 +83,59 @@ export default function RMManagerScreen() {
   const [declineTarget, setDeclineTarget] = useState<Report | null>(null);
   const [declineVisible, setDeclineVisible] = useState(false);
 
-  // ----- counts -----
-  const pendingCount = useMemo(
-    () => reports.filter((r) => r.status === "pending").length,
-    [reports]
-  );
-  const openCount = useMemo(
-    () => reports.filter((r) => r.status === "open").length,
-    [reports]
-  );
-  const closedCount = useMemo(
-    () => reports.filter((r) => r.status === "closed").length,
-    [reports]
+  const [counts, setCounts] = useState({ pending: 0, open: 0, closed: 0 });
+
+  const loadReports = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      try {
+        if (!opts?.silent) setLoading(true);
+
+        // Backend expects: status=submitted|open|closed
+        // Your backend treats pending as submitted
+        const statusParam = tab === "pending" ? "submitted" : tab;
+
+        const rows = await api.listReports({ status: statusParam as any });
+        const mapped = Array.isArray(rows) ? rows.map(mapApiRowToReport) : [];
+        setReports(mapped);
+      } catch (e: any) {
+        console.log(e);
+        Alert.alert("Couldn’t load reports", e?.message ?? "Unknown error");
+      } finally {
+        if (!opts?.silent) setLoading(false);
+      }
+    },
+    [tab],
   );
 
-  const filteredReports = useMemo(
-    () => reports.filter((r) => r.status === tab),
-    [reports, tab]
-  );
+  const loadCounts = useCallback(async () => {
+    try {
+      // Pull latest 200 and count locally
+      const rows = await api.listReports();
+      const mapped = Array.isArray(rows) ? rows.map(mapApiRowToReport) : [];
+
+      setCounts({
+        pending: mapped.filter((r) => r.status === "pending").length,
+        open: mapped.filter((r) => r.status === "open").length,
+        closed: mapped.filter((r) => r.status === "closed").length,
+      });
+    } catch {
+      // ignore count errors; UI still works
+    }
+  }, []);
+
+  useEffect(() => {
+    loadReports();
+  }, [loadReports]);
+
+  useEffect(() => {
+    loadCounts();
+  }, [loadCounts, tab]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([loadReports({ silent: true }), loadCounts()]);
+    setRefreshing(false);
+  }, [loadReports, loadCounts]);
 
   // ----- approve -----
   const requestApprove = (report: Report) => {
@@ -112,29 +143,49 @@ export default function RMManagerScreen() {
     setApproveVisible(true);
   };
 
-  const confirmApprove = () => {
+  const confirmApprove = async () => {
     if (!approveTarget) return;
 
+    const reportId = approveTarget.id;
+
+    // optimistic UI
     setReports((prev) =>
       prev.map((r) =>
-        r.id === approveTarget.id
+        r.id === reportId
           ? {
               ...r,
               status: "open",
-              // (demo) assign immediately, or leave unassigned if you prefer
-              assigned: r.assigned ?? undefined,
               audit: {
                 action: "approved",
                 by: MANAGER_NAME,
                 at: new Date().toISOString(),
               },
             }
-          : r
-      )
+          : r,
+      ),
     );
 
     setApproveVisible(false);
     setApproveTarget(null);
+
+    try {
+      await api.updateReportStatus(reportId, {
+        report_status: "open",
+        report_review_action: "approved",
+        report_review_reason: null,
+        report_review_by: MANAGER_NAME,
+        report_review_at: new Date().toISOString(),
+      });
+
+      await loadCounts();
+
+      // Pending tab should drop it
+      if (tab === "pending") await loadReports({ silent: true });
+    } catch (e: any) {
+      Alert.alert("Approve failed", e?.message ?? "Unknown error");
+      await loadReports({ silent: true });
+      await loadCounts();
+    }
   };
 
   // ----- decline -----
@@ -143,12 +194,15 @@ export default function RMManagerScreen() {
     setDeclineVisible(true);
   };
 
-  const submitDecline = (reason: string) => {
+  const submitDecline = async (reason: string) => {
     if (!declineTarget) return;
 
+    const reportId = declineTarget.id;
+
+    // optimistic UI
     setReports((prev) =>
       prev.map((r) =>
-        r.id === declineTarget.id
+        r.id === reportId
           ? {
               ...r,
               status: "closed",
@@ -159,39 +213,72 @@ export default function RMManagerScreen() {
                 reason,
               },
             }
-          : r
-      )
+          : r,
+      ),
     );
 
     setDeclineVisible(false);
     setDeclineTarget(null);
+
+    try {
+      await api.updateReportStatus(reportId, {
+        report_status: "closed",
+        report_review_action: "declined",
+        report_review_reason: reason,
+        report_review_by: MANAGER_NAME,
+        report_review_at: new Date().toISOString(),
+      });
+
+      await loadCounts();
+
+      if (tab === "pending") await loadReports({ silent: true });
+    } catch (e: any) {
+      Alert.alert("Decline failed", e?.message ?? "Unknown error");
+      await loadReports({ silent: true });
+      await loadCounts();
+    }
   };
 
   return (
     <>
-      <ScrollView style={{ flex: 1, backgroundColor: "#f9f9f9" }}>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: "#f9f9f9" }}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
         <SegmentedTabs<Tab>
           value={tab}
           onChange={setTab}
           tabs={[
-            { key: "pending", label: `Pending (${pendingCount})` },
-            { key: "open", label: `Open (${openCount})` },
-            { key: "closed", label: `Closed (${closedCount})` },
+            { key: "pending", label: `Pending (${counts.pending})` },
+            { key: "open", label: `Open (${counts.open})` },
+            { key: "closed", label: `Closed (${counts.closed})` },
           ]}
         />
 
-        {filteredReports.map((report) => (
-          <ReportCard
-            key={report.id}
-            report={report}
-            onViewDetails={(r) => {
-              setSelectedReport(r);
-              setDetailsVisible(true);
-            }}
-            onApprove={tab === "pending" ? requestApprove : undefined}
-            onDecline={tab === "pending" ? requestDecline : undefined}
-          />
-        ))}
+        {loading ? (
+          <View style={{ padding: 16 }}>
+            <Text style={{ color: "#666" }}>Loading reports…</Text>
+          </View>
+        ) : reports.length === 0 ? (
+          <View style={{ padding: 16 }}>
+            <Text style={{ color: "#666" }}>No reports in this tab.</Text>
+          </View>
+        ) : (
+          reports.map((report) => (
+            <ReportCard
+              key={report.id}
+              report={report}
+              onViewDetails={(r) => {
+                setSelectedReport(r);
+                setDetailsVisible(true);
+              }}
+              onApprove={tab === "pending" ? requestApprove : undefined}
+              onDecline={tab === "pending" ? requestDecline : undefined}
+            />
+          ))
+        )}
       </ScrollView>
 
       <JobDetailsModal
