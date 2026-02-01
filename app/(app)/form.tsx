@@ -14,11 +14,13 @@ import DropDownPicker from "react-native-dropdown-picker";
 import { api } from "../api/client";
 import ImagePickerField, { LocalMedia } from "../components/ImagePicker"; // ✅ local picker: returns { localUri, mime_type }
 import MapSelector from "../components/map";
+import { useProject } from "../project-ctx"; // ✅ NEW
 
 type ReportType = "problem" | "repair" | "accident";
 
 function normaliseReportType(value: unknown): ReportType {
-  if (value === "problem" || value === "repair" || value === "accident") return value;
+  if (value === "problem" || value === "repair" || value === "accident")
+    return value;
   return "problem";
 }
 
@@ -44,11 +46,18 @@ async function uriToBlob(uri: string): Promise<Blob> {
 export default function ReportFormScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const reportType = useMemo(() => normaliseReportType(params.type), [params.type]);
-
-  const [mapLocation, setMapLocation] = useState<{ latitude: number; longitude: number } | null>(
-    null
+  const reportType = useMemo(
+    () => normaliseReportType(params.type),
+    [params.type],
   );
+
+  // ✅ NEW: selected project (persisted)
+  const { projectId, loading: projectLoading } = useProject();
+
+  const [mapLocation, setMapLocation] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
   const [locationDesc, setLocationDesc] = useState("");
 
   // Vehicles dropdown
@@ -58,7 +67,9 @@ export default function ReportFormScreen() {
 
   // Priority dropdown
   const [priorityOpen, setPriorityOpen] = useState(false);
-  const [priority, setPriority] = useState<"low" | "medium" | "high" | "critical">("medium");
+  const [priority, setPriority] = useState<
+    "low" | "medium" | "high" | "critical"
+  >("medium");
 
   // Form state
   const [photos, setPhotos] = useState<LocalMedia[]>([]);
@@ -67,15 +78,32 @@ export default function ReportFormScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
 
-  // ✅ Load buses
+  // ✅ Load buses for the selected project only
   useEffect(() => {
     let alive = true;
 
     (async () => {
       try {
-        const res = await api.request<any>("/buses", { method: "GET" });
+        // Wait until project is restored from storage
+        if (projectLoading) return;
 
-        const list: any[] = Array.isArray(res) ? res : res?.items ?? [];
+        // No selected project => clear vehicles
+        if (!projectId) {
+          if (alive) {
+            setVehicles([]);
+            setVehicle(null);
+          }
+          return;
+        }
+
+        // ✅ Recommended: backend filters by project_id
+        // GET /buses?project_id=...
+        const res = await api.request<any>(
+          `/buses?project_id=${encodeURIComponent(projectId)}`,
+          { method: "GET" },
+        );
+
+        const list: any[] = Array.isArray(res) ? res : (res?.items ?? []);
 
         const items: BusItem[] = list
           .map((b: any) => {
@@ -92,17 +120,27 @@ export default function ReportFormScreen() {
           })
           .filter(Boolean) as BusItem[];
 
-        if (alive) setVehicles(items);
+        if (!alive) return;
+
+        setVehicles(items);
+
+        // ✅ If selected bus no longer exists for this project, clear it
+        setVehicle((prev) =>
+          prev && items.some((x) => x.value === prev) ? prev : null,
+        );
       } catch (e) {
         console.error("Failed to load buses", e);
-        if (alive) setVehicles([]);
+        if (alive) {
+          setVehicles([]);
+          setVehicle(null);
+        }
       }
     })();
 
     return () => {
       alive = false;
     };
-  }, []);
+  }, [projectId, projectLoading]);
 
   // Optional: prefill location description once if MapSelector provides address
   useEffect(() => {
@@ -113,12 +151,15 @@ export default function ReportFormScreen() {
   }, [mapLocation]);
 
   const createReport = async () => {
+    // ✅ NEW: enforce project selection
+    if (!projectId) throw new Error("Project is not selected");
     if (!vehicle) throw new Error("Vehicle is required");
     if (!description.trim()) throw new Error("Description is required");
 
     const res = await api.request<{ report_id: number }>("/reports", {
       method: "POST",
       body: JSON.stringify({
+        project_id: projectId, // ✅ NEW: send project to backend
         report_type: reportType,
         report_desc: description.trim(),
         report_location: locationDesc.trim() || null,
@@ -135,10 +176,14 @@ export default function ReportFormScreen() {
   // ✅ Uses your Lambda EXACTLY:
   // GET  /reports/{id}/media/presign?mime=...
   // POST /reports/{id}/media/confirm  body: { s3_key, mime_type, size_bytes }
-  const uploadOneToReport = async (reportId: number, localUri: string, mime_type: string) => {
+  const uploadOneToReport = async (
+    reportId: number,
+    localUri: string,
+    mime_type: string,
+  ) => {
     const presign = await api.request<PresignResponse>(
       `/reports/${reportId}/media/presign?mime=${encodeURIComponent(mime_type)}`,
-      { method: "GET" }
+      { method: "GET" },
     );
 
     const blob = await uriToBlob(localUri);
@@ -167,9 +212,12 @@ export default function ReportFormScreen() {
       setUploadingIndex(null);
 
       // ✅ Validate first (no API calls yet)
+      if (projectLoading) throw new Error("Loading project selection...");
+      if (!projectId) throw new Error("Project is not selected");
       if (!vehicle) throw new Error("Vehicle is required");
       if (!description.trim()) throw new Error("Description is required");
-      if (photos.length === 0) throw new Error("At least one photo is required");
+      if (photos.length === 0)
+        throw new Error("At least one photo is required");
 
       // ✅ Create report only on submit
       const reportId = await createReport();
@@ -177,7 +225,11 @@ export default function ReportFormScreen() {
       // ✅ Upload photos after report is created
       for (let i = 0; i < photos.length; i++) {
         setUploadingIndex(i);
-        await uploadOneToReport(reportId, photos[i].localUri, photos[i].mime_type);
+        await uploadOneToReport(
+          reportId,
+          photos[i].localUri,
+          photos[i].mime_type,
+        );
       }
 
       setUploadingIndex(null);
@@ -198,12 +250,31 @@ export default function ReportFormScreen() {
         ? "Submitting..."
         : "Submit Report";
 
+  const vehiclePlaceholder = projectLoading
+    ? "Loading project..."
+    : !projectId
+      ? "Select a project first"
+      : vehicles.length
+        ? "Select vehicle"
+        : "Loading vehicles...";
+
   return (
-    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      contentContainerStyle={styles.container}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={styles.title}>Report Details</Text>
 
       <View style={styles.typePill}>
         <Text style={styles.typePillText}>{reportTypeLabel(reportType)}</Text>
+      </View>
+
+      {/* ✅ NEW: show selected project */}
+      <View style={styles.projectPill}>
+        <Text style={styles.projectPillText}>
+          Project:{" "}
+          {projectLoading ? "Loading..." : (projectId ?? "Not selected")}
+        </Text>
       </View>
 
       {/* Vehicle */}
@@ -217,16 +288,21 @@ export default function ReportFormScreen() {
           setOpen={setVehicleOpen}
           setValue={setVehicle}
           setItems={setVehicles}
-          placeholder={vehicles.length ? "Select vehicle" : "Loading vehicles..."}
+          placeholder={vehiclePlaceholder}
           style={styles.dropdown}
           dropDownContainerStyle={styles.dropdownContainer}
           zIndex={3000}
-          disabled={submitting}
+          disabled={submitting || projectLoading || !projectId} // ✅ NEW
         />
       </View>
 
       {/* Location */}
-      <MapSelector label="Current Location" required value={mapLocation} onChange={setMapLocation} />
+      <MapSelector
+        label="Current Location"
+        required
+        value={mapLocation}
+        onChange={setMapLocation}
+      />
 
       {/* Location description */}
       <Text style={styles.label}>Location Description</Text>
@@ -286,11 +362,22 @@ export default function ReportFormScreen() {
 
       {/* Buttons */}
       <View style={styles.buttonRow}>
-        <TouchableOpacity style={styles.cancelButton} onPress={() => router.back()} disabled={submitting}>
+        <TouchableOpacity
+          style={styles.cancelButton}
+          onPress={() => router.back()}
+          disabled={submitting}
+        >
           <Text style={styles.cancelText}>Cancel</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.submitButton} onPress={onSubmit} disabled={submitting}>
+        <TouchableOpacity
+          style={[
+            styles.submitButton,
+            (!projectId || projectLoading) && { opacity: 0.6 },
+          ]}
+          onPress={onSubmit}
+          disabled={submitting || projectLoading || !projectId} // ✅ NEW
+        >
           <Text style={styles.submitText}>{submitLabel}</Text>
         </TouchableOpacity>
       </View>
@@ -325,6 +412,22 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#111827",
   },
+
+  // ✅ NEW: show project
+  projectPill: {
+    alignSelf: "flex-start",
+    backgroundColor: "#EEF2FF",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginBottom: 6,
+  },
+  projectPillText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#111827",
+  },
+
   label: {
     fontSize: 14,
     fontWeight: "500",

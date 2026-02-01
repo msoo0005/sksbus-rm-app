@@ -1,180 +1,327 @@
 // app/(app)/project-selector.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-    Pressable,
-    StyleSheet,
-    Text,
-    useWindowDimensions,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { Card, CardContent } from "../components/card";
+import { useSession } from "../ctx";
+import { useProject } from "../project-ctx"; // ✅ NEW: persisted project selection
 
-type ProjectKey = "GOKL" | "MBSJ";
+// Match your DB/API response (adjust field names if your PROJECT table differs)
+type Project = {
+  project_id: string;
+  project_name: string;
+  project_desc?: string | null;
+};
+
+// Put your API base URL in env (recommended)
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? "";
+
+async function fetchMyProjects(
+  token: string | null | undefined,
+): Promise<Project[]> {
+  if (!API_BASE_URL) throw new Error("Missing EXPO_PUBLIC_API_BASE_URL");
+
+  const res = await fetch(`${API_BASE_URL}/me/projects`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Failed to load projects (${res.status}) ${text}`);
+  }
+
+  const data = await res.json();
+  return Array.isArray(data) ? (data as Project[]) : [];
+}
 
 export default function ProjectSelectorScreen() {
   const router = useRouter();
-  const { width, height } = useWindowDimensions(); // ✅ updates on rotation
+  const { session } = useSession(); // your JWT/access token string
+  const {
+    projectId: selectedProjectId,
+    setProjectId,
+    loading: projectLoading,
+  } = useProject();
 
-  // Layout tuning (same intent as your original)
-  const cardMargin = 10;
-  const sidePadding = 10;
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
-  // You can keep 1 column always, or switch to 2 columns in landscape if you want
-  const isLandscape = width > height;
-  const numColumns = isLandscape ? 2 : 1;
-  const numRows = isLandscape ? 2 : 3;
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      const data = await fetchMyProjects(session);
+      setProjects(data);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to load projects.");
+      setProjects([]);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [session]);
 
-  // If you have a header, this helps leave space. Safe, even if header differs.
-  const headerHeight = 0.1 * height;
+  useEffect(() => {
+    setLoading(true);
+    load();
+  }, [load]);
 
-  const { cardWidth, cardHeight } = useMemo(() => {
-    const usableWidth = width - sidePadding * 2;
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return projects;
 
-    // total horizontal margin across columns + outer edges
-    const totalHorizontalMargins = (numColumns + 1) * cardMargin;
-    const computedCardWidth = usableWidth / numColumns - totalHorizontalMargins / numColumns;
-
-    // vertical: allow some breathing room for header
-    const usableHeight = height - headerHeight;
-    const totalVerticalMargins = (numRows + 1) * cardMargin;
-    const computedCardHeight = usableHeight / numRows - totalVerticalMargins / numRows;
-
-    return {
-      cardWidth: Math.max(160, Math.floor(computedCardWidth)), // clamp so it never gets tiny
-      cardHeight: Math.max(140, Math.floor(computedCardHeight)),
-    };
-  }, [width, height, numColumns, numRows, headerHeight]);
-
-  const projects: {
-    id: ProjectKey;
-    title: string;
-    description: string;
-    icon: any;
-    color: string;
-  }[] = [
-    {
-      id: "GOKL",
-      title: "GOKL",
-      description: "Select project: GOKL",
-      icon: "project-diagram",
-      color: "#111827",
-    },
-    {
-      id: "MBSJ",
-      title: "MBSJ",
-      description: "Select project: MBSJ",
-      icon: "building",
-      color: "#2563eb",
-    },
-  ];
-
-  const onSelect = (project: ProjectKey) => {
-    router.push({
-      pathname: "./fleet-manager",
-      params: { project },
+    return projects.filter((p) => {
+      const id = (p.project_id ?? "").toLowerCase();
+      const name = (p.project_name ?? "").toLowerCase();
+      const desc = (p.project_desc ?? "").toLowerCase();
+      return id.includes(q) || name.includes(q) || desc.includes(q);
     });
+  }, [projects, query]);
+
+  // ✅ NEW: persist selection, then navigate without params
+  const onSelect = useCallback(
+    async (projectId: string) => {
+      await setProjectId(projectId);
+
+      // If you want users to be able to go "back" to selector, change to router.push(...)
+      router.replace("./fleet-manager");
+    },
+    [router, setProjectId],
+  );
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    load();
   };
 
-  return (
-    <View style={[styles.gridContainer, { padding: sidePadding }]}>
-      {projects.map((p) => (
-        <Pressable key={p.id} onPress={() => onSelect(p.id)}>
-          {({ pressed }) => (
-            <View
-              style={{
-                transform: [
-                  { scale: pressed ? 0.97 : 1 },
-                  { translateY: pressed ? 2 : 0 },
-                ],
-              }}
-            >
-              <Card
-                style={[
-                  styles.cardBase,
-                  { width: cardWidth, height: cardHeight, margin: cardMargin },
-                  pressed && styles.cardPressed,
-                ]}
-              >
-                <CardContent style={styles.cardContent}>
-                  <View style={[styles.iconWrapper, { backgroundColor: p.color }]}>
-                    <FontAwesome5 name={p.icon as any} size={40} color="#fff" />
-                  </View>
+  const renderItem = ({ item }: { item: Project }) => {
+    // Simple icon heuristic (optional)
+    const iconName = item.project_id?.toUpperCase().includes("DEPOT")
+      ? "warehouse"
+      : "folder";
+    const selected = item.project_id === selectedProjectId;
 
-                  <View style={styles.textWrapper}>
-                    <Text style={styles.cardTitle}>{p.title}</Text>
-                    <Text style={styles.cardDescription}>{p.description}</Text>
-                  </View>
-                </CardContent>
-              </Card>
+    return (
+      <Pressable
+        onPress={() => onSelect(item.project_id)}
+        disabled={projectLoading}
+      >
+        {({ pressed }) => (
+          <Card
+            style={[
+              styles.projectCard,
+              selected && styles.projectCardSelected, // ✅ highlight current selection
+              pressed && styles.projectCardPressed,
+            ]}
+          >
+            <CardContent style={styles.row}>
+              <View style={styles.left}>
+                <View
+                  style={[styles.iconWrap, selected && styles.iconWrapSelected]}
+                >
+                  <FontAwesome5
+                    name={iconName as any}
+                    size={18}
+                    color="#111827"
+                  />
+                </View>
+
+                <View style={styles.textCol}>
+                  <Text style={styles.title} numberOfLines={1}>
+                    {item.project_name || item.project_id}
+                  </Text>
+                  <Text style={styles.meta} numberOfLines={1}>
+                    {item.project_id}
+                    {item.project_desc ? ` • ${item.project_desc}` : ""}
+                  </Text>
+
+                  {selected && <Text style={styles.selectedTag}>Selected</Text>}
+                </View>
+              </View>
+
+              <Text style={styles.chev}>›</Text>
+            </CardContent>
+          </Card>
+        )}
+      </Pressable>
+    );
+  };
+
+  const showLoading = loading || projectLoading;
+
+  return (
+    <View style={styles.page}>
+      <View style={styles.header}>
+        <Text style={styles.h1}>Select a Project</Text>
+        <Text style={styles.sub}>Projects assigned to your account</Text>
+
+        <View style={styles.searchBox}>
+          <Text style={styles.searchIcon}>🔎</Text>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search projects…"
+            placeholderTextColor="#9CA3AF"
+            style={styles.searchInput}
+            autoCorrect={false}
+            autoCapitalize="none"
+            editable={!projectLoading}
+          />
+        </View>
+
+        {!!error && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorTitle}>Couldn’t load projects</Text>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+      </View>
+
+      {showLoading ? (
+        <View style={styles.loading}>
+          <ActivityIndicator />
+          <Text style={styles.loadingText}>
+            {loading ? "Loading projects…" : "Restoring selection…"}
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={(item) => item.project_id}
+          renderItem={renderItem}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>No projects found</Text>
+              <Text style={styles.emptySub}>
+                {projects.length === 0
+                  ? "You’re not assigned to any projects yet."
+                  : "Try clearing your search."}
+              </Text>
             </View>
-          )}
-        </Pressable>
-      ))}
+          }
+        />
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  gridContainer: {
-    flex: 1,
+  page: { flex: 1, backgroundColor: "#fff" },
+
+  header: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 8 },
+
+  h1: { fontSize: 28, fontWeight: "800", color: "#111827" },
+  sub: { marginTop: 6, fontSize: 14, fontWeight: "600", color: "#6B7280" },
+
+  searchBox: {
+    marginTop: 12,
     flexDirection: "row",
-    flexWrap: "wrap",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#F9FAFB",
+  },
+  searchIcon: { marginRight: 8, fontSize: 14 },
+  searchInput: { flex: 1, fontSize: 14, color: "#111827" },
+
+  errorBox: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    backgroundColor: "#FFF1F2",
+    borderRadius: 14,
+    padding: 12,
+  },
+  errorTitle: { fontWeight: "800", color: "#991B1B" },
+  errorText: { marginTop: 4, fontWeight: "600", color: "#7F1D1D" },
+
+  loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
+  loadingText: { fontSize: 14, fontWeight: "700", color: "#6B7280" },
+
+  listContent: { paddingHorizontal: 18, paddingBottom: 18, gap: 10 },
+
+  projectCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#FFFFFF",
+  },
+  projectCardPressed: { opacity: 0.85, transform: [{ scale: 0.995 }] },
+
+  // ✅ NEW: selected styling
+  projectCardSelected: {
+    borderColor: "#111827",
+  },
+  iconWrapSelected: {
+    borderColor: "#111827",
+  },
+
+  row: {
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  left: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
+
+  iconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#F9FAFB",
+    alignItems: "center",
     justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#fff",
   },
 
-  cardBase: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 15,
+  textCol: { flex: 1 },
 
-    // Android shadow
-    elevation: 6,
+  title: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  meta: { marginTop: 3, fontSize: 12, fontWeight: "700", color: "#6B7280" },
 
-    // iOS shadow
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 1,
+  selectedTag: {
+    marginTop: 6,
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#111827",
+    color: "#111827",
+    fontSize: 12,
+    fontWeight: "800",
   },
 
-  cardPressed: {
-    elevation: 2,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15,
-    shadowRadius: 2,
-  },
+  chev: { fontSize: 22, fontWeight: "900", color: "#9CA3AF", marginLeft: 8 },
 
-  cardContent: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 24,
-    gap: 16,
-  },
-
-  iconWrapper: {
-    padding: 16,
-    borderRadius: 24,
-    marginBottom: 8,
-  },
-
-  textWrapper: {
-    alignItems: "center",
-  },
-
-  cardTitle: {
-    fontWeight: "bold",
-    marginBottom: 5,
-    textAlign: "center",
-    fontSize: 18,
-  },
-
-  cardDescription: {
-    fontSize: 14,
-    color: "#6b7280",
-    textAlign: "center",
-  },
+  empty: { paddingTop: 30, alignItems: "center" },
+  emptyTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  emptySub: { marginTop: 6, fontSize: 13, fontWeight: "600", color: "#6B7280" },
 });

@@ -1,12 +1,15 @@
 import { Stack } from "expo-router";
 import { AuthProvider, useSession } from "./ctx";
+import { ProjectProvider } from "./project-ctx";
 import { SplashScreenController } from "./splash";
 
 export default function Root() {
   return (
     <AuthProvider>
-      <SplashScreenController />
-      <RootNavigator />
+      <ProjectProvider>
+        <SplashScreenController />
+        <RootNavigator />
+      </ProjectProvider>
     </AuthProvider>
   );
 }
