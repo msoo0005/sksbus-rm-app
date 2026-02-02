@@ -1,6 +1,19 @@
 // api.ts
 import * as SecureStore from "expo-secure-store";
 
+export type ReportMedia = {
+  media_id: number;
+  report_id: number;
+  media_type: "image" | "video";
+  mime_type: string;
+  s3_bucket: string;
+  s3_key: string;
+  size_bytes?: number | null;
+  uploaded_at?: string | null;
+
+  viewUrl?: string; // ✅ add this
+};
+
 const RAW_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 if (!RAW_BASE_URL) throw new Error("Missing EXPO_PUBLIC_API_BASE_URL");
 

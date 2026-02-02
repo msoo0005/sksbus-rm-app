@@ -13,7 +13,7 @@ import {
 import DropDownPicker from "react-native-dropdown-picker";
 import { api } from "../api/client";
 import ImagePickerField, { LocalMedia } from "../components/ImagePicker"; // ✅ local picker: returns { localUri, mime_type }
-import MapSelector from "../components/map";
+import MapSelector, { LocationValue } from "../components/map";
 import { useProject } from "../project-ctx"; // ✅ NEW
 
 type ReportType = "problem" | "repair" | "accident";
@@ -54,10 +54,8 @@ export default function ReportFormScreen() {
   // ✅ NEW: selected project (persisted)
   const { projectId, loading: projectLoading } = useProject();
 
-  const [mapLocation, setMapLocation] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
+  // ✅ UPDATED: include optional address
+  const [mapLocation, setMapLocation] = useState<LocationValue | null>(null);
   const [locationDesc, setLocationDesc] = useState("");
 
   // Vehicles dropdown
@@ -114,7 +112,9 @@ export default function ReportFormScreen() {
             const model = b?.bus_model ?? b?.model ?? b?.busModel;
 
             return {
-              label: `${String(id)}${route ? ` • ${route}` : ""}${model ? ` • ${model}` : ""}`,
+              label: `${String(id)}${route ? ` • ${route}` : ""}${
+                model ? ` • ${model}` : ""
+              }`,
               value: String(id),
             };
           })
@@ -142,10 +142,9 @@ export default function ReportFormScreen() {
     };
   }, [projectId, projectLoading]);
 
-  // Optional: prefill location description once if MapSelector provides address
+  // ✅ Prefill location description once if MapSelector provides address
   useEffect(() => {
-    const anyLoc = mapLocation as any;
-    const addr = anyLoc?.address as string | undefined;
+    const addr = mapLocation?.address;
     if (addr && !locationDesc.trim()) setLocationDesc(addr);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapLocation]);
@@ -292,7 +291,7 @@ export default function ReportFormScreen() {
           style={styles.dropdown}
           dropDownContainerStyle={styles.dropdownContainer}
           zIndex={3000}
-          disabled={submitting || projectLoading || !projectId} // ✅ NEW
+          disabled={submitting || projectLoading || !projectId}
         />
       </View>
 
@@ -376,7 +375,7 @@ export default function ReportFormScreen() {
             (!projectId || projectLoading) && { opacity: 0.6 },
           ]}
           onPress={onSubmit}
-          disabled={submitting || projectLoading || !projectId} // ✅ NEW
+          disabled={submitting || projectLoading || !projectId}
         >
           <Text style={styles.submitText}>{submitLabel}</Text>
         </TouchableOpacity>
@@ -413,7 +412,6 @@ const styles = StyleSheet.create({
     color: "#111827",
   },
 
-  // ✅ NEW: show project
   projectPill: {
     alignSelf: "flex-start",
     backgroundColor: "#EEF2FF",

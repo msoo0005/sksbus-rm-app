@@ -1,144 +1,216 @@
+// app/(app)/technician/index.tsx
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
-import { ScrollView } from "react-native";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  View,
+} from "react-native";
 
 import ConfirmActionModal from "../../components/ConfirmActionModal";
-import JobDetailsModal from "../../components/JobDetailsModal";
+import JobDetailsModal from "../../components/JobDetailsModal"; // optional (kept)
 import ReportCard from "../../components/ReportCard";
 import SegmentedTabs from "../../components/SegmentedTabs";
 import { useSession } from "../../ctx";
-import { Report } from "../../types/report";
 
 type Tab = "available" | "myJobs" | "completed";
 
-// -------------------- MOCK DATA --------------------
-const INITIAL_TECH_REPORTS: Report[] = [
-  {
-    id: 201,
-    type: "repair",
-    severity: "medium",
-    vehicle: "BUS205",
-    location: "Depot - Bay 2",
-    description: "Scheduled service: oil + filter replacement, general inspection.",
-    date: "12/24/2025, 8:30 AM",
-    status: "open",
-    reportedBy: "Driver B",
-    // unassigned -> shows in Available
-  },
-  {
-    id: 202,
-    type: "problem",
-    severity: "high",
-    vehicle: "BUS101",
-    location: "Depot - Bay 5",
-    description: "Battery voltage low, intermittent starting issue.",
-    date: "12/24/2025, 9:05 AM",
-    status: "open",
-    reportedBy: "Driver A",
-    assigned: "Technician A",
-    // assigned -> My Jobs (if you are Technician A)
-  },
-  {
-    id: 203,
-    type: "accident",
-    severity: "critical",
-    vehicle: "BUS333",
-    location: "Depot - Body Shop",
-    description: "Rear bumper replacement required after minor collision.",
-    date: "12/23/2025, 5:40 PM",
-    status: "closed",
-    reportedBy: "Driver C",
-    assigned: "Technician A",
-    // closed -> Completed (if you are Technician A)
-  },
-];
+/**
+ * Shape based on your Lambda listJobs() SELECT.
+ * Add/remove fields if your SQL differs.
+ */
+type JobListItem = {
+  job_id: number;
+  job_desc: string | null;
+  job_status: string; // "open" | "closed" etc
+  technician_user_id: number | null;
+
+  job_created_at?: string | null;
+  job_accepted_at?: string | null;
+  job_updated_at?: string | null;
+  job_completed_at?: string | null;
+
+  // joined report bits:
+  report_id: number | null;
+  report_type: string | null;
+  report_priority: string | null;
+  bus_id: string | null;
+  reporter_name: string | null;
+
+  // if you add these later, you can map them too:
+  report_location?: string | null;
+};
+
+function getBearer(session: any): string | null {
+  const token =
+    typeof session === "string"
+      ? session
+      : (session?.token ?? session?.idToken ?? session?.accessToken ?? null);
+
+  if (!token) return null;
+  return token.startsWith("Bearer ") ? token : `Bearer ${token}`;
+}
+
+function mergeHeaders(base?: HeadersInit, extra?: Record<string, string>) {
+  const h = new Headers(base);
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v != null && v !== "") h.set(k, v);
+    }
+  }
+  return h;
+}
+
+const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || "";
+
+async function apiFetch<T = any>(
+  path: string,
+  opts: RequestInit = {},
+  session?: any,
+): Promise<T> {
+  const bearer = getBearer(session);
+
+  const headers = mergeHeaders(opts.headers, {
+    "Content-Type": "application/json",
+    ...(bearer ? { Authorization: bearer } : {}),
+  });
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...opts,
+    headers,
+  });
+
+  const text = await res.text();
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  if (!res.ok)
+    throw new Error(data?.message || `Request failed (${res.status})`);
+  return data as T;
+}
 
 export default function TechnicianScreen() {
   const router = useRouter();
-  const { dbUser } = useSession() as any;
-  const TECH_NAME = dbUser?.user_name ?? "Technician A";
+  const { session, dbUser } = useSession() as any;
+
+  const myUserId = dbUser?.user_id ? Number(dbUser.user_id) : null;
 
   const [tab, setTab] = useState<Tab>("available");
-  const [reports, setReports] = useState<Report[]>(INITIAL_TECH_REPORTS);
+  const [loading, setLoading] = useState(false);
+  const [jobs, setJobs] = useState<JobListItem[]>([]);
 
-  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [selectedJob, setSelectedJob] = useState<JobListItem | null>(null);
   const [detailsVisible, setDetailsVisible] = useState(false);
 
-  const [acceptTarget, setAcceptTarget] = useState<Report | null>(null);
+  const [acceptTarget, setAcceptTarget] = useState<JobListItem | null>(null);
   const [acceptVisible, setAcceptVisible] = useState(false);
 
-  const availableReports = useMemo(
-    () => reports.filter((r) => r.status === "open" && !r.assigned),
-    [reports]
+  const fetchJobs = async () => {
+    setLoading(true);
+    try {
+      const rows = await apiFetch<JobListItem[]>(
+        `/jobs`,
+        { method: "GET" },
+        session,
+      );
+      setJobs(Array.isArray(rows) ? rows : []);
+    } catch (e: any) {
+      Alert.alert("Failed to load jobs", e?.message ?? "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const availableJobs = useMemo(
+    () => jobs.filter((j) => j.job_status === "open" && !j.technician_user_id),
+    [jobs],
   );
-  const myOpenReports = useMemo(
-    () => reports.filter((r) => r.status === "open" && r.assigned === TECH_NAME),
-    [reports, TECH_NAME]
-  );
-  const myClosedReports = useMemo(
-    () => reports.filter((r) => r.status === "closed" && r.assigned === TECH_NAME),
-    [reports, TECH_NAME]
-  );
+
+  const myOpenJobs = useMemo(() => {
+    if (!myUserId) return [];
+    return jobs.filter(
+      (j) => j.job_status === "open" && j.technician_user_id === myUserId,
+    );
+  }, [jobs, myUserId]);
+
+  const myClosedJobs = useMemo(() => {
+    if (!myUserId) return [];
+    return jobs.filter(
+      (j) => j.job_status === "closed" && j.technician_user_id === myUserId,
+    );
+  }, [jobs, myUserId]);
 
   const tabCounts = useMemo(
     () => ({
-      available: availableReports.length,
-      myJobs: myOpenReports.length,
-      completed: myClosedReports.length,
+      available: availableJobs.length,
+      myJobs: myOpenJobs.length,
+      completed: myClosedJobs.length,
     }),
-    [availableReports.length, myOpenReports.length, myClosedReports.length]
+    [availableJobs.length, myOpenJobs.length, myClosedJobs.length],
   );
 
   const filtered = useMemo(() => {
-    if (tab === "available") return availableReports;
-    if (tab === "myJobs") return myOpenReports;
-    return myClosedReports;
-  }, [tab, availableReports, myOpenReports, myClosedReports]);
+    if (tab === "available") return availableJobs;
+    if (tab === "myJobs") return myOpenJobs;
+    return myClosedJobs;
+  }, [tab, availableJobs, myOpenJobs, myClosedJobs]);
 
-  const requestAccept = (report: Report) => {
-    setAcceptTarget(report);
+  const requestAccept = (job: JobListItem) => {
+    setAcceptTarget(job);
     setAcceptVisible(true);
   };
 
-  const confirmAccept = () => {
+  const confirmAccept = async () => {
     if (!acceptTarget) return;
 
-    setReports((prev) =>
-      prev.map((r) =>
-        r.id === acceptTarget.id ? { ...r, assigned: TECH_NAME } : r
-      )
-    );
-
-    setAcceptVisible(false);
-    setAcceptTarget(null);
-
-    // (Optional) switch them straight to My Jobs
-    setTab("myJobs");
+    try {
+      await apiFetch(
+        `/jobs/${acceptTarget.job_id}/assign`,
+        { method: "PATCH" },
+        session,
+      );
+      setAcceptVisible(false);
+      setAcceptTarget(null);
+      setTab("myJobs");
+      await fetchJobs();
+    } catch (e: any) {
+      Alert.alert("Accept failed", e?.message ?? "Unknown error");
+    }
   };
 
-  const openDetails = (report: Report) => {
-    // keep your nice bottom-sheet modal too
-    setSelectedReport(report);
+  const openDetails = (job: JobListItem) => {
+    setSelectedJob(job);
     setDetailsVisible(true);
   };
 
-  const goToJobScreen = (report: Report) => {
-    // mode:
-    // - available => view (read-only)
-    // - myJobs => edit
-    // - completed => view
-    const mode =
-      tab === "myJobs" ? "edit" : "view";
+  const goToJobScreen = (job: JobListItem) => {
+    const mode = tab === "myJobs" ? "edit" : "view";
 
     router.push({
-      pathname: "./job/[id]",
-      params: { id: String(report.id), mode },
+      pathname: "/technician/job/[id]",
+      params: { id: String(job.job_id), mode },
     });
   };
 
   return (
     <>
-      <ScrollView style={{ flex: 1, backgroundColor: "#f9f9f9" }}>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: "#f9f9f9" }}
+        refreshControl={
+          <RefreshControl refreshing={loading} onRefresh={fetchJobs} />
+        }
+      >
         <SegmentedTabs<Tab>
           value={tab}
           onChange={setTab}
@@ -149,35 +221,72 @@ export default function TechnicianScreen() {
           ]}
         />
 
-        {filtered.map((report) => (
-          <ReportCard
-            key={report.id}
-            report={report}
-            currentTech={TECH_NAME}
-            onViewDetails={(r) => openDetails(r)}
-            onAccept={tab === "available" ? requestAccept : undefined}
-          />
-        ))}
+        {filtered.map((job) => {
+          const reportLike: any = {
+            id: job.report_id ?? job.job_id,
+            type: job.report_type ?? "repair",
+            severity: job.report_priority ?? "medium",
+            vehicle: job.bus_id ?? "—",
+            location: job.report_location ?? "—",
+            description: job.job_desc ?? "—",
+            date: job.job_created_at ?? "",
+            status: job.job_status === "closed" ? "closed" : "open",
+            reportedBy: job.reporter_name ?? "—",
+            assigned: job.technician_user_id ? "assigned" : undefined,
+          };
+
+          return (
+            <Pressable key={job.job_id} onPress={() => goToJobScreen(job)}>
+              {/* 
+                IMPORTANT:
+                ReportCard has inner buttons (View Details / Accept).
+                To stop the outer Pressable firing when those are tapped,
+                we wrap ReportCard with a View that cancels the parent press
+                when any child press happens.
+              */}
+              <View
+                // This prevents parent press on some RN versions by capturing touches.
+                // Keeps buttons working normally.
+                pointerEvents="box-none"
+              >
+                <ReportCard
+                  report={reportLike}
+                  currentTech={"(api)"}
+                  onViewDetails={() => goToJobScreen(job)}
+                  onAccept={
+                    tab === "available" ? () => requestAccept(job) : undefined
+                  }
+                />
+              </View>
+            </Pressable>
+          );
+        })}
       </ScrollView>
 
       <JobDetailsModal
         visible={detailsVisible}
-        report={selectedReport}
+        report={
+          selectedJob
+            ? ({
+                id: selectedJob.report_id ?? selectedJob.job_id,
+                type: selectedJob.report_type ?? "repair",
+                severity: selectedJob.report_priority ?? "medium",
+                vehicle: selectedJob.bus_id ?? "—",
+                location: selectedJob.report_location ?? "—",
+                description: selectedJob.job_desc ?? "—",
+                date: selectedJob.job_created_at ?? "",
+                status: selectedJob.job_status === "closed" ? "closed" : "open",
+                reportedBy: selectedJob.reporter_name ?? "—",
+              } as any)
+            : null
+        }
         onClose={() => setDetailsVisible(false)}
       />
-
-      {/* Simple “go to job screen” shortcut: tap modal close then navigate if you want.
-          If you want a button inside the modal, tell me and I’ll add it cleanly. */}
-      {selectedReport && detailsVisible ? (
-        // Lightweight pattern: when modal closes, user can tap "View Details" again,
-        // but better is to add a button in the modal. Keeping your current modal unchanged for now.
-        null
-      ) : null}
 
       <ConfirmActionModal
         visible={acceptVisible}
         title="Accept Job"
-        message={`Accept this job and assign it to ${TECH_NAME}?`}
+        message="Accept this job and assign it to you?"
         confirmLabel="Accept Job"
         confirmColor="#4CAF50"
         onCancel={() => setAcceptVisible(false)}
