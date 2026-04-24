@@ -1,13 +1,18 @@
 // FleetManagerScreen.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
-import { useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { Card, CardContent } from '../components/card';
-
+import { useRouter } from "expo-router";
+import React, { useMemo } from "react";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import { Card, CardContent } from "../components/card";
 
 // ✅ define a strict type (optional but recommended)
-type ReportType = 'problem' | 'repair' | 'accident';
+type ReportType = "problem" | "repair" | "accident";
 
 export default function FleetManagerScreen() {
   const router = useRouter();
@@ -44,41 +49,51 @@ export default function FleetManagerScreen() {
       color: "#f97316",
       formType: "accident",
     },
+    {
+      id: "my-report-history",
+      title: "My Report History",
+      description: "View reports you’ve submitted",
+      icon: "history",
+      color: "#111827",
+      // placeholder (not used for this card)
+      formType: "problem",
+    },
   ];
 
   const { width, height } = useWindowDimensions();
-  
-    const layout = useMemo(() => {
-      const cardMargin = 10;
-      const sidePadding = 10;
-  
-      // Example: 2 columns in landscape, 1 column in portrait (tweak to taste)
-      const isLandscape = width > height;
-      const numColumns = isLandscape ? 1 : 1;
-  
-      // Compute available width INSIDE the padded container
-      const containerWidth = width - sidePadding * 2;
-  
-      const cardWidth =
-        (containerWidth - cardMargin * (numColumns * 2)) / numColumns;
-  
-      // Height can be a ratio (more stable than “numRows” math)
-      const cardHeight = isLandscape ? 270 : 190;
-  
-      return { cardWidth, cardHeight, cardMargin };
-    }, [width, height]);
+
+  const layout = useMemo(() => {
+    const cardMargin = 10;
+    const sidePadding = 10;
+
+    const isLandscape = width > height;
+    const numColumns = isLandscape ? 1 : 1;
+
+    const containerWidth = width - sidePadding * 2;
+
+    const cardWidth =
+      (containerWidth - cardMargin * (numColumns * 2)) / numColumns;
+    const cardHeight = isLandscape ? 270 : 190;
+
+    return { cardWidth, cardHeight, cardMargin };
+  }, [width, height]);
 
   return (
     <View style={styles.gridContainer}>
       {report_type.map((report) => (
         <Pressable
           key={report.id}
-          onPress={() =>
+          onPress={() => {
+            if (report.id === "my-report-history") {
+              router.push("./fleet-manager-history");
+              return;
+            }
+
             router.push({
               pathname: "./form",
               params: { type: report.formType }, // ✅ pass it here
-            })
-          }
+            });
+          }}
         >
           {({ pressed }) => (
             <View
@@ -89,17 +104,35 @@ export default function FleetManagerScreen() {
                 ],
               }}
             >
-              <Card style={[styles.card, {
-                  width: layout.cardWidth,
-                  margin: layout.cardMargin,
-                 },   pressed && styles.cardPressed]}>
+              <Card
+                style={[
+                  styles.card,
+                  {
+                    width: layout.cardWidth,
+                    margin: layout.cardMargin,
+                  },
+                  pressed && styles.cardPressed,
+                ]}
+              >
                 <CardContent style={styles.cardContent}>
-                  <View style={[styles.iconWrapper, { backgroundColor: report.color }]}>
-                    <FontAwesome5 name={report.icon as any} size={40} color="#fff" />
+                  <View
+                    style={[
+                      styles.iconWrapper,
+                      { backgroundColor: report.color },
+                    ]}
+                  >
+                    <FontAwesome5
+                      name={report.icon as any}
+                      size={40}
+                      color="#fff"
+                    />
                   </View>
+
                   <View style={styles.textWrapper}>
                     <Text style={styles.cardTitle}>{report.title}</Text>
-                    <Text style={styles.cardDescription}>{report.description}</Text>
+                    <Text style={styles.cardDescription}>
+                      {report.description}
+                    </Text>
                   </View>
                 </CardContent>
               </Card>
@@ -113,22 +146,22 @@ export default function FleetManagerScreen() {
 
 const styles = StyleSheet.create({
   gridContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     padding: 10,
   },
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     borderRadius: 12,
     padding: 15,
     elevation: 6,
-    shadowColor: '#000',
+    shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 1,
   },
   cardTitle: {
-    fontWeight: 'bold',
+    fontWeight: "bold",
     marginBottom: 5,
     textAlign: "center",
   },

@@ -22,9 +22,17 @@ export default function ReportCard({
 }: ReportCardProps) {
   const isDeclined = report.audit?.action === "declined";
 
-  const showAccept = !!(onAccept && report.status === "open" && !report.assigned);
+  const showAccept = !!(
+    onAccept &&
+    report.status === "open" &&
+    !report.assigned
+  );
 
-  const showManagerActions = !!(onApprove && onDecline && report.status === "pending");
+  const showManagerActions = !!(
+    onApprove &&
+    onDecline &&
+    report.status === "pending"
+  );
 
   const declineReason = report.audit?.reason?.trim();
 
@@ -34,26 +42,27 @@ export default function ReportCard({
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>Report #{report.id}</Text>
-
+          <Text style={styles.date}>{report.date}</Text>
           <View style={styles.badges}>
             <StatusBadge type={report.type} />
             <StatusBadge type={report.severity} />
             {isDeclined && <StatusBadge type="critical" label="Declined" />}
           </View>
         </View>
-
-        <Text style={styles.date}>{report.date}</Text>
       </View>
 
       {/* Meta */}
       <Text style={styles.meta}>Vehicle: {report.vehicle}</Text>
       <Text style={styles.meta}>Location: {report.location}</Text>
 
-      {!!report.reportedBy && <Text style={styles.meta}>Reported by: {report.reportedBy}</Text>}
+      {!!report.reportedBy && (
+        <Text style={styles.meta}>Reported by: {report.reportedBy}</Text>
+      )}
 
       {!!report.assigned && (
         <Text style={styles.meta}>
-          Assigned to: {report.assigned === currentTech ? "You" : report.assigned}
+          Assigned to:{" "}
+          {report.assigned === currentTech ? "You" : report.assigned}
         </Text>
       )}
 
@@ -70,13 +79,19 @@ export default function ReportCard({
 
       {/* Actions */}
       <View style={styles.actionRow}>
-        <Pressable style={styles.button} onPress={() => onViewDetails?.(report)}>
+        <Pressable
+          style={styles.button}
+          onPress={() => onViewDetails?.(report)}
+        >
           <Eye size={16} color="#111827" />
           <Text style={styles.buttonText}>View Details</Text>
         </Pressable>
 
         {showAccept && (
-          <Pressable style={[styles.button, styles.acceptButton]} onPress={() => onAccept?.(report)}>
+          <Pressable
+            style={[styles.button, styles.acceptButton]}
+            onPress={() => onAccept?.(report)}
+          >
             <Text style={styles.whiteText}>Accept Job</Text>
           </Pressable>
         )}
@@ -84,11 +99,17 @@ export default function ReportCard({
 
       {showManagerActions && (
         <View style={styles.managerRow}>
-          <Pressable style={[styles.button, styles.approveButton]} onPress={() => onApprove?.(report)}>
+          <Pressable
+            style={[styles.button, styles.approveButton]}
+            onPress={() => onApprove?.(report)}
+          >
             <Text style={styles.whiteText}>Approve</Text>
           </Pressable>
 
-          <Pressable style={[styles.button, styles.declineButton]} onPress={() => onDecline?.(report)}>
+          <Pressable
+            style={[styles.button, styles.declineButton]}
+            onPress={() => onDecline?.(report)}
+          >
             <Text style={styles.whiteText}>Decline</Text>
           </Pressable>
         </View>
@@ -127,7 +148,7 @@ const styles = StyleSheet.create({
   },
 
   date: {
-    fontSize: 12,
+    fontSize: 16,
     color: "#666",
     marginTop: 2,
   },

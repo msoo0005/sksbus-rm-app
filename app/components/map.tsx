@@ -1,4 +1,3 @@
-// components/map.tsx
 import * as Location from "expo-location";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -40,7 +39,6 @@ export default function MapSelector({
     longitudeDelta: 0.01,
   });
 
-  // Search state
   const [searchText, setSearchText] = useState("");
   const [searching, setSearching] = useState(false);
 
@@ -53,7 +51,6 @@ export default function MapSelector({
     })();
   }, []);
 
-  // Keep map region synced with selected value
   useEffect(() => {
     if (!value) return;
     setRegion((r) => ({
@@ -72,17 +69,23 @@ export default function MapSelector({
 
       if (results.length > 0) {
         const p = results[0];
-
-        const parts = [
+        const rawParts = [
           p.name,
           p.street,
           p.city,
           p.region,
           p.postalCode,
           p.country,
-        ].filter(Boolean);
+        ].filter(Boolean) as string[];
 
-        return parts.join(", ");
+        const cleanParts = rawParts.filter(
+          (part, index, self) =>
+            self.findIndex(
+              (x) => x.trim().toLowerCase() === part.trim().toLowerCase(),
+            ) === index,
+        );
+
+        return cleanParts.join(", ");
       }
     } catch {
       // ignore
@@ -108,7 +111,6 @@ export default function MapSelector({
     );
   };
 
-  // Forward geocode search -> move pin + map
   const searchAddress = async () => {
     const q = searchText.trim();
     if (!q) return;
@@ -141,9 +143,7 @@ export default function MapSelector({
     const { latitude, longitude } = e.nativeEvent.coordinate;
     const address = await reverseGeocode(latitude, longitude);
 
-    // nice UX: snap camera to the tapped location too
     await moveTo(latitude, longitude);
-
     onChange({ latitude, longitude, address });
   };
 
@@ -174,7 +174,6 @@ export default function MapSelector({
         {label} {required && <Text style={styles.required}>*</Text>}
       </Text>
 
-      {/* Search row */}
       <View style={styles.searchRow}>
         <TextInput
           value={searchText}
@@ -209,10 +208,10 @@ export default function MapSelector({
         style={styles.map}
         region={region}
         onPress={handlePress}
-        scrollEnabled={false} // ✅ IMPORTANT: stops MapView stealing scroll
-        zoomEnabled={false} // optional
-        rotateEnabled={false} // optional
-        pitchEnabled={false} // optional
+        scrollEnabled={false}
+        zoomEnabled={false}
+        rotateEnabled={false}
+        pitchEnabled={false}
       >
         {value && (
           <Marker
@@ -223,7 +222,6 @@ export default function MapSelector({
               const address = await reverseGeocode(latitude, longitude);
 
               await moveTo(latitude, longitude);
-
               onChange({ latitude, longitude, address });
             }}
           />
@@ -243,7 +241,12 @@ export default function MapSelector({
 
 const styles = StyleSheet.create({
   container: { marginTop: 16 },
-  label: { fontSize: 14, fontWeight: "500", marginBottom: 6, color: "#111827" },
+  label: {
+    fontSize: 14,
+    fontWeight: "500",
+    marginBottom: 6,
+    color: "#111827",
+  },
   required: { color: "#EF4444" },
 
   searchRow: {

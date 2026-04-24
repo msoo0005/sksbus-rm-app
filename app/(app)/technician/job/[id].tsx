@@ -1,6 +1,6 @@
 // app/(app)/technician/job/[id].tsx
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
@@ -19,7 +19,6 @@ import ImagePickerField from "../../../components/ImagePicker";
 import ImageViewerOverlay from "../../../components/ImageViewerOverlay";
 import type { StatusType } from "../../../components/StatusBadge";
 import StatusBadge from "../../../components/StatusBadge";
-import { useSession } from "../../../ctx";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -29,6 +28,7 @@ type JobListItem = {
   job_status: string;
   technician_user_id: number | null;
   job_created_at?: string | null;
+  job_odometer?: number | null;
 
   report_id: number | null;
   report_type: string | null;
@@ -56,62 +56,17 @@ type JobTask = {
   task_desc: string | null;
   task_status: TaskStatus;
   task_order: number;
+  completed_at?: string | null;
 };
 
-// ---------- API helpers (kept because tasks/jobs endpoints aren't in api.ts yet) ----------
-function getBearer(session: any): string | null {
-  const token =
-    typeof session === "string"
-      ? session
-      : (session?.token ?? session?.idToken ?? session?.accessToken ?? null);
+type PartRow = {
+  part_id: number;
+  part_name: string;
+  part_code: string;
+  part_cost: number | null;
+  part_stock: number | null;
+};
 
-  if (!token) return null;
-  return token.startsWith("Bearer ") ? token : `Bearer ${token}`;
-}
-
-function mergeHeaders(base?: HeadersInit, extra?: Record<string, string>) {
-  const h = new Headers(base);
-  if (extra) {
-    for (const [k, v] of Object.entries(extra)) {
-      if (v != null && v !== "") h.set(k, v);
-    }
-  }
-  return h;
-}
-
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || "";
-
-async function apiFetch<T = any>(
-  path: string,
-  opts: RequestInit = {},
-  session?: any,
-): Promise<T> {
-  const bearer = getBearer(session);
-
-  const headers = mergeHeaders(opts.headers, {
-    "Content-Type": "application/json",
-    ...(bearer ? { Authorization: bearer } : {}),
-  });
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers,
-  });
-
-  const text = await res.text();
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-
-  if (!res.ok)
-    throw new Error(data?.message || `Request failed (${res.status})`);
-  return data as T;
-}
-
-// ---------- STATUS HELPERS ----------
 function toLower(x: unknown) {
   return String(x ?? "")
     .trim()
@@ -131,6 +86,9 @@ function normalisePriority(x: unknown): StatusType {
   return "medium";
 }
 
+const isNonEmptyString = (x: unknown): x is string =>
+  typeof x === "string" && x.trim().length > 0;
+
 function guessMimeFromUrl(uri: string) {
   const lower = uri.toLowerCase();
   if (lower.endsWith(".png")) return "image/png";
@@ -139,12 +97,15 @@ function guessMimeFromUrl(uri: string) {
   return "image/jpeg";
 }
 
-const isNonEmptyString = (x: unknown): x is string =>
-  typeof x === "string" && x.trim().length > 0;
+function formatDateTime(iso?: string | null) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleString();
+}
 
 export default function TechnicianJobDetailsScreen() {
   const router = useRouter();
-  const { session } = useSession() as any;
 
   const { id, mode } = useLocalSearchParams<{
     id: string;
@@ -154,40 +115,88 @@ export default function TechnicianJobDetailsScreen() {
   const canEdit = mode !== "view";
   const jobId = useMemo(() => Number(id), [id]);
 
+  const scrollRef = useRef<ScrollView>(null);
+  const odometerInputRef = useRef<TextInput>(null);
+
   const [loading, setLoading] = useState(false);
 
   const [jobSummary, setJobSummary] = useState<JobListItem | null>(null);
   const [report, setReport] = useState<ReportDto | null>(null);
   const [tasks, setTasks] = useState<JobTask[]>([]);
 
-  // Add task form
-  const [newTaskName, setNewTaskName] = useState("");
-  const [newTaskDesc, setNewTaskDesc] = useState("");
+  // Completed task form
+  const [issue, setIssue] = useState("");
+  const [solution, setSolution] = useState("");
+  const [savingTask, setSavingTask] = useState(false);
+
+  // Parts catalog
+  const [parts, setParts] = useState<PartRow[]>([]);
+  const [loadingParts, setLoadingParts] = useState(false);
+
+  // Selected parts => qty
+  const [selectedParts, setSelectedParts] = useState<Record<number, number>>(
+    {},
+  );
+
+  // Dropdown state
+  const [partsOpen, setPartsOpen] = useState(false);
+  const [partsSearch, setPartsSearch] = useState("");
+
+  // Initial odometer gate
+  const [odometerInput, setOdometerInput] = useState("");
+  const [savingOdometer, setSavingOdometer] = useState(false);
 
   // After photos (local)
   const [afterMedia, setAfterMedia] = useState<LocalMedia[]>([]);
 
-  // ✅ Report photos (remote)
+  // Report photos (remote)
   const [reportPhotoUrls, setReportPhotoUrls] = useState<string[]>([]);
   const [loadingReportPhotos, setLoadingReportPhotos] = useState(false);
 
-  // ✅ viewer overlay state
+  // viewer overlay state
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
 
-  // For overlay component
   const viewerUrls = useMemo(
     () => reportPhotoUrls.map((u) => ({ url: u })),
     [reportPhotoUrls],
   );
 
-  // Convert remote URLs to LocalMedia (used only if you want ImagePickerField style in future)
-  const reportPhotoMedia: LocalMedia[] = useMemo(() => {
-    return reportPhotoUrls.map((u) => ({
-      localUri: u,
-      mime_type: guessMimeFromUrl(u),
-    }));
-  }, [reportPhotoUrls]);
+  const hasOdometer = useMemo(() => {
+    const v = jobSummary?.job_odometer;
+    return typeof v === "number" && Number.isFinite(v);
+  }, [jobSummary?.job_odometer]);
+
+  const jobLocked = canEdit && !hasOdometer;
+
+  const scrollToOdometerAndFocus = () => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+    setTimeout(() => odometerInputRef.current?.focus(), 300);
+  };
+
+  const handleOdometerRequired = () => {
+    Alert.alert(
+      "Odometer required",
+      "Please enter the initial odometer reading before adding completed tasks, uploading after photos, or completing the job.",
+    );
+    scrollToOdometerAndFocus();
+  };
+
+  const handleApiError = (e: unknown, fallbackTitle = "Error") => {
+    const err = e as { code?: string; message?: string };
+    if (err?.code === "ODOMETER_REQUIRED") {
+      handleOdometerRequired();
+      return;
+    }
+    if (err?.code === "JOB_NOT_ACCEPTED") {
+      Alert.alert(
+        "Job not accepted",
+        "Please accept/claim the job before updating it.",
+      );
+      return;
+    }
+    Alert.alert(fallbackTitle, err?.message ?? "Unknown error");
+  };
 
   const openViewer = (index: number) => {
     if (!reportPhotoUrls.length) return;
@@ -202,20 +211,27 @@ export default function TechnicianJobDetailsScreen() {
     setLoadingReportPhotos(true);
     try {
       const media = (await api.listReportMedia(reportId)) as ReportMedia[];
-
-      console.log("[report media raw]", media);
-
-      // ✅ Your API returns signed URLs as viewUrl
       const urls = (Array.isArray(media) ? media : [])
         .map((m) => m?.viewUrl ?? null)
         .filter(isNonEmptyString);
-
       setReportPhotoUrls(Array.from(new Set(urls)));
-    } catch (e: any) {
-      console.log("[loadReportPhotos error]", e);
+    } catch {
       setReportPhotoUrls([]);
     } finally {
       setLoadingReportPhotos(false);
+    }
+  };
+
+  const loadParts = async () => {
+    setLoadingParts(true);
+    try {
+      const rows = (await api.parts({ limit: 200 })) as PartRow[];
+      setParts(Array.isArray(rows) ? rows : []);
+    } catch (e: unknown) {
+      handleApiError(e, "Failed to load parts");
+      setParts([]);
+    } finally {
+      setLoadingParts(false);
     }
   };
 
@@ -224,29 +240,20 @@ export default function TechnicianJobDetailsScreen() {
 
     setLoading(true);
     try {
-      // 1) Find job summary (includes report_id)
-      const allJobs = await apiFetch<JobListItem[]>(
-        `/jobs`,
-        { method: "GET" },
-        session,
-      );
-
+      const allJobs = (await api.listJobs()) as JobListItem[];
       const found = (Array.isArray(allJobs) ? allJobs : []).find(
         (j) => Number(j.job_id) === jobId,
       );
-
       setJobSummary(found ?? null);
 
-      // 2) Fetch report details (if linked)
-      if (found?.report_id) {
-        const r = await apiFetch<ReportDto>(
-          `/reports/${found.report_id}`,
-          { method: "GET" },
-          session,
-        );
-        setReport(r ?? null);
+      const od = found?.job_odometer;
+      if (od != null && Number.isFinite(Number(od)))
+        setOdometerInput(String(od));
+      else setOdometerInput("");
 
-        // ✅ also fetch report photos
+      if (found?.report_id) {
+        const r = (await api.getReport(found.report_id)) as ReportDto;
+        setReport(r ?? null);
         setReportPhotoUrls([]);
         loadReportPhotos(found.report_id);
       } else {
@@ -254,15 +261,10 @@ export default function TechnicianJobDetailsScreen() {
         setReportPhotoUrls([]);
       }
 
-      // 3) Fetch tasks
-      const t = await apiFetch<JobTask[]>(
-        `/jobs/${jobId}/tasks`,
-        { method: "GET" },
-        session,
-      );
+      const t = (await api.listJobTasks(jobId)) as JobTask[];
       setTasks(Array.isArray(t) ? t : []);
-    } catch (e: any) {
-      Alert.alert("Failed to load job", e?.message ?? "Unknown error");
+    } catch (e: unknown) {
+      handleApiError(e, "Failed to load job");
     } finally {
       setLoading(false);
     }
@@ -270,85 +272,181 @@ export default function TechnicianJobDetailsScreen() {
 
   useEffect(() => {
     fetchAll();
+    loadParts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
-  const createTask = async () => {
+  const saveOdometer = async () => {
     if (!canEdit) return;
 
-    const name = newTaskName.trim();
-    if (!name) {
-      Alert.alert("Task name required", "Please enter a task name.");
+    const raw = odometerInput.trim();
+    if (!raw) {
+      Alert.alert(
+        "Odometer required",
+        "Please enter the initial odometer reading.",
+      );
+      scrollToOdometerAndFocus();
       return;
     }
 
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+      Alert.alert(
+        "Invalid odometer",
+        "Please enter a whole number (e.g., 123456).",
+      );
+      scrollToOdometerAndFocus();
+      return;
+    }
+
+    setSavingOdometer(true);
+    try {
+      await api.patchJob(jobId, { job_odometer: n });
+
+      setJobSummary((prev) => (prev ? { ...prev, job_odometer: n } : prev));
+      Alert.alert("Saved", "Initial odometer reading has been saved.");
+    } catch (e: unknown) {
+      handleApiError(e, "Failed to save odometer");
+    } finally {
+      setSavingOdometer(false);
+    }
+  };
+
+  // Maps / derived lists
+  const partsById = useMemo(() => {
+    const m = new Map<number, PartRow>();
+    for (const p of parts) m.set(p.part_id, p);
+    return m;
+  }, [parts]);
+
+  const filteredDropdownParts = useMemo(() => {
+    const q = partsSearch.trim().toLowerCase();
+    const list = Array.isArray(parts) ? parts : [];
+    if (!q) return list.slice(0, 50);
+
+    return list
+      .filter((p) => {
+        const name = String(p.part_name ?? "").toLowerCase();
+        const code = String(p.part_code ?? "").toLowerCase();
+        return name.includes(q) || code.includes(q);
+      })
+      .slice(0, 50);
+  }, [parts, partsSearch]);
+
+  const selectedPartIds = useMemo(
+    () =>
+      Object.keys(selectedParts)
+        .map((k) => Number(k))
+        .filter((pid) => Number.isFinite(pid) && (selectedParts[pid] ?? 0) > 0),
+    [selectedParts],
+  );
+
+  const addOrIncPart = (partId: number) => {
+    setSelectedParts((prev) => ({
+      ...prev,
+      [partId]: (prev[partId] ?? 0) + 1,
+    }));
+  };
+
+  const changeQty = (partId: number, delta: number) => {
+    setSelectedParts((prev) => {
+      const cur = prev[partId] ?? 0;
+      const next = cur + delta;
+      const copy: Record<number, number> = { ...prev };
+      if (next <= 0) delete copy[partId];
+      else copy[partId] = next;
+      return copy;
+    });
+  };
+
+  const removePart = (partId: number) => {
+    setSelectedParts((prev) => {
+      const next = { ...prev };
+      delete next[partId];
+      return next;
+    });
+  };
+
+  const createCompletedTask = async () => {
+    if (!canEdit) return;
+
+    if (jobLocked) {
+      handleOdometerRequired();
+      return;
+    }
+
+    const issueText = issue.trim();
+    if (!issueText) {
+      Alert.alert(
+        "Task issue required",
+        "Please enter the task issue/problem.",
+      );
+      return;
+    }
+
+    setSavingTask(true);
     try {
       const nextOrder = tasks.length
         ? Math.max(...tasks.map((x) => x.task_order ?? 0)) + 1
         : 1;
 
-      await apiFetch(
-        `/jobs/${jobId}/tasks`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            task_name: name,
-            task_desc: newTaskDesc.trim() || null,
-            task_status: "pending",
-            task_order: nextOrder,
-          }),
-        },
-        session,
-      );
+      const created = await api.createJobTask(jobId, {
+        task_name: issueText,
+        task_desc: solution.trim() || null,
+        task_status: "done",
+        task_order: nextOrder,
+      });
 
-      setNewTaskName("");
-      setNewTaskDesc("");
+      const taskId = Number((created as { task_id?: number }).task_id);
+      const partEntries = Object.entries(selectedParts)
+        .map(([k, qty]) => ({ part_id: Number(k), qty: Number(qty) }))
+        .filter(
+          (x) => Number.isFinite(x.part_id) && x.part_id > 0 && x.qty > 0,
+        );
+
+      if (taskId && partEntries.length) {
+        for (const p of partEntries) {
+          await api.addTaskPart(taskId, { part_id: p.part_id, qty: p.qty });
+        }
+      }
+
+      setIssue("");
+      setSolution("");
+      setSelectedParts({});
+      setPartsSearch("");
+      setPartsOpen(false);
       await fetchAll();
-    } catch (e: any) {
-      Alert.alert("Failed to create task", e?.message ?? "Unknown error");
+    } catch (e: unknown) {
+      handleApiError(e, "Failed to add completed task");
+    } finally {
+      setSavingTask(false);
     }
   };
 
-  const setTaskStatus = async (taskId: number, status: TaskStatus) => {
-    if (!canEdit) return;
-
-    try {
-      await apiFetch(
-        `/tasks/${taskId}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ task_status: status }),
-        },
-        session,
-      );
-
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.task_id === taskId ? { ...t, task_status: status } : t,
-        ),
-      );
-    } catch (e: any) {
-      Alert.alert("Update failed", e?.message ?? "Unknown error");
-    }
-  };
-
-  const allDone =
-    tasks.length > 0 && tasks.every((t) => t.task_status === "done");
+  const completedTasks = useMemo(() => {
+    return tasks
+      .filter((t) => t.task_status === "done")
+      .slice()
+      .sort((a, b) => {
+        const ad = a.completed_at ? new Date(a.completed_at).getTime() : 0;
+        const bd = b.completed_at ? new Date(b.completed_at).getTime() : 0;
+        if (bd !== ad) return bd - ad;
+        return (b.task_order ?? 0) - (a.task_order ?? 0);
+      });
+  }, [tasks]);
 
   const completeJob = async () => {
     if (!canEdit) return;
 
-    if (!tasks.length) {
-      Alert.alert(
-        "Add tasks first",
-        "Please add at least 1 task before completing the job.",
-      );
+    if (jobLocked) {
+      handleOdometerRequired();
       return;
     }
-    if (!allDone) {
+
+    if (completedTasks.length === 0) {
       Alert.alert(
-        "Tasks not complete",
-        "All tasks must be marked as Done before completing the job.",
+        "Add a completed task first",
+        "Please add at least 1 completed task before completing the job.",
       );
       return;
     }
@@ -356,18 +454,11 @@ export default function TechnicianJobDetailsScreen() {
     const reportId = jobSummary?.report_id ?? null;
 
     try {
-      // 1) close the job
-      await apiFetch(
-        `/jobs/${jobId}/status`,
-        { method: "PATCH", body: JSON.stringify({ to_status: "closed" }) },
-        session,
-      );
+      await api.updateJobStatus(jobId, { to_status: "closed" });
 
-      // 2) close the linked report (if any)
       if (Number.isFinite(reportId) && (reportId as number) > 0) {
         await api.updateReportStatus(reportId as number, {
           report_status: "closed",
-          // optional audit fields - only include if your backend expects them
           report_review_action: null,
           report_review_reason: null,
           report_review_by: null,
@@ -380,18 +471,37 @@ export default function TechnicianJobDetailsScreen() {
         reportId ? "Job and report have been closed." : "Job has been closed.",
       );
       router.back();
-    } catch (e: any) {
-      Alert.alert("Failed to complete job", e?.message ?? "Unknown error");
+    } catch (e: unknown) {
+      handleApiError(e, "Failed to complete job");
     }
   };
+
+  const reportPhotoMedia: LocalMedia[] = useMemo(() => {
+    return reportPhotoUrls.map((u) => ({
+      localUri: u,
+      mime_type: guessMimeFromUrl(u),
+    }));
+  }, [reportPhotoUrls]);
+
+  const onAfterPhotosChange = (next: LocalMedia[]) => {
+    if (jobLocked && next.length > afterMedia.length) {
+      handleOdometerRequired();
+      return;
+    }
+    setAfterMedia(next);
+  };
+
+  const selectedCount = selectedPartIds.length;
 
   return (
     <>
       <Stack.Screen options={{ title: "Job Details" }} />
 
       <ScrollView
+        ref={scrollRef}
         style={styles.page}
         contentContainerStyle={styles.pageContent}
+        keyboardShouldPersistTaps="handled"
       >
         {/* Header */}
         <View style={styles.header}>
@@ -422,6 +532,58 @@ export default function TechnicianJobDetailsScreen() {
 
         <View style={styles.divider} />
 
+        {/* Initial Odometer gate */}
+        {canEdit && (
+          <View>
+            <View style={[styles.card, jobLocked && styles.cardWarn]}>
+              <Text style={styles.cardTitle}>Initial Odometer Reading</Text>
+
+              {hasOdometer ? (
+                <Text style={styles.bodyText}>
+                  <Text style={{ fontWeight: "900" }}>Recorded: </Text>
+                  {jobSummary?.job_odometer}
+                </Text>
+              ) : (
+                <>
+                  <Text style={styles.bodyTextMuted}>
+                    Enter the current odometer reading before adding completed
+                    tasks, uploading after photos, or completing the job.
+                  </Text>
+
+                  <View style={[styles.inputWrap, { marginTop: 12 }]}>
+                    <TextInput
+                      ref={odometerInputRef}
+                      value={odometerInput}
+                      onChangeText={setOdometerInput}
+                      placeholder="e.g., 123456"
+                      placeholderTextColor="#6B7280"
+                      style={styles.input}
+                      keyboardType="number-pad"
+                      returnKeyType="done"
+                      onSubmitEditing={saveOdometer}
+                    />
+                  </View>
+
+                  <Pressable
+                    style={[
+                      styles.actionBtn,
+                      styles.updateBtn,
+                      { marginTop: 12 },
+                      savingOdometer && { opacity: 0.7 },
+                    ]}
+                    onPress={saveOdometer}
+                    disabled={savingOdometer}
+                  >
+                    <Text style={styles.actionText}>
+                      {savingOdometer ? "Saving…" : "Save Odometer"}
+                    </Text>
+                  </Pressable>
+                </>
+              )}
+            </View>
+          </View>
+        )}
+
         {/* Initial Report details */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Initial Report</Text>
@@ -445,7 +607,7 @@ export default function TechnicianJobDetailsScreen() {
             {report?.report_desc ?? jobSummary?.job_desc ?? "—"}
           </Text>
 
-          {/* ✅ Report photos (tappable thumbnails) */}
+          {/* Report photos */}
           <View style={{ marginTop: 14 }}>
             <View style={styles.photoHeaderRow}>
               <Text style={styles.photoTitle}>Report Photos</Text>
@@ -484,122 +646,290 @@ export default function TechnicianJobDetailsScreen() {
           </View>
         </View>
 
-        {/* Add Task form */}
+        {/* Add Completed Task */}
         {canEdit && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Add Task</Text>
+            <Text style={styles.cardTitle}>Add Completed Task</Text>
 
+            <Text style={styles.sectionLabel}>Task Issue</Text>
             <View style={styles.inputWrap}>
               <TextInput
-                value={newTaskName}
-                onChangeText={setNewTaskName}
-                placeholder="Task name (e.g., Replace brake pads)"
+                value={issue}
+                onChangeText={setIssue}
+                placeholder="e.g., Aircon not cooling"
                 placeholderTextColor="#6B7280"
                 style={styles.input}
+                editable={!jobLocked}
+                onFocus={() => jobLocked && handleOdometerRequired()}
               />
             </View>
 
-            <View style={[styles.inputWrap, { marginTop: 10 }]}>
+            <Text style={[styles.sectionLabel, { marginTop: 12 }]}>
+              Task Solution
+            </Text>
+            <View style={styles.inputWrap}>
               <TextInput
-                value={newTaskDesc}
-                onChangeText={setNewTaskDesc}
-                placeholder="Notes / details (optional)"
+                value={solution}
+                onChangeText={setSolution}
+                placeholder="What did you do? (optional)"
                 placeholderTextColor="#6B7280"
                 style={styles.textarea}
                 multiline
+                editable={!jobLocked}
+                onFocus={() => jobLocked && handleOdometerRequired()}
               />
             </View>
 
+            <View style={[styles.sectionHeaderRow, { marginTop: 12 }]}>
+              <Text style={styles.sectionLabel}>Parts Used</Text>
+              <View style={styles.pillSoft}>
+                <Text style={styles.pillSoftText}>
+                  {selectedCount} selected
+                </Text>
+              </View>
+            </View>
+
+            {/* Dropdown trigger */}
             <Pressable
-              style={[styles.actionBtn, styles.updateBtn, { marginTop: 12 }]}
-              onPress={createTask}
+              style={[styles.dropdownTrigger, jobLocked && { opacity: 0.6 }]}
+              onPress={() => {
+                if (jobLocked) return handleOdometerRequired();
+                setPartsOpen((v) => !v);
+              }}
             >
-              <Text style={styles.actionText}>Add Task</Text>
+              <Text style={styles.dropdownTriggerText}>
+                {loadingParts
+                  ? "Loading parts…"
+                  : partsOpen
+                    ? "Close parts list"
+                    : "Select parts (search)"}
+              </Text>
+              <Text style={styles.dropdownChevron}>
+                {partsOpen ? "▲" : "▼"}
+              </Text>
             </Pressable>
+
+            {/* Dropdown panel */}
+            {partsOpen && (
+              <View style={styles.dropdownPanel}>
+                <View style={styles.inputWrap}>
+                  <TextInput
+                    value={partsSearch}
+                    onChangeText={setPartsSearch}
+                    placeholder="Search by name or code…"
+                    placeholderTextColor="#6B7280"
+                    style={styles.input}
+                    autoCorrect={false}
+                    editable={!jobLocked}
+                  />
+                </View>
+
+                <View style={{ marginTop: 10 }}>
+                  {filteredDropdownParts.length === 0 ? (
+                    <Text style={styles.bodyTextMuted}>
+                      {loadingParts ? "Loading parts…" : "No matching parts."}
+                    </Text>
+                  ) : (
+                    <ScrollView
+                      style={styles.dropdownList}
+                      nestedScrollEnabled
+                      keyboardShouldPersistTaps="handled"
+                    >
+                      {filteredDropdownParts.map((p) => {
+                        const qty = selectedParts[p.part_id] ?? 0;
+                        const selected = qty > 0;
+
+                        return (
+                          <Pressable
+                            key={p.part_id}
+                            style={[
+                              styles.dropdownItem,
+                              selected && styles.dropdownItemSelected,
+                            ]}
+                            onPress={() => {
+                              if (jobLocked) return handleOdometerRequired();
+                              addOrIncPart(p.part_id);
+                            }}
+                          >
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.partName}>
+                                {p.part_name}{" "}
+                                <Text style={styles.partCode}>
+                                  ({p.part_code})
+                                </Text>
+                              </Text>
+                              <Text style={styles.partMeta}>
+                                Stock: {p.part_stock ?? "—"} • Cost:{" "}
+                                {p.part_cost ?? "—"}
+                              </Text>
+                            </View>
+
+                            {selected && (
+                              <View style={styles.qtyBadge}>
+                                <Text style={styles.qtyBadgeText}>x{qty}</Text>
+                              </View>
+                            )}
+                          </Pressable>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+                </View>
+              </View>
+            )}
+
+            {/* Selected parts cards */}
+            <View style={{ marginTop: 12, gap: 10 }}>
+              {selectedPartIds.length === 0 ? (
+                <Text style={styles.bodyTextMuted}>No parts selected.</Text>
+              ) : (
+                selectedPartIds.map((pid) => {
+                  const p = partsById.get(pid);
+                  const qty = selectedParts[pid] ?? 0;
+                  if (!p) return null;
+
+                  return (
+                    <View key={pid} style={styles.selectedCard}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.partName}>
+                          {p.part_name}{" "}
+                          <Text style={styles.partCode}>({p.part_code})</Text>
+                        </Text>
+                        <Text style={styles.partMeta}>
+                          Stock: {p.part_stock ?? "—"} • Cost:{" "}
+                          {p.part_cost ?? "—"}
+                        </Text>
+                      </View>
+
+                      <View style={styles.qtyInline}>
+                        <Pressable
+                          style={[
+                            styles.qtyInlineBtn,
+                            jobLocked && { opacity: 0.45 },
+                          ]}
+                          onPress={() =>
+                            jobLocked
+                              ? handleOdometerRequired()
+                              : changeQty(pid, -1)
+                          }
+                          disabled={jobLocked}
+                        >
+                          <Text style={styles.qtyText}>−</Text>
+                        </Pressable>
+
+                        <Text style={styles.qtyInlineValue}>{qty}</Text>
+
+                        <Pressable
+                          style={[
+                            styles.qtyInlineBtn,
+                            jobLocked && { opacity: 0.45 },
+                          ]}
+                          onPress={() =>
+                            jobLocked
+                              ? handleOdometerRequired()
+                              : changeQty(pid, +1)
+                          }
+                          disabled={jobLocked}
+                        >
+                          <Text style={styles.qtyText}>+</Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={[
+                            styles.removeBtn,
+                            jobLocked && { opacity: 0.45 },
+                          ]}
+                          onPress={() =>
+                            jobLocked
+                              ? handleOdometerRequired()
+                              : removePart(pid)
+                          }
+                          disabled={jobLocked}
+                        >
+                          <Text style={styles.removeBtnText}>Remove</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+
+            <Pressable
+              style={[
+                styles.actionBtn,
+                styles.updateBtn,
+                { marginTop: 14 },
+                (jobLocked || savingTask) && { opacity: 0.6 },
+              ]}
+              onPress={createCompletedTask}
+              disabled={jobLocked || savingTask}
+            >
+              <Text style={styles.actionText}>
+                {savingTask ? "Saving…" : "Add Completed Task"}
+              </Text>
+            </Pressable>
+
+            {jobLocked && (
+              <Text style={[styles.helperText, { marginTop: 10 }]}>
+                Save the initial odometer reading to unlock job updates.
+              </Text>
+            )}
           </View>
         )}
 
-        {/* Task list */}
+        {/* Completed Tasks list */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Tasks</Text>
+          <Text style={styles.cardTitle}>Completed Tasks</Text>
 
-          {tasks.length === 0 ? (
-            <Text style={styles.bodyTextMuted}>No tasks yet.</Text>
+          {completedTasks.length === 0 ? (
+            <Text style={styles.bodyTextMuted}>No completed tasks yet.</Text>
           ) : (
-            tasks
-              .slice()
-              .sort((a, b) => (a.task_order ?? 0) - (b.task_order ?? 0))
-              .map((t) => {
-                const doingActive = t.task_status === "in_progress";
-                const doneActive = t.task_status === "done";
-
-                return (
-                  <View key={t.task_id} style={styles.taskRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.taskName}>{t.task_name}</Text>
-                      {!!t.task_desc && (
-                        <Text style={styles.taskDesc}>{t.task_desc}</Text>
-                      )}
-                      <Text style={styles.taskMeta}>
-                        Status: {t.task_status}
-                      </Text>
-                    </View>
-
-                    {canEdit && (
-                      <View style={styles.taskActions}>
-                        <Pressable
-                          style={[
-                            styles.pillBtn,
-                            doingActive && styles.pillActive,
-                          ]}
-                          onPress={() =>
-                            setTaskStatus(t.task_id, "in_progress")
-                          }
-                        >
-                          <Text
-                            style={[
-                              styles.pillTextSmall,
-                              doingActive && styles.pillTextActive,
-                            ]}
-                          >
-                            Doing
-                          </Text>
-                        </Pressable>
-
-                        <Pressable
-                          style={[
-                            styles.pillBtn,
-                            doneActive && styles.pillActive,
-                          ]}
-                          onPress={() => setTaskStatus(t.task_id, "done")}
-                        >
-                          <Text
-                            style={[
-                              styles.pillTextSmall,
-                              doneActive && styles.pillTextActive,
-                            ]}
-                          >
-                            Done
-                          </Text>
-                        </Pressable>
-                      </View>
-                    )}
-                  </View>
-                );
-              })
+            completedTasks.map((t) => (
+              <View key={t.task_id} style={styles.taskRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.taskName}>{t.task_name}</Text>
+                  {!!t.task_desc && (
+                    <Text style={styles.taskDesc}>{t.task_desc}</Text>
+                  )}
+                  <Text style={styles.taskMeta}>
+                    Completed: {formatDateTime(t.completed_at)}
+                  </Text>
+                </View>
+              </View>
+            ))
           )}
         </View>
 
-        {/* After photos (local) */}
-        <ImagePickerField
-          title="After Photos"
-          value={afterMedia}
-          onChange={setAfterMedia}
-          captureLabel="Capture After Photo"
-          uploadLabel="Upload After Photo"
-          showUploadButton
-          readOnly={!canEdit}
-        />
+        {/* After photos */}
+        <View>
+          {jobLocked && canEdit ? (
+            <Pressable onPress={handleOdometerRequired}>
+              <ImagePickerField
+                title="After Photos"
+                value={afterMedia}
+                onChange={onAfterPhotosChange}
+                captureLabel="Capture After Photo"
+                uploadLabel="Upload After Photo"
+                showUploadButton
+                readOnly
+              />
+              <Text style={[styles.helperText, { marginTop: 8 }]}>
+                Save the initial odometer reading to upload after photos.
+              </Text>
+            </Pressable>
+          ) : (
+            <ImagePickerField
+              title="After Photos"
+              value={afterMedia}
+              onChange={onAfterPhotosChange}
+              captureLabel="Capture After Photo"
+              uploadLabel="Upload After Photo"
+              showUploadButton
+              readOnly={!canEdit}
+            />
+          )}
+        </View>
 
         {/* Complete job */}
         {canEdit && (
@@ -608,23 +938,27 @@ export default function TechnicianJobDetailsScreen() {
               style={[
                 styles.actionBtn,
                 styles.completeBtn,
-                !allDone && { opacity: 0.6 },
+                (jobLocked || completedTasks.length === 0) && { opacity: 0.6 },
               ]}
               onPress={completeJob}
+              disabled={jobLocked || completedTasks.length === 0}
             >
               <Text style={styles.actionText}>Complete Job</Text>
             </Pressable>
 
-            {!allDone && tasks.length > 0 && (
+            {jobLocked ? (
               <Text style={styles.helperText}>
-                All tasks must be marked as Done to complete the job.
+                Save the initial odometer reading to complete the job.
               </Text>
-            )}
+            ) : completedTasks.length === 0 ? (
+              <Text style={styles.helperText}>
+                Add at least 1 completed task to complete the job.
+              </Text>
+            ) : null}
           </View>
         )}
       </ScrollView>
 
-      {/* ✅ Full screen image viewer */}
       <ImageViewerOverlay
         visible={viewerVisible}
         imageUrls={viewerUrls}
@@ -685,6 +1019,15 @@ const styles = StyleSheet.create({
     padding: 18,
     borderWidth: 1,
     borderColor: "#E5E7EB",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 18,
+    shadowOpacity: 0.08,
+  },
+  cardWarn: {
+    borderWidth: 2,
+    borderColor: "#EF4444",
+    backgroundColor: "#FEF2F2",
   },
   cardTitle: {
     fontSize: 18,
@@ -704,6 +1047,20 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#6B7280",
     lineHeight: 22,
+  },
+
+  sectionLabel: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: "#374151",
+    marginBottom: 8,
+  },
+
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
   },
 
   inputWrap: {
@@ -726,20 +1083,6 @@ const styles = StyleSheet.create({
   taskDesc: { marginTop: 4, fontSize: 14, fontWeight: "700", color: "#374151" },
   taskMeta: { marginTop: 6, fontSize: 13, fontWeight: "800", color: "#6B7280" },
 
-  taskActions: { gap: 8, justifyContent: "center" },
-  pillBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#D1D5DB",
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-  },
-  pillActive: { backgroundColor: "#111827", borderColor: "#111827" },
-  pillTextSmall: { fontSize: 13, fontWeight: "900", color: "#111827" },
-  pillTextActive: { color: "#FFFFFF" },
-
   actions: { gap: 10, marginTop: 4, marginBottom: 28 },
   actionBtn: {
     height: 54,
@@ -757,7 +1100,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
-  // report photo strip
   photoHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -774,6 +1116,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   pillText: { fontSize: 14, fontWeight: "600", color: "#111827" },
+
+  pillSoft: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  pillSoftText: { fontSize: 12, fontWeight: "900", color: "#111827" },
+
   previewRow: { marginTop: 4 },
   previewContent: { paddingRight: 4 },
   thumbWrap: { marginRight: 10 },
@@ -785,4 +1138,111 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   thumb: { width: "100%", height: "100%" },
+
+  // Dropdown UI
+  dropdownTrigger: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  dropdownTriggerText: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  dropdownChevron: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#6B7280",
+  },
+  dropdownPanel: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: "#FFFFFF",
+  },
+  dropdownList: {
+    maxHeight: 240,
+  },
+  dropdownItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginBottom: 10,
+    backgroundColor: "#FFFFFF",
+  },
+  dropdownItemSelected: {
+    borderColor: "#111827",
+  },
+
+  partName: { fontSize: 14, fontWeight: "900", color: "#111827" },
+  partCode: { fontWeight: "900", color: "#6B7280" },
+  partMeta: { marginTop: 6, fontSize: 12, fontWeight: "800", color: "#6B7280" },
+
+  qtyBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#111827",
+  },
+  qtyBadgeText: { color: "#fff", fontWeight: "900", fontSize: 12 },
+
+  // Selected cards
+  selectedCard: {
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: "#FFFFFF",
+  },
+  qtyInline: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  qtyInlineBtn: {
+    width: 44,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFFFF",
+  },
+  qtyInlineValue: {
+    minWidth: 36,
+    textAlign: "center",
+    fontWeight: "900",
+    color: "#111827",
+  },
+  qtyText: { fontSize: 18, fontWeight: "900", color: "#111827" },
+
+  removeBtn: {
+    marginTop: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#F9FAFB",
+  },
+  removeBtnText: { fontSize: 12, fontWeight: "900", color: "#111827" },
 });

@@ -24,6 +24,10 @@ export default function RootLayout() {
         name="project-selector"
         options={{ title: "Select Your Project" }}
       />
+      <Stack.Screen
+        name="fleet-manager-history"
+        options={{ title: "Your Submitted Reports" }}
+      />
       <Stack.Screen name="rm-manager" options={{ title: "R&M Manager" }} />
       <Stack.Screen name="technician/index" options={{ title: "Technician" }} />
       <Stack.Screen name="inventory" options={{ title: "Inventory Manager" }} />

@@ -1,4 +1,3 @@
-// app/form.tsx (ReportFormScreen) — creates report + uploads photos ONLY when user presses Submit
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -12,15 +11,16 @@ import {
 } from "react-native";
 import DropDownPicker from "react-native-dropdown-picker";
 import { api } from "../api/client";
-import ImagePickerField, { LocalMedia } from "../components/ImagePicker"; // ✅ local picker: returns { localUri, mime_type }
+import ImagePickerField, { LocalMedia } from "../components/ImagePicker";
 import MapSelector, { LocationValue } from "../components/map";
-import { useProject } from "../project-ctx"; // ✅ NEW
+import { useProject } from "../project-ctx";
 
 type ReportType = "problem" | "repair" | "accident";
 
 function normaliseReportType(value: unknown): ReportType {
-  if (value === "problem" || value === "repair" || value === "accident")
+  if (value === "problem" || value === "repair" || value === "accident") {
     return value;
+  }
   return "problem";
 }
 
@@ -33,7 +33,7 @@ function reportTypeLabel(t: ReportType) {
 type BusItem = { label: string; value: string };
 
 type PresignResponse = {
-  uploadUrl: string; // ✅ matches your Lambda: { uploadUrl, s3_bucket, s3_key }
+  uploadUrl: string;
   s3_bucket?: string;
   s3_key: string;
 };
@@ -51,41 +51,34 @@ export default function ReportFormScreen() {
     [params.type],
   );
 
-  // ✅ NEW: selected project (persisted)
   const { projectId, loading: projectLoading } = useProject();
 
-  // ✅ UPDATED: include optional address
   const [mapLocation, setMapLocation] = useState<LocationValue | null>(null);
   const [locationDesc, setLocationDesc] = useState("");
+  const [locationEditedManually, setLocationEditedManually] = useState(false);
 
-  // Vehicles dropdown
   const [vehicleOpen, setVehicleOpen] = useState(false);
   const [vehicle, setVehicle] = useState<string | null>(null);
   const [vehicles, setVehicles] = useState<BusItem[]>([]);
 
-  // Priority dropdown
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [priority, setPriority] = useState<
     "low" | "medium" | "high" | "critical"
   >("medium");
 
-  // Form state
   const [photos, setPhotos] = useState<LocalMedia[]>([]);
   const [description, setDescription] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
 
-  // ✅ Load buses for the selected project only
   useEffect(() => {
     let alive = true;
 
     (async () => {
       try {
-        // Wait until project is restored from storage
         if (projectLoading) return;
 
-        // No selected project => clear vehicles
         if (!projectId) {
           if (alive) {
             setVehicles([]);
@@ -94,8 +87,6 @@ export default function ReportFormScreen() {
           return;
         }
 
-        // ✅ Recommended: backend filters by project_id
-        // GET /buses?project_id=...
         const res = await api.request<any>(
           `/buses?project_id=${encodeURIComponent(projectId)}`,
           { method: "GET" },
@@ -123,8 +114,6 @@ export default function ReportFormScreen() {
         if (!alive) return;
 
         setVehicles(items);
-
-        // ✅ If selected bus no longer exists for this project, clear it
         setVehicle((prev) =>
           prev && items.some((x) => x.value === prev) ? prev : null,
         );
@@ -142,15 +131,22 @@ export default function ReportFormScreen() {
     };
   }, [projectId, projectLoading]);
 
-  // ✅ Prefill location description once if MapSelector provides address
   useEffect(() => {
-    const addr = mapLocation?.address;
-    if (addr && !locationDesc.trim()) setLocationDesc(addr);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapLocation]);
+    if (mapLocation?.address && !locationEditedManually) {
+      setLocationDesc(mapLocation.address);
+    }
+  }, [mapLocation, locationEditedManually]);
+
+  const handleMapLocationChange = (value: LocationValue) => {
+    setMapLocation(value);
+
+    if (value.address) {
+      setLocationDesc(value.address);
+      setLocationEditedManually(false);
+    }
+  };
 
   const createReport = async () => {
-    // ✅ NEW: enforce project selection
     if (!projectId) throw new Error("Project is not selected");
     if (!vehicle) throw new Error("Vehicle is required");
     if (!description.trim()) throw new Error("Description is required");
@@ -158,7 +154,7 @@ export default function ReportFormScreen() {
     const res = await api.request<{ report_id: number }>("/reports", {
       method: "POST",
       body: JSON.stringify({
-        project_id: projectId, // ✅ NEW: send project to backend
+        project_id: projectId,
         report_type: reportType,
         report_desc: description.trim(),
         report_location: locationDesc.trim() || null,
@@ -172,9 +168,6 @@ export default function ReportFormScreen() {
     return res.report_id;
   };
 
-  // ✅ Uses your Lambda EXACTLY:
-  // GET  /reports/{id}/media/presign?mime=...
-  // POST /reports/{id}/media/confirm  body: { s3_key, mime_type, size_bytes }
   const uploadOneToReport = async (
     reportId: number,
     localUri: string,
@@ -210,18 +203,16 @@ export default function ReportFormScreen() {
       setSubmitting(true);
       setUploadingIndex(null);
 
-      // ✅ Validate first (no API calls yet)
       if (projectLoading) throw new Error("Loading project selection...");
       if (!projectId) throw new Error("Project is not selected");
       if (!vehicle) throw new Error("Vehicle is required");
       if (!description.trim()) throw new Error("Description is required");
-      if (photos.length === 0)
+      if (photos.length === 0) {
         throw new Error("At least one photo is required");
+      }
 
-      // ✅ Create report only on submit
       const reportId = await createReport();
 
-      // ✅ Upload photos after report is created
       for (let i = 0; i < photos.length; i++) {
         setUploadingIndex(i);
         await uploadOneToReport(
@@ -268,7 +259,6 @@ export default function ReportFormScreen() {
         <Text style={styles.typePillText}>{reportTypeLabel(reportType)}</Text>
       </View>
 
-      {/* ✅ NEW: show selected project */}
       <View style={styles.projectPill}>
         <Text style={styles.projectPillText}>
           Project:{" "}
@@ -276,7 +266,6 @@ export default function ReportFormScreen() {
         </Text>
       </View>
 
-      {/* Vehicle */}
       <Text style={styles.label}>Vehicle *</Text>
       <View style={{ zIndex: 3000 }}>
         <DropDownPicker
@@ -295,26 +284,26 @@ export default function ReportFormScreen() {
         />
       </View>
 
-      {/* Location */}
       <MapSelector
         label="Current Location"
         required
         value={mapLocation}
-        onChange={setMapLocation}
+        onChange={handleMapLocationChange}
       />
 
-      {/* Location description */}
       <Text style={styles.label}>Location Description</Text>
       <TextInput
         style={styles.input}
         placeholder="e.g. Stop 12 near the mall entrance"
         placeholderTextColor="#9CA3AF"
         value={locationDesc}
-        onChangeText={setLocationDesc}
+        onChangeText={(text) => {
+          setLocationEditedManually(true);
+          setLocationDesc(text);
+        }}
         editable={!submitting}
       />
 
-      {/* Photos */}
       <Text style={styles.label}>Photos *</Text>
       <ImagePickerField
         title="Photos"
@@ -324,7 +313,6 @@ export default function ReportFormScreen() {
         disabled={submitting}
       />
 
-      {/* Priority */}
       <Text style={styles.label}>Priority</Text>
       <View style={{ zIndex: 2000 }}>
         <DropDownPicker
@@ -347,7 +335,6 @@ export default function ReportFormScreen() {
         />
       </View>
 
-      {/* Description */}
       <Text style={styles.label}>Description *</Text>
       <TextInput
         style={styles.textArea}
@@ -359,7 +346,6 @@ export default function ReportFormScreen() {
         editable={!submitting}
       />
 
-      {/* Buttons */}
       <View style={styles.buttonRow}>
         <TouchableOpacity
           style={styles.cancelButton}
@@ -411,7 +397,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#111827",
   },
-
   projectPill: {
     alignSelf: "flex-start",
     backgroundColor: "#EEF2FF",
@@ -425,7 +410,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#111827",
   },
-
   label: {
     fontSize: 14,
     fontWeight: "500",

@@ -1,4 +1,4 @@
-// api.ts
+// api/client.ts
 import * as SecureStore from "expo-secure-store";
 
 export type ReportMedia = {
@@ -313,4 +313,36 @@ export const api = {
 
   // Expose request for any special cases
   request,
+
+  // ===== JOB TASKS =====
+  listJobTasks: (jobId: number) =>
+    requestWithIdToken<any[]>(`/jobs/${jobId}/tasks`),
+
+  createJobTask: (jobId: number, body: any) =>
+    requestWithIdToken<{ task_id: number }>(`/jobs/${jobId}/tasks`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateJobTask: (taskId: number, body: any) =>
+    requestWithIdToken<{ success: true }>(`/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  addTaskPart: (taskId: number, body: { part_id: number; qty: number }) =>
+    requestWithIdToken<{ success: true }>(`/tasks/${taskId}/parts`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // PATCH /jobs/{job_id} (odometer)
+  patchJob: (jobId: number, body: { job_odometer: number }) =>
+    requestWithIdToken<{ success: true; job_odometer: number }>(
+      `/jobs/${jobId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      },
+    ),
 };

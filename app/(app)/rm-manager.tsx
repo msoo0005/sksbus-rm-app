@@ -1,17 +1,40 @@
 // RMManagerScreen.tsx
-import React, { useCallback, useEffect, useState } from "react";
+import { useRouter } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, RefreshControl, ScrollView, Text, View } from "react-native";
 
-import { api, ReportMedia } from "../api/client";
+import { api } from "../api/client";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import DeclineReasonModal from "../components/DeclineReasonModal";
-import JobDetailsModal from "../components/JobDetailsModal";
 import ReportCard from "../components/ReportCard";
 import SegmentedTabs from "../components/SegmentedTabs";
 import { useSession } from "../ctx";
 import { Report } from "../types/report";
 
 type Tab = "pending" | "open" | "closed";
+
+type JobSummary = {
+  job_id: number;
+  report_id: number | null;
+  job_status?: string | null;
+  job_desc?: string | null;
+  technician_user_id?: number | null;
+  technician_name?: string | null;
+
+  job_created_at?: string | null;
+  job_accepted_at?: string | null;
+  job_updated_at?: string | null;
+  job_completed_at?: string | null;
+
+  report_type?: string | null;
+  report_priority?: string | null;
+  report_desc?: string | null;
+  report_location?: string | null;
+  report_uploaded_at?: string | null;
+  bus_id?: string | null;
+  reporter_name?: string | null;
+  reporter_email?: string | null;
+};
 
 function formatDate(isoLike?: string | null) {
   if (!isoLike) return "—";
@@ -20,26 +43,51 @@ function formatDate(isoLike?: string | null) {
   return d.toLocaleString();
 }
 
-function normaliseStatusToUi(raw?: string | null): Report["status"] {
-  const s = String(raw ?? "")
+function toLower(x: unknown) {
+  return String(x ?? "")
     .trim()
     .toLowerCase();
+}
+
+function normaliseStatusToUi(raw?: string | null): Report["status"] {
+  const s = toLower(raw);
   if (!s || s === "submitted" || s === "pending") return "pending";
   if (s === "open") return "open";
   if (s === "closed") return "closed";
   return "pending";
 }
 
-function mapApiRowToReport(r: any): Report {
-  const id = Number(r.report_id);
+function normaliseType(raw?: string | null): Report["type"] {
+  const s = toLower(raw);
+  if (s === "problem" || s === "repair" || s === "accident") return s;
+  return "problem";
+}
+
+function normaliseSeverity(raw?: string | null): Report["severity"] {
+  const s = toLower(raw);
+  if (s === "low" || s === "medium" || s === "high" || s === "critical") {
+    return s;
+  }
+  return "medium";
+}
+
+function findJobForReport(jobs: JobSummary[], reportId: number) {
+  return jobs.find((j) => Number(j?.report_id) === Number(reportId)) ?? null;
+}
+
+function mapApiRowToReport(r: any, job?: JobSummary | null): Report {
+  const id = Number(r?.report_id ?? job?.report_id);
   const safeId = Number.isFinite(id) ? id : 0;
 
+  const reporterName = r?.reporter_name ?? job?.reporter_name;
+  const reporterEmail = r?.reporter_email ?? job?.reporter_email;
+
   const reportedBy =
-    r.reporter_name || r.reporter_email
-      ? `${r.reporter_name ?? "Unknown"} (${r.reporter_email ?? "—"})`
+    reporterName || reporterEmail
+      ? `${reporterName ?? "Unknown"} (${reporterEmail ?? "—"})`
       : undefined;
 
-  const audit = r.report_review_action
+  const audit = r?.report_review_action
     ? {
         action: String(r.report_review_action) as any,
         by: r.report_review_by ?? undefined,
@@ -50,47 +98,33 @@ function mapApiRowToReport(r: any): Report {
 
   return {
     id: safeId,
-    type: (r.report_type ?? "problem") as Report["type"],
-    severity: (r.report_priority ?? "medium") as Report["severity"],
-    vehicle: String(r.bus_id ?? "—"),
-    location: String(r.report_location ?? "—"),
-    description: String(r.report_desc ?? "—"),
-    date: formatDate(r.report_uploaded_at),
-    status: normaliseStatusToUi(r.report_status),
+    type: normaliseType(r?.report_type ?? job?.report_type),
+    severity: normaliseSeverity(r?.report_priority ?? job?.report_priority),
+    vehicle: String(r?.bus_id ?? job?.bus_id ?? "—"),
+    location: String(r?.report_location ?? job?.report_location ?? "—"),
+    description: String(
+      r?.report_desc ?? job?.report_desc ?? job?.job_desc ?? "",
+    ),
+    date: formatDate(
+      r?.report_uploaded_at ?? job?.report_uploaded_at ?? job?.job_created_at,
+    ),
+    status: normaliseStatusToUi(r?.report_status ?? job?.job_status),
     reportedBy,
+    assigned: job?.technician_name ?? undefined,
     audit,
   };
 }
 
-// minimal job summary shape returned by GET /jobs
-type JobSummary = {
-  job_id: number;
-  report_id: number | null;
-  job_status?: string | null;
-  job_desc?: string | null;
-  technician_user_id?: number | null;
-  job_created_at?: string | null;
-};
-
 export default function RMManagerScreen() {
+  const router = useRouter();
   const { dbUser } = useSession() as any;
+
   const MANAGER_NAME = dbUser?.user_name ?? "RM Manager";
 
   const [tab, setTab] = useState<Tab>("pending");
-  const [reports, setReports] = useState<Report[]>([]);
+  const [allReports, setAllReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-
-  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
-  const [detailsVisible, setDetailsVisible] = useState(false);
-
-  // ✅ media state
-  const [reportMedia, setReportMedia] = useState<ReportMedia[]>([]);
-  const [loadingMedia, setLoadingMedia] = useState(false);
-
-  // ✅ job state (NEW)
-  const [currentJob, setCurrentJob] = useState<JobSummary | null>(null);
-  const [loadingJob, setLoadingJob] = useState(false);
 
   const [approveTarget, setApproveTarget] = useState<Report | null>(null);
   const [approveVisible, setApproveVisible] = useState(false);
@@ -98,95 +132,94 @@ export default function RMManagerScreen() {
   const [declineTarget, setDeclineTarget] = useState<Report | null>(null);
   const [declineVisible, setDeclineVisible] = useState(false);
 
-  const [counts, setCounts] = useState({ pending: 0, open: 0, closed: 0 });
-
-  const loadReports = useCallback(
-    async (opts?: { silent?: boolean }) => {
+  const loadAllReports = useCallback(
+    async (opts?: { refreshing?: boolean }) => {
       try {
-        if (!opts?.silent) setLoading(true);
+        if (opts?.refreshing) {
+          setRefreshing(true);
+        } else {
+          setLoading(true);
+        }
 
-        const statusParam = tab === "pending" ? "submitted" : tab;
+        const [reportRows, jobRows] = await Promise.all([
+          api.listReports(),
+          api.listJobs(),
+        ]);
 
-        const rows = await api.listReports({ status: statusParam as any });
-        const mapped = Array.isArray(rows) ? rows.map(mapApiRowToReport) : [];
+        const jobs = Array.isArray(jobRows) ? (jobRows as JobSummary[]) : [];
 
-        setReports(mapped.filter((r) => r.id > 0));
+        const mapped = Array.isArray(reportRows)
+          ? reportRows.map((r: any) => {
+              const reportId = Number(r?.report_id);
+              const job = findJobForReport(jobs, reportId);
+              return mapApiRowToReport(r, job);
+            })
+          : [];
+
+        setAllReports(mapped.filter((r) => r.id > 0));
       } catch (e: any) {
         console.log(e);
         Alert.alert("Couldn’t load reports", e?.message ?? "Unknown error");
+        setAllReports([]);
       } finally {
-        if (!opts?.silent) setLoading(false);
+        setLoading(false);
+        setRefreshing(false);
       }
     },
-    [tab],
+    [],
   );
 
-  const loadCounts = useCallback(async () => {
-    try {
-      const rows = await api.listReports();
-      const mapped = Array.isArray(rows) ? rows.map(mapApiRowToReport) : [];
-      setCounts({
-        pending: mapped.filter((r) => r.status === "pending").length,
-        open: mapped.filter((r) => r.status === "open").length,
-        closed: mapped.filter((r) => r.status === "closed").length,
-      });
-    } catch {
-      // ignore
-    }
-  }, []);
-
   useEffect(() => {
-    loadReports();
-  }, [loadReports]);
+    loadAllReports();
+  }, [loadAllReports]);
 
-  useEffect(() => {
-    loadCounts();
-  }, [loadCounts, tab]);
+  const reports = useMemo(() => {
+    return allReports.filter((r) => r.status === tab);
+  }, [allReports, tab]);
+
+  const counts = useMemo(
+    () => ({
+      pending: allReports.filter((r) => r.status === "pending").length,
+      open: allReports.filter((r) => r.status === "open").length,
+      closed: allReports.filter((r) => r.status === "closed").length,
+    }),
+    [allReports],
+  );
 
   const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await Promise.all([loadReports({ silent: true }), loadCounts()]);
-    setRefreshing(false);
-  }, [loadReports, loadCounts]);
+    await loadAllReports({ refreshing: true });
+  }, [loadAllReports]);
 
-  // ✅ fetch media for a report
-  const loadReportMedia = useCallback(async (reportId: number) => {
-    if (!Number.isFinite(reportId) || reportId <= 0) return;
+  const openJobViewForReport = useCallback(
+    async (reportId: number) => {
+      if (!Number.isFinite(reportId) || reportId <= 0) return;
 
-    setLoadingMedia(true);
-    try {
-      const media = await api.listReportMedia(reportId);
-      setReportMedia(Array.isArray(media) ? media : []);
-    } catch (e: any) {
-      console.log(e);
-      setReportMedia([]);
-      Alert.alert("Couldn’t load photos", e?.message ?? "Unknown error");
-    } finally {
-      setLoadingMedia(false);
-    }
-  }, []);
+      try {
+        const jobs = await api.listJobs();
+        const list = Array.isArray(jobs) ? (jobs as JobSummary[]) : [];
 
-  // ✅ fetch current job for a report (NEW)
-  const loadCurrentJobForReport = useCallback(async (reportId: number) => {
-    if (!Number.isFinite(reportId) || reportId <= 0) return;
+        const found = findJobForReport(list, reportId);
+        const jobId = Number(found?.job_id);
 
-    setLoadingJob(true);
-    try {
-      const jobs = await api.listJobs(); // GET /jobs
-      const list = Array.isArray(jobs) ? (jobs as JobSummary[]) : [];
+        if (!Number.isFinite(jobId) || jobId <= 0) {
+          Alert.alert(
+            "No job yet",
+            "This report does not have a job created yet.",
+          );
+          return;
+        }
 
-      const found =
-        list.find((j) => Number(j.report_id) === Number(reportId)) ?? null;
-
-      setCurrentJob(found);
-    } catch (e: any) {
-      console.log(e);
-      setCurrentJob(null);
-      // don’t block viewing details if job load fails
-    } finally {
-      setLoadingJob(false);
-    }
-  }, []);
+        router.push({
+          pathname: "/(app)/rm-manager/job/[id]",
+          params: { id: String(jobId) },
+        });
+      } catch (e: any) {
+        console.log(e);
+        Alert.alert("Couldn’t open job", e?.message ?? "Unknown error");
+      }
+    },
+    [router],
+  );
 
   const requestApprove = (report: Report) => {
     setApproveTarget(report);
@@ -197,7 +230,6 @@ export default function RMManagerScreen() {
     if (!approveTarget) return;
 
     const reportId = approveTarget.id;
-    console.log("[RM approve] reportId =", reportId);
 
     if (!Number.isFinite(reportId) || reportId <= 0) {
       Alert.alert("Approve failed", "Invalid report id");
@@ -206,8 +238,7 @@ export default function RMManagerScreen() {
       return;
     }
 
-    // optimistic UI
-    setReports((prev) =>
+    setAllReports((prev) =>
       prev.map((r) =>
         r.id === reportId
           ? {
@@ -227,10 +258,8 @@ export default function RMManagerScreen() {
     setApproveTarget(null);
 
     try {
-      // 1) create job
       await api.createJobForReport(reportId, { job_desc: null });
 
-      // 2) set report status + audit fields
       await api.updateReportStatus(reportId, {
         report_status: "open",
         report_review_action: "approved",
@@ -239,12 +268,10 @@ export default function RMManagerScreen() {
         report_review_at: new Date().toISOString(),
       });
 
-      await loadCounts();
-      if (tab === "pending") await loadReports({ silent: true });
+      await loadAllReports({ refreshing: true });
     } catch (e: any) {
       Alert.alert("Approve failed", e?.message ?? "Unknown error");
-      await loadReports({ silent: true });
-      await loadCounts();
+      await loadAllReports({ refreshing: true });
     }
   };
 
@@ -257,7 +284,6 @@ export default function RMManagerScreen() {
     if (!declineTarget) return;
 
     const reportId = declineTarget.id;
-    console.log("[RM decline] reportId =", reportId);
 
     if (!Number.isFinite(reportId) || reportId <= 0) {
       Alert.alert("Decline failed", "Invalid report id");
@@ -266,8 +292,7 @@ export default function RMManagerScreen() {
       return;
     }
 
-    // optimistic UI
-    setReports((prev) =>
+    setAllReports((prev) =>
       prev.map((r) =>
         r.id === reportId
           ? {
@@ -296,12 +321,10 @@ export default function RMManagerScreen() {
         report_review_at: new Date().toISOString(),
       });
 
-      await loadCounts();
-      if (tab === "pending") await loadReports({ silent: true });
+      await loadAllReports({ refreshing: true });
     } catch (e: any) {
       Alert.alert("Decline failed", e?.message ?? "Unknown error");
-      await loadReports({ silent: true });
-      await loadCounts();
+      await loadAllReports({ refreshing: true });
     }
   };
 
@@ -336,39 +359,13 @@ export default function RMManagerScreen() {
             <ReportCard
               key={report.id}
               report={report}
-              onViewDetails={(r) => {
-                setSelectedReport(r);
-                setDetailsVisible(true);
-
-                // clear old
-                setReportMedia([]);
-                setCurrentJob(null);
-
-                // load both (photos + job)
-                loadReportMedia(r.id);
-                loadCurrentJobForReport(r.id);
-              }}
+              onViewDetails={(r) => openJobViewForReport(r.id)}
               onApprove={tab === "pending" ? requestApprove : undefined}
               onDecline={tab === "pending" ? requestDecline : undefined}
             />
           ))
         )}
       </ScrollView>
-
-      <JobDetailsModal
-        visible={detailsVisible}
-        report={selectedReport}
-        media={reportMedia}
-        loadingMedia={loadingMedia}
-        job={currentJob}
-        loadingJob={loadingJob}
-        onClose={() => {
-          setDetailsVisible(false);
-          setSelectedReport(null);
-          setReportMedia([]);
-          setCurrentJob(null);
-        }}
-      />
 
       <ConfirmActionModal
         visible={approveVisible}

@@ -26,6 +26,9 @@ type Props = {
 
   readOnly?: boolean;
 
+  // ✅ NEW: when readOnly, allow UI to guide user (e.g. scroll to odometer)
+  onPressReadOnly?: () => void;
+
   captureLabel?: string;
   uploadLabel?: string;
   showUploadButton?: boolean;
@@ -47,6 +50,7 @@ export default function ImagePickerField({
   value = [],
   onChange,
   readOnly = false,
+  onPressReadOnly,
   captureLabel = "Capture Photo",
   uploadLabel = "Upload Photo",
   showUploadButton = true,
@@ -67,7 +71,12 @@ export default function ImagePickerField({
   };
 
   const addImage = async (fromCamera: boolean) => {
-    if (readOnly || disabled) return;
+    // ✅ if readOnly, guide user (don’t silently do nothing)
+    if (readOnly) {
+      onPressReadOnly?.();
+      return;
+    }
+    if (disabled) return;
 
     const permission = fromCamera
       ? await ImagePicker.requestCameraPermissionsAsync()
@@ -76,7 +85,7 @@ export default function ImagePickerField({
     if (!permission.granted) {
       Alert.alert(
         "Permission required",
-        `Permission to access ${fromCamera ? "camera" : "gallery"} is required!`
+        `Permission to access ${fromCamera ? "camera" : "gallery"} is required!`,
       );
       return;
     }
@@ -98,9 +107,15 @@ export default function ImagePickerField({
   };
 
   const removeImage = (index: number) => {
-    if (readOnly || disabled) return;
+    if (readOnly) {
+      onPressReadOnly?.();
+      return;
+    }
+    if (disabled) return;
     commit(items.filter((_, i) => i !== index));
   };
+
+  const buttonDisabled = disabled || readOnly;
 
   return (
     <View style={styles.card}>
@@ -114,20 +129,27 @@ export default function ImagePickerField({
         </View>
       </View>
 
-      {!readOnly && (
-        <Pressable
-          style={[styles.bigButton, disabled && styles.disabled]}
-          onPress={() => addImage(true)}
-          disabled={disabled}
-        >
-          <Ionicons name="camera-outline" size={18} color="#111827" />
-          <Text style={styles.bigButtonText}>{captureLabel}</Text>
-        </Pressable>
-      )}
+      {/* ✅ Always show buttons. If readOnly, they're visually disabled but still tappable to guide user */}
+      <Pressable
+        style={[
+          styles.bigButton,
+          buttonDisabled && styles.disabled,
+          readOnly && styles.readOnlyButton,
+        ]}
+        onPress={() => addImage(true)}
+        disabled={disabled} // keep disabled true only when truly disabled; readOnly still allows press to trigger onPressReadOnly
+      >
+        <Ionicons name="camera-outline" size={18} color="#111827" />
+        <Text style={styles.bigButtonText}>{captureLabel}</Text>
+      </Pressable>
 
-      {!readOnly && showUploadButton && (
+      {showUploadButton && (
         <Pressable
-          style={[styles.bigButton, disabled && styles.disabled]}
+          style={[
+            styles.bigButton,
+            buttonDisabled && styles.disabled,
+            readOnly && styles.readOnlyButton,
+          ]}
           onPress={() => addImage(false)}
           disabled={disabled}
         >
@@ -148,16 +170,17 @@ export default function ImagePickerField({
               <View style={styles.thumbClip}>
                 <Image source={{ uri: m.localUri }} style={styles.thumb} />
 
-                {!readOnly && (
-                  <Pressable
-                    style={styles.deleteBtn}
-                    onPress={() => removeImage(idx)}
-                    hitSlop={10}
-                    disabled={disabled}
-                  >
-                    <Text style={styles.deleteText}>×</Text>
-                  </Pressable>
-                )}
+                <Pressable
+                  style={[
+                    styles.deleteBtn,
+                    (disabled || readOnly) && styles.deleteBtnDisabled,
+                  ]}
+                  onPress={() => removeImage(idx)}
+                  hitSlop={10}
+                  disabled={disabled} // allow press in readOnly to guide
+                >
+                  <Text style={styles.deleteText}>×</Text>
+                </Pressable>
               </View>
             </View>
           ))}
@@ -212,7 +235,12 @@ const styles = StyleSheet.create({
     gap: 10,
     marginBottom: 12,
   },
+  // existing visual disable
   disabled: { opacity: 0.55 },
+  // extra hint that button is “locked”, still pressable
+  readOnlyButton: {
+    backgroundColor: "#F9FAFB",
+  },
   bigButtonText: {
     fontSize: 16,
     fontWeight: "700",
@@ -239,6 +267,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#EF4444",
     alignItems: "center",
     justifyContent: "center",
+  },
+  deleteBtnDisabled: {
+    opacity: 0.65,
   },
   deleteText: {
     color: "#fff",
