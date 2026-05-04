@@ -1,5 +1,6 @@
 // components/ImagePicker.tsx (LOCAL ONLY)
 import { Ionicons } from "@expo/vector-icons";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -36,13 +37,6 @@ type Props = {
   disabled?: boolean; // e.g. disable while submitting
 };
 
-function guessMime(uri: string) {
-  const lower = uri.toLowerCase();
-  if (lower.endsWith(".png")) return "image/png";
-  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-  if (lower.endsWith(".heic")) return "image/heic";
-  return "image/jpeg";
-}
 
 export default function ImagePickerField({
   title,
@@ -100,10 +94,17 @@ export default function ImagePickerField({
     if (result.canceled || !result.assets?.length) return;
 
     const asset = result.assets[0];
-    const localUri = asset.uri;
-    const mime_type = asset.mimeType ?? guessMime(localUri);
 
-    commit([...items, { localUri, mime_type }]);
+    const MAX_DIM = 1920;
+    const needsResize =
+      (asset.width ?? 0) > MAX_DIM || (asset.height ?? 0) > MAX_DIM;
+
+    const ctx = ImageManipulator.manipulate(asset.uri);
+    if (needsResize) ctx.resize({ width: MAX_DIM });
+    const ref = await ctx.renderAsync();
+    const manipulated = await ref.saveAsync({ compress: 0.8, format: SaveFormat.JPEG });
+
+    commit([...items, { localUri: manipulated.uri, mime_type: "image/jpeg" }]);
   };
 
   const removeImage = (index: number) => {

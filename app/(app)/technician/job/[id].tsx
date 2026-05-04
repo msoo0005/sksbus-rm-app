@@ -435,24 +435,11 @@ export default function TechnicianJobDetailsScreen() {
       });
   }, [tasks]);
 
-  const completeJob = async () => {
-    if (!canEdit) return;
+  const [completing, setCompleting] = useState(false);
 
-    if (jobLocked) {
-      handleOdometerRequired();
-      return;
-    }
-
-    if (completedTasks.length === 0) {
-      Alert.alert(
-        "Add a completed task first",
-        "Please add at least 1 completed task before completing the job.",
-      );
-      return;
-    }
-
+  const doCompleteJob = async () => {
     const reportId = jobSummary?.report_id ?? null;
-
+    setCompleting(true);
     try {
       await api.updateJobStatus(jobId, { to_status: "closed" });
 
@@ -473,7 +460,35 @@ export default function TechnicianJobDetailsScreen() {
       router.back();
     } catch (e: unknown) {
       handleApiError(e, "Failed to complete job");
+    } finally {
+      setCompleting(false);
     }
+  };
+
+  const completeJob = () => {
+    if (!canEdit) return;
+
+    if (jobLocked) {
+      handleOdometerRequired();
+      return;
+    }
+
+    if (completedTasks.length === 0) {
+      Alert.alert(
+        "Add a completed task first",
+        "Please add at least 1 completed task before completing the job.",
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Complete Job",
+      "Are you sure you want to mark this job as complete? This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Complete Job", style: "default", onPress: doCompleteJob },
+      ],
+    );
   };
 
   const reportPhotoMedia: LocalMedia[] = useMemo(() => {
@@ -938,12 +953,12 @@ export default function TechnicianJobDetailsScreen() {
               style={[
                 styles.actionBtn,
                 styles.completeBtn,
-                (jobLocked || completedTasks.length === 0) && { opacity: 0.6 },
+                (jobLocked || completedTasks.length === 0 || completing) && { opacity: 0.6 },
               ]}
               onPress={completeJob}
-              disabled={jobLocked || completedTasks.length === 0}
+              disabled={jobLocked || completedTasks.length === 0 || completing}
             >
-              <Text style={styles.actionText}>Complete Job</Text>
+              <Text style={styles.actionText}>{completing ? "Completing…" : "Complete Job"}</Text>
             </Pressable>
 
             {jobLocked ? (

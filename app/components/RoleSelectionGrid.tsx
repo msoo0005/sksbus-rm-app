@@ -1,7 +1,7 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useMemo } from "react";
-import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Card, CardContent } from "./card";
 
 
@@ -18,18 +18,14 @@ export default function RoleSelectionGrid({ allowedRoles }: Props) {
     const cardMargin = 10;
     const sidePadding = 10;
 
-    // Example: 2 columns in landscape, 1 column in portrait (tweak to taste)
     const isLandscape = width > height;
-    const numColumns = isLandscape ? 2 : 1;
+    const numColumns = 2;
 
-    // Compute available width INSIDE the padded container
     const containerWidth = width - sidePadding * 2;
-
     const cardWidth =
       (containerWidth - cardMargin * (numColumns * 2)) / numColumns;
 
-    // Height can be a ratio (more stable than “numRows” math)
-    const cardHeight = isLandscape ? 270 : 190;
+    const cardHeight = isLandscape ? 220 : 170;
 
     return { cardWidth, cardHeight, cardMargin };
   }, [width, height]);
@@ -63,6 +59,13 @@ export default function RoleSelectionGrid({ allowedRoles }: Props) {
       icon: "boxes",
       color: "#a855f7",
     },
+    {
+      id: "buses",
+      title: "Bus Fleet",
+      description: "View & add buses in the database",
+      icon: "bus",
+      color: "#0891b2",
+    },
   ];
 
   const handleRolePress = (roleId: string) => {
@@ -77,7 +80,10 @@ export default function RoleSelectionGrid({ allowedRoles }: Props) {
   };
 
   return (
-    <View style={styles.gridContainer}>
+    <ScrollView
+      contentContainerStyle={styles.gridContainer}
+      showsVerticalScrollIndicator={false}
+    >
       {roles.map((role) => {
         const enabled = allowedRoles.includes(role.id);
 
@@ -152,7 +158,7 @@ export default function RoleSelectionGrid({ allowedRoles }: Props) {
           </Pressable>
         );
       })}
-    </View>
+    </ScrollView>
   );
 }
 

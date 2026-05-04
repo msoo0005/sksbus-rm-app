@@ -1,12 +1,12 @@
+import { FontAwesome5 } from "@expo/vector-icons";
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 type SegmentedTabsProps<T extends string> = {
   value: T;
   onChange: (value: T) => void;
-  tabs: { key: T; label: string }[];
+  tabs: { key: T; label: string; icon?: string }[];
 };
-
 
 export default function SegmentedTabs<T extends string>({
   value,
@@ -15,23 +15,28 @@ export default function SegmentedTabs<T extends string>({
 }: SegmentedTabsProps<T>) {
   return (
     <View style={styles.container}>
-      {tabs.map(tab => (
-        <Pressable
-          key={tab.key}
-          onPress={() => onChange(tab.key)}
-          style={[
-            styles.tab,
-            value === tab.key && styles.activeTab,
-          ]}
-        >
-          <Text style={[
-            styles.text,
-            value === tab.key && styles.activeText,
-          ]}>
-            {tab.label}
-          </Text>
-        </Pressable>
-      ))}
+      {tabs.map(tab => {
+        const active = value === tab.key;
+        return (
+          <Pressable
+            key={tab.key}
+            onPress={() => onChange(tab.key)}
+            style={[styles.tab, active && styles.activeTab]}
+          >
+            {tab.icon && (
+              <FontAwesome5
+                name={tab.icon}
+                size={11}
+                color={active ? "#000" : "#666"}
+                style={{ marginRight: 5 }}
+              />
+            )}
+            <Text style={[styles.text, active && styles.activeText]}>
+              {tab.label}
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -47,7 +52,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   tab: {
-    flex: 1, // make all tabs equal width
+    flex: 1,
+    flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     paddingVertical: 10,

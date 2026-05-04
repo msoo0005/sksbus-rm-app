@@ -1,3 +1,5 @@
+import { useRouter } from "expo-router";
+import React from "react";
 import { Dimensions, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import RoleSelectionGrid from "../components/RoleSelectionGrid";
@@ -16,7 +18,7 @@ type RoleKey =
   | "inventory_manager";
 
 const ROLE_ACCESS: Record<RoleKey, string[]> = {
-  admin: ["fleet-manager", "rm-manager", "technician", "inventory", "form"],
+  admin: ["fleet-manager", "rm-manager", "technician", "inventory", "form", "buses"],
   fleet_manager: ["fleet-manager", "form"],
   rm_manager: ["rm-manager"],
   technician: ["technician"],
@@ -24,18 +26,34 @@ const ROLE_ACCESS: Record<RoleKey, string[]> = {
   driver: ["form"],
 };
 
+const ROLE_REDIRECT: Partial<Record<RoleKey, string>> = {
+  fleet_manager: "/project-selector",
+  rm_manager: "/rm-manager",
+  technician: "/technician",
+  inventory_manager: "/inventory",
+  driver: "/project-selector",
+};
+
 export default function HomeScreen() {
   const { dbUser } = useSession();
-  console.log("DB USER ROLE:", dbUser)
+  const router = useRouter();
 
-  // fallback to driver while loading
   const role = (dbUser?.user_role ?? "driver") as RoleKey;
   const allowedRoles = ROLE_ACCESS[role] ?? [];
+  const redirect = ROLE_REDIRECT[role];
+
+  React.useEffect(() => {
+    if (redirect) {
+      router.replace(redirect as any);
+    }
+  }, [redirect]);
+
+  // Non-admin roles are redirected above; render nothing while navigating
+  if (redirect) return null;
 
   return (
     <SafeAreaView style={{ flex: 1 }}>
       <View style={styles.container}>
-        {/* ✅ FIX: pass allowedRoles */}
         <RoleSelectionGrid allowedRoles={allowedRoles} />
       </View>
     </SafeAreaView>
@@ -45,8 +63,6 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
     padding: sidePadding,
   },
   header: {

@@ -1,5 +1,6 @@
 import * as SecureStore from "expo-secure-store";
 import React from "react";
+import { setUnauthorizedHandler } from "./api/client";
 import { api } from "./api/client";
 
 type DbUser = {
@@ -78,6 +79,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     ]);
     setSession(null);
     setDbUser(null);
+  }, []);
+
+  React.useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setSession(null);
+      setDbUser(null);
+      SecureStore.deleteItemAsync("accessToken").catch(() => {});
+      SecureStore.deleteItemAsync("idToken").catch(() => {});
+      SecureStore.deleteItemAsync("refreshToken").catch(() => {});
+    });
+    return () => setUnauthorizedHandler(null);
   }, []);
 
   return (

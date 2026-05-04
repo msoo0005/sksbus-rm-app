@@ -1,7 +1,16 @@
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import * as React from "react";
-import { Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Image,
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useSession } from "./ctx";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -45,24 +54,19 @@ export default function SignIn() {
       scopes: ["openid", "email", "profile"],
       usePKCE: true,
     },
-    discovery
+    discovery,
   );
 
   React.useEffect(() => {
     (async () => {
       if (!response) return;
 
-      console.log("[Auth] issuer:", issuer);
-      console.log("[Auth] redirectUri:", redirectUri);
-      console.log("[Auth] response:", response);
-
       if (response.type !== "success") {
-        // If Cognito returns an error, surface it
         if (response.type === "error") {
           setError(
             (response.params?.error_description as string) ||
               (response.params?.error as string) ||
-              "Login error"
+              "Login error",
           );
         }
         return;
@@ -83,16 +87,8 @@ export default function SignIn() {
             redirectUri,
             extraParams: { code_verifier: request.codeVerifier },
           },
-          discovery
+          discovery,
         );
-
-        console.log("[Auth] token response:", {
-          hasAccessToken: !!tokenRes.accessToken,
-          hasIdToken: !!tokenRes.idToken,
-          hasRefreshToken: !!tokenRes.refreshToken,
-          tokenType: tokenRes.tokenType,
-          expiresIn: tokenRes.expiresIn,
-        });
 
         if (!tokenRes.accessToken) throw new Error("No access token returned");
         if (!tokenRes.idToken) throw new Error("No id token returned (required)");
@@ -103,7 +99,6 @@ export default function SignIn() {
           refreshToken: tokenRes.refreshToken,
         });
       } catch (e: any) {
-        console.log("[Auth] exchange error:", e);
         setError(e?.message ?? "Sign in failed");
       } finally {
         setBusy(false);
@@ -116,8 +111,6 @@ export default function SignIn() {
     setBusy(true);
     try {
       await signOut();
-
-      // ✅ No options: compatible across expo-auth-session versions
       await promptAsync();
     } catch (e: any) {
       setError(e?.message ?? "Failed to open login");
@@ -133,55 +126,172 @@ export default function SignIn() {
       await signOut();
       await WebBrowser.openAuthSessionAsync(logoutUrl, redirectUri);
     } catch (e: any) {
-      setError(e?.message ?? "Hard reset failed");
+      setError(e?.message ?? "Reset failed");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 20, gap: 12 }}>
-      <Pressable
-        disabled={!request || busy}
-        onPress={handleSignIn}
-        style={{
-          paddingVertical: 12,
-          paddingHorizontal: 18,
-          borderRadius: 10,
-          borderWidth: 1,
-          opacity: !request || busy ? 0.6 : 1,
-          minWidth: 180,
-          alignItems: "center",
-        }}
-      >
-        <Text>{busy ? "Signing in..." : "Sign In"}</Text>
-      </Pressable>
+    <SafeAreaView style={styles.page} edges={["top", "bottom"]}>
+      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
 
-      <Pressable
-        disabled={busy}
-        onPress={handleHardResetAuth}
-        style={{
-          paddingVertical: 12,
-          paddingHorizontal: 18,
-          borderRadius: 10,
-          borderWidth: 1,
-          opacity: busy ? 0.6 : 1,
-          minWidth: 180,
-          alignItems: "center",
-        }}
-      >
-        <Text>{busy ? "Please wait..." : "Hard Reset Auth"}</Text>
-      </Pressable>
+      {/* Logo area */}
+      <View style={styles.logoSection}>
+        <Image
+          source={require("../assets/images/sksbus-logo.png")}
+          style={styles.logo}
+          resizeMode="contain"
+        />
+        <View style={styles.dividerRow}>
+          <View style={styles.dividerLine} />
+          <Text style={styles.dividerText}>R&amp;M System</Text>
+          <View style={styles.dividerLine} />
+        </View>
+      </View>
 
-      {!!error && <Text style={{ marginTop: 6 }}>{error}</Text>}
+      {/* Card */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Welcome back</Text>
+        <Text style={styles.cardSub}>
+          Sign in with your SKSBUS account to continue.
+        </Text>
 
-      <Text style={{ marginTop: 6, fontSize: 12, opacity: 0.7, textAlign: "center" }}>
-        Redirect URI: {redirectUri}
-      </Text>
+        {!!error && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
 
-      <Text style={{ marginTop: 6, fontSize: 12, opacity: 0.7, textAlign: "center" }}>
-        Issuer: {issuer}
-      </Text>
-    </View>
+        <Pressable
+          style={[styles.signInBtn, (!request || busy) && styles.signInBtnDisabled]}
+          onPress={handleSignIn}
+          disabled={!request || busy}
+        >
+          {busy ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text style={styles.signInBtnText}>Sign In</Text>
+          )}
+        </Pressable>
+      </View>
+
+      {/* Footer */}
+      <View style={styles.footer}>
+        <Text style={styles.footerText}>
+          Having trouble signing in?{" "}
+        </Text>
+        <Pressable onPress={handleHardResetAuth} disabled={busy}>
+          <Text style={[styles.resetLink, busy && { opacity: 0.5 }]}>Reset auth session</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  page: {
+    flex: 1,
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+  },
+
+  logoSection: {
+    alignItems: "center",
+    marginBottom: 40,
+  },
+  logo: {
+    width: 280,
+    height: 66,
+    marginBottom: 20,
+  },
+  dividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    width: "100%",
+    maxWidth: 340,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: "#E5E7EB",
+  },
+  dividerText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
+  },
+
+  card: {
+    backgroundColor: "#F9FAFB",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 28,
+    gap: 8,
+  },
+  cardTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#111827",
+  },
+  cardSub: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#6B7280",
+    marginBottom: 8,
+    lineHeight: 20,
+  },
+
+  errorBox: {
+    backgroundColor: "#FEF2F2",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#FECACA",
+    padding: 12,
+  },
+  errorText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#DC2626",
+  },
+
+  signInBtn: {
+    marginTop: 8,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  signInBtnDisabled: { opacity: 0.55 },
+  signInBtnText: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#fff",
+    letterSpacing: 0.3,
+  },
+
+  footer: {
+    marginTop: 28,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
+  footerText: {
+    fontSize: 13,
+    color: "#9CA3AF",
+    fontWeight: "500",
+  },
+  resetLink: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#6B7280",
+    textDecorationLine: "underline",
+  },
+});

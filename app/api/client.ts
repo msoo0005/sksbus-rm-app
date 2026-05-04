@@ -49,6 +49,12 @@ export async function clearStoredTokens() {
   ]);
 }
 
+let _unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  _unauthorizedHandler = fn;
+}
+
 /**
  * Access-token request (kept for future use if you reconfigure the authoriser).
  * NOTE: your current API Gateway authoriser accepts ID tokens (because /me works with idToken).
@@ -110,6 +116,9 @@ async function requestWithIdToken<T = any>(
   const data = text ? safeJson(text) : null;
 
   if (!res.ok) {
+    if (res.status === 401) {
+      _unauthorizedHandler?.();
+    }
     const msg =
       (data && (data.message || data.error || JSON.stringify(data))) ||
       text ||
@@ -138,8 +147,48 @@ export const api = {
   // auth/user (protected)
   me: () => requestWithIdToken<DbMe>("/me"),
 
+  // projects (protected)
+  projects: () => requestWithIdToken<{ project_id: string; project_name: string; project_desc?: string | null }[]>("/projects"),
+
+  myProjects: () => requestWithIdToken<{ project_id: string; project_name: string; project_desc?: string | null }[]>("/me/projects"),
+
   // buses (protected)
-  buses: () => requestWithIdToken<any[]>("/buses"),
+  buses: (params?: { project_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.project_id) qs.set("project_id", params.project_id);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return requestWithIdToken<any[]>(`/buses${suffix}`);
+  },
+
+  createBus: (body: {
+    bus_id: string;
+    bus_route?: string;
+    bus_model?: string;
+    project_id?: string;
+  }) =>
+    requestWithIdToken<{ bus_id: number }>("/buses", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateBus: (
+    busId: string | number,
+    body: {
+      bus_id?: string;
+      bus_route?: string;
+      bus_model?: string;
+      project_id?: string;
+    },
+  ) =>
+    requestWithIdToken<{ success: true }>(`/buses/${busId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteBus: (busId: string | number) =>
+    requestWithIdToken<{ success: true }>(`/buses/${busId}`, {
+      method: "DELETE",
+    }),
 
   // ===== REPORTS =====
   listReports: (params?: {
