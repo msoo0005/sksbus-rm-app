@@ -27,6 +27,8 @@ export type Report = {
 
   // From DB: report_location
   location: string;
+  lat?: number | null;
+  lng?: number | null;
 
   // From DB: report_desc
   description: string;

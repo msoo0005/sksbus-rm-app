@@ -99,6 +99,8 @@ function mapApiRowToReport(r: any, job?: JobSummary | null): Report {
     severity: normaliseSeverity(r?.report_priority ?? job?.report_priority),
     vehicle: String(r?.bus_id ?? job?.bus_id ?? "—"),
     location: String(r?.report_location ?? job?.report_location ?? "—"),
+    lat: r?.report_lat ?? null,
+    lng: r?.report_lng ?? null,
     description: String(r?.report_desc ?? job?.report_desc ?? job?.job_desc ?? ""),
     date: formatDate(r?.report_uploaded_at ?? job?.report_uploaded_at ?? job?.job_created_at),
     status: normaliseStatusToUi(r?.report_status ?? job?.job_status),
@@ -596,7 +598,7 @@ export default function RMManagerScreen() {
             { key: "pending", label: `Pending (${counts.pending})` },
             { key: "open", label: `Open (${counts.open})` },
             { key: "closed", label: `Closed (${counts.closed})` },
-            { key: "kpi", label: "Reports & KPIs", icon: "chart-bar" },
+            { key: "kpi", label: "KPIs", icon: "chart-bar" },
           ]}
         />
 

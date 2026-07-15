@@ -28,6 +28,83 @@ async function getIdToken() {
   return await SecureStore.getItemAsync("idToken");
 }
 
+async function getRefreshToken() {
+  return await SecureStore.getItemAsync("refreshToken");
+}
+
+async function storeTokens(tokens: {
+  accessToken?: string;
+  idToken?: string;
+  refreshToken?: string;
+}) {
+  const ops: Promise<void>[] = [];
+  if (tokens.accessToken)
+    ops.push(SecureStore.setItemAsync("accessToken", tokens.accessToken));
+  if (tokens.idToken)
+    ops.push(SecureStore.setItemAsync("idToken", tokens.idToken));
+  if (tokens.refreshToken)
+    ops.push(SecureStore.setItemAsync("refreshToken", tokens.refreshToken));
+  await Promise.all(ops);
+}
+
+// Cognito token endpoint, used to silently refresh expired access/ID tokens.
+const cognitoRegion = (process.env.EXPO_PUBLIC_COGNITO_REGION || "").trim();
+const cognitoDomain = (process.env.EXPO_PUBLIC_COGNITO_DOMAIN || "").trim();
+const cognitoClientId = (
+  process.env.EXPO_PUBLIC_COGNITO_CLIENT_ID || ""
+).trim();
+const COGNITO_TOKEN_ENDPOINT =
+  cognitoRegion && cognitoDomain
+    ? `https://${cognitoDomain}.auth.${cognitoRegion}.amazoncognito.com/oauth2/token`
+    : null;
+
+// Dedupe concurrent refreshes so parallel 401s don't each spend the refresh token.
+let _refreshPromise: Promise<boolean> | null = null;
+
+async function refreshTokens(): Promise<boolean> {
+  if (!COGNITO_TOKEN_ENDPOINT || !cognitoClientId) return false;
+  if (_refreshPromise) return _refreshPromise;
+
+  _refreshPromise = (async () => {
+    try {
+      const refreshToken = await getRefreshToken();
+      if (!refreshToken) return false;
+
+      const res = await fetch(COGNITO_TOKEN_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: cognitoClientId,
+          refresh_token: refreshToken,
+        }).toString(),
+      });
+
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      if (!data.access_token || !data.id_token) return false;
+
+      // Cognito only returns a new refresh_token if refresh-token rotation is enabled.
+      await storeTokens({
+        accessToken: data.access_token,
+        idToken: data.id_token,
+        refreshToken: data.refresh_token,
+      });
+
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  try {
+    return await _refreshPromise;
+  } finally {
+    _refreshPromise = null;
+  }
+}
+
 function safeJson(t: string) {
   try {
     return JSON.parse(t);
@@ -62,8 +139,10 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
 export async function request<T = any>(
   path: string,
   init: RequestInit = {},
+  _isRetry = false,
 ): Promise<T> {
   const token = await getAccessToken();
+  const usingOwnToken = !!token && !(init.headers as any)?.Authorization;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -77,6 +156,13 @@ export async function request<T = any>(
   const url = joinUrl(path);
 
   const res = await fetch(url, { ...init, headers });
+
+  if (res.status === 401 && usingOwnToken && !_isRetry) {
+    const refreshed = await refreshTokens();
+    if (refreshed) return request<T>(path, init, true);
+    _unauthorizedHandler?.();
+  }
+
   const text = await res.text();
   const data = text ? safeJson(text) : null;
 
@@ -99,6 +185,7 @@ export async function request<T = any>(
 async function requestWithIdToken<T = any>(
   path: string,
   init: RequestInit = {},
+  _isRetry = false,
 ): Promise<T> {
   const idToken = await getIdToken();
   if (!idToken) throw new Error("Missing idToken");
@@ -112,13 +199,17 @@ async function requestWithIdToken<T = any>(
   const url = joinUrl(path);
 
   const res = await fetch(url, { ...init, headers });
+
+  if (res.status === 401 && !_isRetry) {
+    const refreshed = await refreshTokens();
+    if (refreshed) return requestWithIdToken<T>(path, init, true);
+    _unauthorizedHandler?.();
+  }
+
   const text = await res.text();
   const data = text ? safeJson(text) : null;
 
   if (!res.ok) {
-    if (res.status === 401) {
-      _unauthorizedHandler?.();
-    }
     const msg =
       (data && (data.message || data.error || JSON.stringify(data))) ||
       text ||
@@ -148,9 +239,23 @@ export const api = {
   me: () => requestWithIdToken<DbMe>("/me"),
 
   // projects (protected)
-  projects: () => requestWithIdToken<{ project_id: string; project_name: string; project_desc?: string | null }[]>("/projects"),
+  projects: () =>
+    requestWithIdToken<
+      {
+        project_id: string;
+        project_name: string;
+        project_desc?: string | null;
+      }[]
+    >("/projects"),
 
-  myProjects: () => requestWithIdToken<{ project_id: string; project_name: string; project_desc?: string | null }[]>("/me/projects"),
+  myProjects: () =>
+    requestWithIdToken<
+      {
+        project_id: string;
+        project_name: string;
+        project_desc?: string | null;
+      }[]
+    >("/me/projects"),
 
   // buses (protected)
   buses: (params?: { project_id?: string }) => {

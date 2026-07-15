@@ -1,4 +1,5 @@
 // app/(app)/fleet-manager-history.tsx
+import { FontAwesome5 } from "@expo/vector-icons";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -11,7 +12,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api } from "../api/client";
 import JobDetailsView from "../components/JobDetailsView";
@@ -95,6 +96,8 @@ function mapApiRowToReport(r: any): FleetReport {
     severity: normaliseSeverity(r?.report_priority),
     vehicle: String(r?.bus_id ?? "—"),
     location: String(r?.report_location ?? "—"),
+    lat: r?.report_lat ?? null,
+    lng: r?.report_lng ?? null,
     description: String(r?.report_desc ?? "—"),
     date: formatDate(r?.report_uploaded_at),
     status: normaliseStatusToUi(r?.report_status),
@@ -106,6 +109,7 @@ function mapApiRowToReport(r: any): FleetReport {
 export default function FleetManagerHistoryScreen() {
   const { dbUser } = useSession() as any;
   const name = dbUser?.user_name ?? "Fleet Manager";
+  const insets = useSafeAreaInsets();
 
   const [tab, setTab] = useState<Tab>("submitted");
   const [reports, setReports] = useState<FleetReport[]>([]);
@@ -252,18 +256,22 @@ export default function FleetManagerHistoryScreen() {
       <Modal
         visible={jobModalVisible}
         animationType="slide"
+        presentationStyle="pageSheet"
         onRequestClose={closeModal}
       >
-        <SafeAreaView style={styles.modalSafeArea}>
-          <View style={styles.modalTopBar}>
-            <Text style={styles.modalTitle}>
-              {selectedJobId ? `Job #${selectedJobId}` : "Job Details"}
-            </Text>
-
-            <Pressable onPress={closeModal} style={styles.closeBtn}>
-              <Text style={styles.closeBtnText}>Close</Text>
+        <View style={[styles.modalScreen, { paddingTop: insets.top }]}>
+          <View style={styles.modalHeader}>
+            <View style={styles.modalHeaderLeft}>
+              <Text style={styles.modalEyebrow}>JOB</Text>
+              <Text style={styles.modalTitle}>
+                {selectedJobId ? `#${selectedJobId}` : "—"}
+              </Text>
+            </View>
+            <Pressable onPress={closeModal} style={styles.closeBtn} hitSlop={8}>
+              <FontAwesome5 name="times" size={14} color="#374151" />
             </Pressable>
           </View>
+          <View style={styles.modalDivider} />
 
           {selectedJobId ? (
             <JobDetailsView
@@ -275,7 +283,7 @@ export default function FleetManagerHistoryScreen() {
               <Text style={styles.emptyText}>No job selected.</Text>
             </View>
           )}
-        </SafeAreaView>
+        </View>
       </Modal>
     </>
   );
@@ -323,34 +331,44 @@ const styles = StyleSheet.create({
     color: "#6b7280",
   },
 
-  modalSafeArea: {
+  modalScreen: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: "#F9FAFB",
   },
-  modalTopBar: {
-    paddingTop: 14,
-    paddingBottom: 10,
-    paddingHorizontal: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#e5e7eb",
+  modalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
     backgroundColor: "#fff",
+    gap: 12,
+  },
+  modalHeaderLeft: { flex: 1 },
+  modalEyebrow: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 1.5,
+    marginBottom: 2,
   },
   modalTitle: {
-    fontSize: 16,
+    fontSize: 30,
     fontWeight: "800",
     color: "#111827",
+    letterSpacing: -0.5,
+  },
+  modalDivider: {
+    height: 1,
+    backgroundColor: "#E5E7EB",
   },
   closeBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: "#111827",
-  },
-  closeBtnText: {
-    color: "#fff",
-    fontWeight: "800",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

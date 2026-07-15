@@ -53,6 +53,7 @@ export default function SignIn() {
       responseType: AuthSession.ResponseType.Code,
       scopes: ["openid", "email", "profile"],
       usePKCE: true,
+      extraParams: { prompt: "login" },
     },
     discovery,
   );

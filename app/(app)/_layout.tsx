@@ -74,13 +74,36 @@ function RouteGuard() {
   return null;
 }
 
-function ProfileButton() {
+// Only the pressable avatar — no modal here so iOS doesn't render a pill affordance
+function AvatarButton({ onPress }: { onPress: () => void }) {
+  const { dbUser } = useSession();
+  if (!dbUser) return null;
+
+  const initials = getInitials(dbUser.user_name || dbUser.user_email);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.avatarBtn, pressed && { opacity: 0.8 }]}
+    >
+      <Text style={styles.avatarText}>{initials}</Text>
+    </Pressable>
+  );
+}
+
+// Modal lives at layout root level, outside the Stack header tree
+function ProfileModal({
+  visible,
+  onClose,
+}: {
+  visible: boolean;
+  onClose: () => void;
+}) {
   const router = useRouter();
   const { dbUser, signOut } = useSession();
-  const [visible, setVisible] = React.useState(false);
 
   const handleSignOut = async () => {
-    setVisible(false);
+    onClose();
     await signOut();
     router.replace("/sign-in");
   };
@@ -91,72 +114,70 @@ function ProfileButton() {
   const roleLabel = ROLE_LABEL[dbUser.user_role] ?? dbUser.user_role;
 
   return (
-    <>
-      <Pressable
-        onPress={() => setVisible(true)}
-        style={styles.avatarBtn}
-        hitSlop={8}
-      >
-        <Text style={styles.avatarText}>{initials}</Text>
-      </Pressable>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.backdrop} onPress={onClose}>
+        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.avatarLarge}>
+            <Text style={styles.avatarLargeText}>{initials}</Text>
+          </View>
 
-      <Modal
-        visible={visible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setVisible(false)}
-      >
-        <Pressable style={styles.backdrop} onPress={() => setVisible(false)}>
-          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-            {/* Large avatar */}
-            <View style={styles.avatarLarge}>
-              <Text style={styles.avatarLargeText}>{initials}</Text>
-            </View>
+          <Text style={styles.name}>{dbUser.user_name}</Text>
+          <Text style={styles.email}>{dbUser.user_email}</Text>
 
-            {/* User info */}
-            <Text style={styles.name}>{dbUser.user_name}</Text>
-            <Text style={styles.email}>{dbUser.user_email}</Text>
+          <View style={styles.roleBadge}>
+            <Text style={styles.roleBadgeText}>{roleLabel}</Text>
+          </View>
 
-            <View style={styles.roleBadge}>
-              <Text style={styles.roleBadgeText}>{roleLabel}</Text>
-            </View>
+          <View style={styles.divider} />
 
-            <View style={styles.divider} />
-
-            <Pressable style={styles.signOutBtn} onPress={handleSignOut}>
-              <Text style={styles.signOutText}>Sign Out</Text>
-            </Pressable>
+          <Pressable style={styles.signOutBtn} onPress={handleSignOut}>
+            <Text style={styles.signOutText}>Sign Out</Text>
           </Pressable>
         </Pressable>
-      </Modal>
-    </>
+      </Pressable>
+    </Modal>
   );
 }
 
 export default function RootLayout() {
+  const [profileVisible, setProfileVisible] = React.useState(false);
+
+  // Stable reference — setProfileVisible from useState never changes
+  const renderHeaderRight = React.useCallback(
+    () => <AvatarButton onPress={() => setProfileVisible(true)} />,
+    [],
+  );
+
   return (
     <>
       <RouteGuard />
-      <Stack
-        screenOptions={{
-          headerRight: () => <ProfileButton />,
-        }}
-      >
-        <Stack.Screen name="index" options={{ title: "Home" }} />
-        <Stack.Screen name="fleet-manager" options={{ title: "Fleet Manager" }} />
+      <ProfileModal
+        visible={profileVisible}
+        onClose={() => setProfileVisible(false)}
+      />
+      <Stack>
+        <Stack.Screen name="index" options={{ title: "Home", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="fleet-manager" options={{ title: "Fleet Manager", headerRight: renderHeaderRight }} />
         <Stack.Screen
           name="project-selector"
-          options={{ title: "Select Your Project" }}
+          options={{ title: "Select Your Project", headerRight: renderHeaderRight }}
         />
         <Stack.Screen
           name="fleet-manager-history"
-          options={{ title: "Your Submitted Reports" }}
+          options={{ title: "Your Submitted Reports", headerRight: renderHeaderRight }}
         />
-        <Stack.Screen name="rm-manager" options={{ title: "R&M Manager" }} />
-        <Stack.Screen name="technician/index" options={{ title: "Technician" }} />
-        <Stack.Screen name="inventory" options={{ title: "Inventory Manager" }} />
-        <Stack.Screen name="form" options={{ title: "Report Form" }} />
-        <Stack.Screen name="buses" options={{ title: "Bus Fleet" }} />
+        <Stack.Screen name="rm-manager" options={{ title: "R&M Manager", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="rm-manager/job/[id]" options={{ title: "Job Details", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="technician/index" options={{ title: "Technician", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="technician/job/[id]" options={{ title: "Job Details", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="inventory" options={{ title: "Inventory Manager", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="form" options={{ title: "Report Form", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="buses" options={{ title: "Bus Fleet", headerRight: renderHeaderRight }} />
       </Stack>
     </>
   );
@@ -170,7 +191,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#DC2626",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 4,
+    marginRight: 8,
+    overflow: "hidden",
   },
   avatarText: {
     color: "#fff",

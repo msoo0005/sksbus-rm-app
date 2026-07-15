@@ -1,193 +1,198 @@
-// FleetManagerScreen.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useMemo } from "react";
-import {
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  useWindowDimensions,
-} from "react-native";
-import { Card, CardContent } from "../components/card";
+import React from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-// ✅ define a strict type (optional but recommended)
 type ReportType = "problem" | "repair" | "accident";
+
+const ACTIONS = [
+  {
+    id: "report-problem",
+    title: "Report Problem",
+    description: "Vehicle issue or malfunction",
+    icon: "exclamation-triangle",
+    accent: "#DC2626",
+    accentLight: "#FEF2F2",
+    formType: "problem" as ReportType,
+  },
+  {
+    id: "request-repair",
+    title: "Request Repair",
+    description: "Schedule maintenance or servicing",
+    icon: "wrench",
+    accent: "#2563EB",
+    accentLight: "#EFF6FF",
+    formType: "repair" as ReportType,
+  },
+  {
+    id: "report-accident",
+    title: "Report Accident",
+    description: "Collision or damage incident",
+    icon: "car-crash",
+    accent: "#EA580C",
+    accentLight: "#FFF7ED",
+    formType: "accident" as ReportType,
+  },
+  {
+    id: "my-report-history",
+    title: "My Report History",
+    description: "View reports you've submitted",
+    icon: "history",
+    accent: "#374151",
+    accentLight: "#F3F4F6",
+    formType: "problem" as ReportType,
+  },
+];
 
 export default function FleetManagerScreen() {
   const router = useRouter();
 
-  const report_type: {
-    id: string;
-    title: string;
-    description: string;
-    icon: any;
-    color: string;
-    formType: ReportType; // ✅ add this
-  }[] = [
-    {
-      id: "report-problem",
-      title: "Report Problem",
-      description: "Vehicle issue or malfunction",
-      icon: "exclamation-triangle",
-      color: "red",
-      formType: "problem",
-    },
-    {
-      id: "request-repair",
-      title: "Request Repair",
-      description: "Schedule maintenance needed",
-      icon: "wrench",
-      color: "blue",
-      formType: "repair",
-    },
-    {
-      id: "report-accident",
-      title: "Report Accident",
-      description: "Collision or damage incident",
-      icon: "car-crash",
-      color: "#f97316",
-      formType: "accident",
-    },
-    {
-      id: "my-report-history",
-      title: "My Report History",
-      description: "View reports you’ve submitted",
-      icon: "history",
-      color: "#111827",
-      // placeholder (not used for this card)
-      formType: "problem",
-    },
-  ];
-
-  const { width, height } = useWindowDimensions();
-
-  const layout = useMemo(() => {
-    const cardMargin = 10;
-    const sidePadding = 10;
-
-    const isLandscape = width > height;
-    const numColumns = isLandscape ? 1 : 1;
-
-    const containerWidth = width - sidePadding * 2;
-
-    const cardWidth =
-      (containerWidth - cardMargin * (numColumns * 2)) / numColumns;
-    const cardHeight = isLandscape ? 270 : 190;
-
-    return { cardWidth, cardHeight, cardMargin };
-  }, [width, height]);
+  const handlePress = (action: (typeof ACTIONS)[0]) => {
+    if (action.id === "my-report-history") {
+      router.push("./fleet-manager-history");
+      return;
+    }
+    router.push({ pathname: "./form", params: { type: action.formType } });
+  };
 
   return (
-    <View style={styles.gridContainer}>
-      {report_type.map((report) => (
-        <Pressable
-          key={report.id}
-          onPress={() => {
-            if (report.id === "my-report-history") {
-              router.push("./fleet-manager-history");
-              return;
-            }
+    <ScrollView
+      style={styles.page}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
+      <Text style={styles.sectionLabel}>SELECT AN ACTION</Text>
 
-            router.push({
-              pathname: "./form",
-              params: { type: report.formType }, // ✅ pass it here
-            });
-          }}
+      {ACTIONS.map((action) => (
+        <Pressable
+          key={action.id}
+          onPress={() => handlePress(action)}
+          style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
         >
-          {({ pressed }) => (
-            <View
-              style={{
-                transform: [
-                  { scale: pressed ? 0.97 : 1 },
-                  { translateY: pressed ? 2 : 0 },
-                ],
-              }}
-            >
-              <Card
+          {() => (
+            <>
+              <View
                 style={[
-                  styles.card,
-                  {
-                    width: layout.cardWidth,
-                    margin: layout.cardMargin,
-                  },
-                  pressed && styles.cardPressed,
+                  styles.iconBox,
+                  { backgroundColor: action.accentLight },
                 ]}
               >
-                <CardContent style={styles.cardContent}>
-                  <View
-                    style={[
-                      styles.iconWrapper,
-                      { backgroundColor: report.color },
-                    ]}
-                  >
-                    <FontAwesome5
-                      name={report.icon as any}
-                      size={40}
-                      color="#fff"
-                    />
-                  </View>
+                <FontAwesome5
+                  name={action.icon as any}
+                  size={22}
+                  color={action.accent}
+                />
+              </View>
 
-                  <View style={styles.textWrapper}>
-                    <Text style={styles.cardTitle}>{report.title}</Text>
-                    <Text style={styles.cardDescription}>
-                      {report.description}
-                    </Text>
-                  </View>
-                </CardContent>
-              </Card>
-            </View>
+              <View style={styles.textBlock}>
+                <Text style={styles.cardTitle}>{action.title}</Text>
+                <Text style={styles.cardDesc}>{action.description}</Text>
+              </View>
+
+              <View
+                style={[
+                  styles.chevronBox,
+                  { backgroundColor: action.accentLight },
+                ]}
+              >
+                <FontAwesome5
+                  name="chevron-right"
+                  size={12}
+                  color={action.accent}
+                />
+              </View>
+
+              {/* Accent bar */}
+              <View
+                style={[styles.accentBar, { backgroundColor: action.accent }]}
+              />
+            </>
           )}
         </Pressable>
       ))}
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  gridContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    padding: 10,
+  page: {
+    flex: 1,
+    backgroundColor: "#F9FAFB",
   },
+  content: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 32,
+    gap: 14,
+  },
+
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 1.5,
+    marginBottom: 4,
+  },
+
   card: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 15,
-    elevation: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 18,
+    gap: 16,
+    overflow: "hidden",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 1,
-  },
-  cardTitle: {
-    fontWeight: "bold",
-    marginBottom: 5,
-    textAlign: "center",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
   cardPressed: {
-    elevation: 2,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15,
-    shadowRadius: 2,
+    transform: [{ scale: 0.98 }],
+    shadowOpacity: 0.03,
   },
-  cardContent: {
+
+  iconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 24,
-    gap: 16,
   },
-  iconWrapper: {
-    padding: 16,
-    borderRadius: 24,
-    marginBottom: 8,
+
+  textBlock: {
+    flex: 1,
   },
-  textWrapper: {
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 3,
+  },
+  cardDesc: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#6B7280",
+  },
+
+  chevronBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     alignItems: "center",
+    justifyContent: "center",
   },
-  cardDescription: {
-    fontSize: 14,
-    color: "#6b7280",
-    textAlign: "center",
+
+  accentBar: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 4,
+    height: "100%",
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
   },
 });

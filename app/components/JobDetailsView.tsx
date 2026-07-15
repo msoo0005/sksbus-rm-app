@@ -1,5 +1,6 @@
-// components/JobDetailsView.tsx
+import { FontAwesome5 } from "@expo/vector-icons";
 import React, { useEffect, useMemo, useState } from "react";
+import { openDirections } from "../utils/directions";
 import {
   Alert,
   Image,
@@ -23,18 +24,14 @@ type JobListItem = {
   job_desc: string | null;
   job_status: string;
   technician_user_id: number | null;
-
   job_created_at?: string | null;
-  job_accepted_at?: string | null; // ✅ NEW (needs to exist in /jobs row)
+  job_accepted_at?: string | null;
   job_odometer?: number | null;
-
   report_id: number | null;
   report_type: string | null;
   report_priority: string | null;
   bus_id: string | null;
   reporter_name: string | null;
-
-  // ✅ optional (if your /jobs returns it)
   technician_name?: string | null;
 };
 
@@ -43,6 +40,8 @@ type ReportDto = {
   report_type: string;
   report_desc?: string | null;
   report_location?: string | null;
+  report_lat?: number | null;
+  report_lng?: number | null;
   report_priority?: string | null;
   bus_id?: string | null;
   report_uploaded_at?: string | null;
@@ -64,9 +63,7 @@ const isNonEmptyString = (x: unknown): x is string =>
   typeof x === "string" && x.trim().length > 0;
 
 function toLower(x: unknown) {
-  return String(x ?? "")
-    .trim()
-    .toLowerCase();
+  return String(x ?? "").trim().toLowerCase();
 }
 
 function normaliseReportType(x: unknown): StatusType {
@@ -77,8 +74,7 @@ function normaliseReportType(x: unknown): StatusType {
 
 function normalisePriority(x: unknown): StatusType {
   const v = toLower(x);
-  if (v === "low" || v === "medium" || v === "high" || v === "critical")
-    return v;
+  if (v === "low" || v === "medium" || v === "high" || v === "critical") return v;
   return "medium";
 }
 
@@ -93,11 +89,41 @@ function formatAssignee(job?: JobListItem | null) {
   if (!job) return "—";
   const name = (job.technician_name ?? "").trim();
   if (name) return name;
-
   const id = job.technician_user_id;
   if (typeof id === "number" && Number.isFinite(id)) return `User #${id}`;
-
   return "Unassigned";
+}
+
+function Field({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <View style={s.field}>
+      <Text style={s.fieldLabel}>{label}</Text>
+      <Text style={s.fieldValue}>{value || "—"}</Text>
+    </View>
+  );
+}
+
+function SectionCard({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={s.card}>
+      <View style={s.cardHeader}>
+        <View style={s.cardIconBox}>
+          <FontAwesome5 name={icon as any} size={13} color="#6B7280" />
+        </View>
+        <Text style={s.cardTitle}>{title}</Text>
+      </View>
+      <View style={s.cardDivider} />
+      {children}
+    </View>
+  );
 }
 
 export default function JobDetailsView({
@@ -108,14 +134,11 @@ export default function JobDetailsView({
   headerHint?: string;
 }) {
   const [loading, setLoading] = useState(false);
-
   const [jobSummary, setJobSummary] = useState<JobListItem | null>(null);
   const [report, setReport] = useState<ReportDto | null>(null);
   const [tasks, setTasks] = useState<JobTask[]>([]);
-
   const [reportPhotoUrls, setReportPhotoUrls] = useState<string[]>([]);
   const [loadingReportPhotos, setLoadingReportPhotos] = useState(false);
-
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
 
@@ -126,14 +149,12 @@ export default function JobDetailsView({
 
   const openViewer = (index: number) => {
     if (!reportPhotoUrls.length) return;
-    const safe = Math.min(Math.max(index, 0), reportPhotoUrls.length - 1);
-    setViewerIndex(safe);
+    setViewerIndex(Math.min(Math.max(index, 0), reportPhotoUrls.length - 1));
     setViewerVisible(true);
   };
 
   const loadReportPhotos = async (reportId: number) => {
     if (!Number.isFinite(reportId) || reportId <= 0) return;
-
     setLoadingReportPhotos(true);
     try {
       const media = (await api.listReportMedia(reportId)) as ReportMedia[];
@@ -150,7 +171,6 @@ export default function JobDetailsView({
 
   const fetchAll = async () => {
     if (!Number.isFinite(jobId) || jobId <= 0) return;
-
     setLoading(true);
     try {
       const allJobs = (await api.listJobs()) as JobListItem[];
@@ -190,8 +210,7 @@ export default function JobDetailsView({
       .sort((a, b) => {
         const ad = a.completed_at ? new Date(a.completed_at).getTime() : 0;
         const bd = b.completed_at ? new Date(b.completed_at).getTime() : 0;
-        if (bd !== ad) return bd - ad;
-        return (b.task_order ?? 0) - (a.task_order ?? 0);
+        return bd !== ad ? bd - ad : (b.task_order ?? 0) - (a.task_order ?? 0);
       });
   }, [tasks]);
 
@@ -200,165 +219,172 @@ export default function JobDetailsView({
   const acceptedAtLabel = useMemo(() => {
     const iso =
       jobSummary?.job_accepted_at ??
-      // fallback if you never added accepted_at yet:
       (jobSummary?.technician_user_id ? jobSummary?.job_created_at : null);
-
     return formatDateTime(iso ?? null);
-  }, [
-    jobSummary?.job_accepted_at,
-    jobSummary?.job_created_at,
-    jobSummary?.technician_user_id,
-  ]);
+  }, [jobSummary?.job_accepted_at, jobSummary?.job_created_at, jobSummary?.technician_user_id]);
 
   return (
     <>
-      <ScrollView
-        style={styles.page}
-        contentContainerStyle={styles.pageContent}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <Text style={styles.headerTitle}>Job #{jobId}</Text>
+      <ScrollView style={s.page} contentContainerStyle={s.content}>
 
-            <Text style={styles.headerSubtitle}>
-              {jobSummary?.bus_id ?? "—"}
-              {report?.report_location ? ` • ${report.report_location}` : ""}
-            </Text>
-
-            {/* ✅ NEW: Assigned + Accepted */}
-            <View style={styles.metaRow}>
-              <View style={styles.metaPill}>
-                <Text style={styles.metaLabel}>Assigned to</Text>
-                <Text style={styles.metaValue}>{assigneeLabel}</Text>
-              </View>
-
-              <View style={styles.metaPill}>
-                <Text style={styles.metaLabel}>Accepted</Text>
-                <Text style={styles.metaValue}>{acceptedAtLabel}</Text>
-              </View>
+        {/* ── Hero header ── */}
+        <View style={s.hero}>
+          <View style={s.heroTop}>
+            <View style={s.heroLeft}>
+              <Text style={s.heroEyebrow}>JOB</Text>
+              <Text style={s.heroId}>#{jobId}</Text>
+              {loading && <Text style={s.loadingText}>Loading…</Text>}
             </View>
-
-            <Text style={styles.readOnlyHint}>{headerHint ?? "View only"}</Text>
-
-            {loading && <Text style={styles.readOnlyHint}>Loading…</Text>}
+            <View style={s.badgeStack}>
+              <StatusBadge type={normaliseReportType(jobSummary?.report_type)} />
+              <StatusBadge type={normalisePriority(jobSummary?.report_priority)} />
+            </View>
           </View>
 
-          <View style={styles.headerRight}>
-            <StatusBadge type={normaliseReportType(jobSummary?.report_type)} />
-            <StatusBadge
-              type={normalisePriority(jobSummary?.report_priority)}
-            />
-          </View>
-        </View>
+          {(jobSummary?.bus_id || report?.report_location) && (
+            <View style={s.heroSubRow}>
+              {jobSummary?.bus_id && (
+                <View style={s.heroChip}>
+                  <FontAwesome5 name="bus" size={11} color="#6B7280" />
+                  <Text style={s.heroChipText}>{jobSummary.bus_id}</Text>
+                </View>
+              )}
+              {report?.report_location && (
+                <Pressable
+                  style={({ pressed }) => [s.heroChip, report.report_lat != null && s.heroChipTappable, pressed && { opacity: 0.6 }]}
+                  onPress={() => {
+                    if (report.report_lat != null && report.report_lng != null) {
+                      openDirections(report.report_lat, report.report_lng);
+                    }
+                  }}
+                  disabled={report.report_lat == null}
+                >
+                  <FontAwesome5 name="map-marker-alt" size={11} color={report.report_lat != null ? "#2563EB" : "#6B7280"} />
+                  <Text style={[s.heroChipText, report.report_lat != null && { color: "#2563EB" }]}>{report.report_location}</Text>
+                  {report.report_lat != null && (
+                    <FontAwesome5 name="directions" size={11} color="#2563EB" />
+                  )}
+                </Pressable>
+              )}
+            </View>
+          )}
 
-        <View style={styles.divider} />
-
-        {/* Job info */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Job Info</Text>
-
-          <Text style={styles.bodyText}>
-            <Text style={{ fontWeight: "900" }}>Status: </Text>
-            {jobSummary?.job_status ?? "—"}
-          </Text>
-
-          <Text style={styles.bodyText}>
-            <Text style={{ fontWeight: "900" }}>Initial Odometer: </Text>
-            {jobSummary?.job_odometer ?? "—"}
-          </Text>
-
-          {!!jobSummary?.job_desc && (
-            <Text style={[styles.bodyText, { marginTop: 10 }]}>
-              {jobSummary.job_desc}
-            </Text>
+          {headerHint && (
+            <View style={s.hintBanner}>
+              <FontAwesome5 name="info-circle" size={12} color="#2563EB" />
+              <Text style={s.hintText}>{headerHint}</Text>
+            </View>
           )}
         </View>
 
-        {/* Initial Report */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Initial Report</Text>
+        {/* ── Meta row ── */}
+        <View style={s.metaRow}>
+          <View style={s.metaCard}>
+            <Text style={s.metaLabel}>ASSIGNED TO</Text>
+            <Text style={s.metaValue}>{assigneeLabel}</Text>
+          </View>
+          <View style={[s.metaCard, { marginLeft: 12 }]}>
+            <Text style={s.metaLabel}>ACCEPTED AT</Text>
+            <Text style={s.metaValue}>{acceptedAtLabel}</Text>
+          </View>
+        </View>
 
-          <Text style={styles.bodyText}>
-            <Text style={{ fontWeight: "900" }}>Report ID: </Text>
-            {jobSummary?.report_id ?? "—"}
-          </Text>
+        {/* ── Job Info ── */}
+        <SectionCard title="Job Info" icon="briefcase">
+          <Field label="Status" value={jobSummary?.job_status} />
+          <Field
+            label="Initial Odometer"
+            value={jobSummary?.job_odometer != null ? String(jobSummary.job_odometer) : null}
+          />
+          {!!jobSummary?.job_desc && (
+            <Field label="Notes" value={jobSummary.job_desc} />
+          )}
+        </SectionCard>
 
-          <Text style={styles.bodyText}>
-            <Text style={{ fontWeight: "900" }}>Reported by: </Text>
-            {jobSummary?.reporter_name ?? report?.reporter_name ?? "—"}
-          </Text>
-
-          <Text style={styles.bodyText}>
-            <Text style={{ fontWeight: "900" }}>Priority: </Text>
-            {jobSummary?.report_priority ?? report?.report_priority ?? "—"}
-          </Text>
-
-          <Text style={[styles.bodyText, { marginTop: 10 }]}>
-            {report?.report_desc ?? jobSummary?.job_desc ?? "—"}
-          </Text>
+        {/* ── Initial Report ── */}
+        <SectionCard title="Initial Report" icon="file-alt">
+          <Field
+            label="Report ID"
+            value={jobSummary?.report_id != null ? `#${jobSummary.report_id}` : null}
+          />
+          <Field
+            label="Reported By"
+            value={jobSummary?.reporter_name ?? report?.reporter_name}
+          />
+          <Field
+            label="Priority"
+            value={jobSummary?.report_priority ?? report?.report_priority}
+          />
+          <Field
+            label="Description"
+            value={report?.report_desc ?? jobSummary?.job_desc}
+          />
 
           {/* Photos */}
-          <View style={{ marginTop: 14 }}>
-            <View style={styles.photoHeaderRow}>
-              <Text style={styles.photoTitle}>Report Photos</Text>
-              <View style={styles.pill}>
-                <Text style={styles.pillText}>
-                  {reportPhotoUrls.length} photo
-                  {reportPhotoUrls.length === 1 ? "" : "s"}
+          <View style={s.photoSection}>
+            <View style={s.photoHeaderRow}>
+              <Text style={s.photoTitle}>PHOTOS</Text>
+              <View style={s.countPill}>
+                <Text style={s.countPillText}>
+                  {reportPhotoUrls.length} photo{reportPhotoUrls.length === 1 ? "" : "s"}
                 </Text>
               </View>
             </View>
 
             {loadingReportPhotos ? (
-              <Text style={styles.bodyTextMuted}>Loading photos…</Text>
+              <Text style={s.mutedText}>Loading photos…</Text>
             ) : reportPhotoUrls.length === 0 ? (
-              <Text style={styles.bodyTextMuted}>No photos uploaded.</Text>
+              <Text style={s.mutedText}>No photos attached.</Text>
             ) : (
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                style={styles.previewRow}
-                contentContainerStyle={styles.previewContent}
+                contentContainerStyle={s.photoStrip}
               >
                 {reportPhotoUrls.map((uri, idx) => (
                   <Pressable
                     key={`${uri}-${idx}`}
-                    style={styles.thumbWrap}
                     onPress={() => openViewer(idx)}
+                    style={s.thumb}
                   >
-                    <View style={styles.thumbClip}>
-                      <Image source={{ uri }} style={styles.thumb} />
+                    <Image source={{ uri }} style={s.thumbImg} />
+                    <View style={s.thumbOverlay}>
+                      <FontAwesome5 name="expand-alt" size={14} color="#fff" />
                     </View>
                   </Pressable>
                 ))}
               </ScrollView>
             )}
           </View>
-        </View>
+        </SectionCard>
 
-        {/* Completed tasks */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Completed Tasks</Text>
-
+        {/* ── Completed Tasks ── */}
+        <SectionCard title="Completed Tasks" icon="check-circle">
           {completedTasks.length === 0 ? (
-            <Text style={styles.bodyTextMuted}>No completed tasks yet.</Text>
+            <Text style={s.mutedText}>No completed tasks yet.</Text>
           ) : (
-            completedTasks.map((t) => (
-              <View key={t.task_id} style={styles.taskRow}>
+            completedTasks.map((t, i) => (
+              <View
+                key={t.task_id}
+                style={[s.taskRow, i > 0 && s.taskRowBorder]}
+              >
+                <View style={s.taskCheck}>
+                  <FontAwesome5 name="check" size={11} color="#16A34A" />
+                </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.taskName}>{t.task_name}</Text>
+                  <Text style={s.taskName}>{t.task_name}</Text>
                   {!!t.task_desc && (
-                    <Text style={styles.taskDesc}>{t.task_desc}</Text>
+                    <Text style={s.taskDesc}>{t.task_desc}</Text>
                   )}
-                  <Text style={styles.taskMeta}>
-                    Completed: {formatDateTime(t.completed_at)}
+                  <Text style={s.taskMeta}>
+                    Completed {formatDateTime(t.completed_at)}
                   </Text>
                 </View>
               </View>
             ))
           )}
-        </View>
+        </SectionCard>
+
       </ScrollView>
 
       <ImageViewerOverlay
@@ -371,147 +397,268 @@ export default function JobDetailsView({
   );
 }
 
-const styles = StyleSheet.create({
+const s = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F9FAFB" },
-  pageContent: { padding: 16, paddingTop: 14, gap: 16 },
+  content: { padding: 16, paddingTop: 14, gap: 14, paddingBottom: 32 },
 
-  header: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
+  // Hero
+  hero: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  headerLeft: { flex: 1 },
-  headerTitle: {
-    fontSize: 34,
+  heroTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+  },
+  heroLeft: { flex: 1 },
+  heroEyebrow: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 1.5,
+    marginBottom: 2,
+  },
+  heroId: {
+    fontSize: 36,
     fontWeight: "800",
     color: "#111827",
-    lineHeight: 38,
+    letterSpacing: -1,
   },
-  headerSubtitle: {
-    marginTop: 6,
-    fontSize: 18,
+  loadingText: {
+    fontSize: 13,
+    color: "#9CA3AF",
+    marginTop: 4,
+  },
+  badgeStack: { flexDirection: "row", gap: 6, paddingTop: 4, flexWrap: "wrap", justifyContent: "flex-end" },
+
+  heroSubRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 14,
+  },
+  heroChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#F9FAFB",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  heroChipTappable: {
+    backgroundColor: "#EFF6FF",
+    borderColor: "#BFDBFE",
+  },
+  heroChipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
+  },
+
+  hintBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 14,
+    backgroundColor: "#EFF6FF",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  hintText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#2563EB",
+  },
+
+  // Meta row
+  metaRow: {
+    flexDirection: "row",
+  },
+  metaCard: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  metaLabel: {
+    fontSize: 10,
     fontWeight: "700",
-    color: "#6B7280",
+    color: "#9CA3AF",
+    letterSpacing: 1.2,
+    marginBottom: 5,
   },
-  headerRight: {
+  metaValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+  },
+
+  // Section card
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 18,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  cardHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingTop: 8,
+    marginBottom: 12,
   },
-
-  // ✅ NEW header meta row
-  metaRow: {
-    marginTop: 10,
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-  metaPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
-    flexGrow: 1,
-    minWidth: 160,
-  },
-  metaLabel: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: "#6B7280",
-  },
-  metaValue: {
-    marginTop: 4,
-    fontSize: 14,
-    fontWeight: "900",
-    color: "#111827",
-  },
-
-  readOnlyHint: {
-    marginTop: 10,
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#6B7280",
-  },
-
-  divider: {
-    height: 1,
-    backgroundColor: "#E5E7EB",
-    marginTop: 8,
-    marginBottom: 6,
-  },
-
-  card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 10 },
-    shadowRadius: 18,
-    shadowOpacity: 0.08,
+  cardIconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
   },
   cardTitle: {
-    fontSize: 18,
+    fontSize: 13,
     fontWeight: "700",
-    color: "#111827",
-    marginBottom: 10,
-  },
-
-  bodyText: {
-    fontSize: 16,
-    fontWeight: "600",
     color: "#374151",
-    lineHeight: 22,
+    letterSpacing: 0.2,
   },
-  bodyTextMuted: {
-    fontSize: 16,
+  cardDivider: {
+    height: 1,
+    backgroundColor: "#F3F4F6",
+    marginBottom: 14,
+  },
+
+  // Fields
+  field: {
+    marginBottom: 12,
+  },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    marginBottom: 3,
+  },
+  fieldValue: {
+    fontSize: 15,
     fontWeight: "600",
-    color: "#6B7280",
-    lineHeight: 22,
+    color: "#111827",
+    lineHeight: 21,
   },
 
-  taskRow: {
-    flexDirection: "row",
-    gap: 12,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#E5E7EB",
+  // Misc
+  mutedText: {
+    fontSize: 14,
+    color: "#9CA3AF",
+    fontWeight: "500",
   },
-  taskName: { fontSize: 16, fontWeight: "900", color: "#111827" },
-  taskDesc: { marginTop: 4, fontSize: 14, fontWeight: "700", color: "#374151" },
-  taskMeta: { marginTop: 6, fontSize: 13, fontWeight: "800", color: "#6B7280" },
 
+  // Photos
+  photoSection: {
+    marginTop: 6,
+  },
   photoHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 10,
   },
-  photoTitle: { fontSize: 18, fontWeight: "700", color: "#111827" },
-  pill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
+  photoTitle: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#9CA3AF",
+    letterSpacing: 1.2,
   },
-  pillText: { fontSize: 14, fontWeight: "600", color: "#111827" },
-
-  previewRow: { marginTop: 4 },
-  previewContent: { paddingRight: 4 },
-  thumbWrap: { marginRight: 10 },
-  thumbClip: {
-    width: 86,
-    height: 86,
+  countPill: {
+    backgroundColor: "#F3F4F6",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  countPillText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#6B7280",
+  },
+  photoStrip: {
+    gap: 10,
+    paddingBottom: 2,
+  },
+  thumb: {
+    width: 96,
+    height: 96,
     borderRadius: 14,
     overflow: "hidden",
-    position: "relative",
   },
-  thumb: { width: "100%", height: "100%" },
+  thumbImg: { width: "100%", height: "100%" },
+  thumbOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // Tasks
+  taskRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    paddingVertical: 12,
+  },
+  taskRowBorder: {
+    borderTopWidth: 1,
+    borderTopColor: "#F3F4F6",
+  },
+  taskCheck: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
+  taskName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 2,
+  },
+  taskDesc: {
+    fontSize: 13,
+    color: "#6B7280",
+    marginBottom: 4,
+  },
+  taskMeta: {
+    fontSize: 12,
+    color: "#9CA3AF",
+    fontWeight: "500",
+  },
 });
