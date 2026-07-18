@@ -1,12 +1,16 @@
+import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Modal,
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import MapView, { MapPressEvent, Marker } from "react-native-maps";
 
 export type LocationValue = {
@@ -30,6 +34,16 @@ export default function MapSelector({
 }: Props) {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [mapInteractive, setMapInteractive] = useState(false);
+  const [fullScreenVisible, setFullScreenVisible] = useState(false);
+
+  const { height: windowHeight } = useWindowDimensions();
+
+  // Scale the inline map with the device instead of a fixed pixel height —
+  // clamped so it's never cramped on small phones or absurdly tall on tablets.
+  const compactMapHeight = useMemo(
+    () => Math.round(Math.min(340, Math.max(180, windowHeight * 0.28))),
+    [windowHeight],
+  );
 
   const [region, setRegion] = useState({
     latitude: 3.157,
@@ -39,6 +53,7 @@ export default function MapSelector({
   });
 
   const mapRef = useRef<MapView | null>(null);
+  const fullMapRef = useRef<MapView | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -123,15 +138,15 @@ export default function MapSelector({
       longitude,
     }));
 
-    mapRef.current?.animateToRegion(
-      {
-        latitude,
-        longitude,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
-      },
-      350,
-    );
+    const nextRegion = {
+      latitude,
+      longitude,
+      latitudeDelta: 0.01,
+      longitudeDelta: 0.01,
+    };
+
+    mapRef.current?.animateToRegion(nextRegion, 350);
+    fullMapRef.current?.animateToRegion(nextRegion, 350);
   };
 
   const handlePress = async (e: MapPressEvent) => {
@@ -139,6 +154,25 @@ export default function MapSelector({
     const { latitude, longitude } = e.nativeEvent.coordinate;
     const address = await reverseGeocode(latitude, longitude);
 
+    await moveTo(latitude, longitude);
+    onChange({ latitude, longitude, address });
+  };
+
+  // The full-screen map is always interactive — opening it is the deliberate
+  // "let me interact with the map" action, so there's no tap-to-activate gate.
+  const handleFullScreenPress = async (e: MapPressEvent) => {
+    const { latitude, longitude } = e.nativeEvent.coordinate;
+    const address = await reverseGeocode(latitude, longitude);
+
+    await moveTo(latitude, longitude);
+    onChange({ latitude, longitude, address });
+  };
+
+  const handleMarkerDragEnd = async (e: {
+    nativeEvent: { coordinate: { latitude: number; longitude: number } };
+  }) => {
+    const { latitude, longitude } = e.nativeEvent.coordinate;
+    const address = await reverseGeocode(latitude, longitude);
     await moveTo(latitude, longitude);
     onChange({ latitude, longitude, address });
   };
@@ -175,7 +209,7 @@ export default function MapSelector({
           ref={(r) => {
             mapRef.current = r;
           }}
-          style={styles.map}
+          style={[styles.map, { height: compactMapHeight }]}
           region={region}
           onPress={handlePress}
           scrollEnabled={mapInteractive}
@@ -187,12 +221,7 @@ export default function MapSelector({
             <Marker
               coordinate={value}
               draggable={mapInteractive}
-              onDragEnd={async (e) => {
-                const { latitude, longitude } = e.nativeEvent.coordinate;
-                const address = await reverseGeocode(latitude, longitude);
-                await moveTo(latitude, longitude);
-                onChange({ latitude, longitude, address });
-              }}
+              onDragEnd={handleMarkerDragEnd}
             />
           )}
         </MapView>
@@ -218,6 +247,15 @@ export default function MapSelector({
             <Text style={styles.mapDoneText}>Done</Text>
           </Pressable>
         )}
+
+        {/* Expand to full screen */}
+        <Pressable
+          style={styles.expandBtn}
+          onPress={() => setFullScreenVisible(true)}
+          hitSlop={8}
+        >
+          <Ionicons name="expand-outline" size={18} color="#fff" />
+        </Pressable>
       </View>
 
       <Pressable style={styles.gpsButton} onPress={useCurrentLocation}>
@@ -227,6 +265,72 @@ export default function MapSelector({
       {value?.address ? (
         <Text style={styles.addressText}>Selected: {value.address}</Text>
       ) : null}
+
+      <Modal
+        visible={fullScreenVisible}
+        animationType="slide"
+        onRequestClose={() => setFullScreenVisible(false)}
+      >
+        {/* Modal opens a separate native window, so the app's root
+            SafeAreaProvider never re-measures insets for it — nest a fresh
+            one here so the header doesn't render under the status bar. */}
+        <SafeAreaProvider>
+          <SafeAreaView style={styles.fullScreen} edges={["top", "bottom"]}>
+            <View style={styles.fullScreenHeader}>
+              <Text style={styles.fullScreenTitle}>{label}</Text>
+              <Pressable
+                style={styles.closeBtn}
+                onPress={() => setFullScreenVisible(false)}
+                hitSlop={8}
+              >
+                <Ionicons name="close" size={20} color="#111827" />
+              </Pressable>
+            </View>
+
+            <View style={styles.fullMapWrapper}>
+              {fullScreenVisible && (
+                <MapView
+                  ref={(r) => {
+                    fullMapRef.current = r;
+                  }}
+                  style={styles.fullMap}
+                  region={region}
+                  onPress={handleFullScreenPress}
+                  scrollEnabled
+                  zoomEnabled
+                  rotateEnabled
+                  pitchEnabled={false}
+                >
+                  {value && (
+                    <Marker
+                      coordinate={value}
+                      draggable
+                      onDragEnd={handleMarkerDragEnd}
+                    />
+                  )}
+                </MapView>
+              )}
+            </View>
+
+            <View style={styles.fullScreenFooter}>
+              <Pressable style={styles.gpsButton} onPress={useCurrentLocation}>
+                <Text style={styles.gpsText}>📍 Use Current Location</Text>
+              </Pressable>
+
+              {value?.address ? (
+                <Text style={styles.addressText}>Selected: {value.address}</Text>
+              ) : null}
+
+              <Pressable
+                style={styles.confirmBtn}
+                onPress={() => setFullScreenVisible(false)}
+              >
+                <Text style={styles.confirmText}>Done</Text>
+              </Pressable>
+            </View>
+          </SafeAreaView>
+        </SafeAreaProvider>
+      </Modal>
     </View>
   );
 }
@@ -249,7 +353,7 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
   },
   map: {
-    height: 220,
+    width: "100%",
   },
   mapOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -282,6 +386,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
   },
+  expandBtn: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(17,24,39,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
   gpsButton: {
     margin: 10,
@@ -293,4 +408,51 @@ const styles = StyleSheet.create({
   },
   gpsText: { fontSize: 14, fontWeight: "500" },
   addressText: { margin: 6, fontSize: 13, color: "#374151" },
+
+  // Full screen
+  fullScreen: { flex: 1, backgroundColor: "#fff" },
+  fullScreenHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+  fullScreenTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  closeBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fullMapWrapper: { flex: 1 },
+  fullMap: { flex: 1 },
+  fullScreenFooter: {
+    paddingHorizontal: 10,
+    paddingBottom: 6,
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+  },
+  confirmBtn: {
+    marginHorizontal: 10,
+    marginTop: 4,
+    marginBottom: 10,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: "#111827",
+    alignItems: "center",
+  },
+  confirmText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
+  },
 });

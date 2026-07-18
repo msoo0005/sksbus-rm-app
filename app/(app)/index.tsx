@@ -189,7 +189,7 @@ const styles = StyleSheet.create({
     gap: GRID_GAP,
   },
   card: {
-    aspectRatio: 0.98,
+    minHeight: 172,
     borderRadius: 22,
     borderWidth: 1.5,
     padding: 18,
@@ -226,7 +226,9 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: "#4B5563",
     lineHeight: 17,
-    flex: 1,
+    // Reserve space for 2 lines regardless of actual length, so cards stay
+    // the same height whether the description wraps or not.
+    minHeight: 34,
   },
 
   cardFooter: {
