@@ -101,7 +101,7 @@ function PriorityPickerModal({
 
           <ScrollView contentContainerStyle={priorityModalStyles.body}>
             <Text style={priorityModalStyles.sectionLabel}>
-              Select Criticality{" "}
+              Select Priority Level{" "}
               <Text style={priorityModalStyles.required}>*</Text>
             </Text>
 

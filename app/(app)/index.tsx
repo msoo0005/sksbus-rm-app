@@ -6,8 +6,10 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
+import HomeHeader from "../components/HomeHeader";
 import { useSession } from "../ctx";
 
 type RoleKey =
@@ -18,15 +20,6 @@ type RoleKey =
   | "technician"
   | "inventory_manager";
 
-const ROLE_ACCESS: Record<RoleKey, string[]> = {
-  admin: ["fleet-manager", "rm-manager", "technician", "inventory", "form", "buses"],
-  fleet_manager: ["fleet-manager", "form"],
-  rm_manager: ["rm-manager"],
-  technician: ["technician"],
-  inventory_manager: ["inventory"],
-  driver: ["form"],
-};
-
 const ROLE_REDIRECT: Partial<Record<RoleKey, string>> = {
   fleet_manager: "/fleet-manager-home",
   rm_manager: "/rm-manager-home",
@@ -34,6 +27,9 @@ const ROLE_REDIRECT: Partial<Record<RoleKey, string>> = {
   inventory_manager: "/inventory",
   driver: "/project-selector",
 };
+
+const ADMIN_ACCENT = "#4338CA";
+const ADMIN_ACCENT_LIGHT = "#EEF2FF";
 
 const MODULES = [
   {
@@ -78,23 +74,16 @@ const MODULES = [
   },
 ];
 
-function getGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  return "Good evening";
-}
-
-function getFirstName(name: string) {
-  return name?.split(" ")[0] ?? name;
-}
+const CONTENT_MAX_WIDTH = 720;
+const CONTENT_H_PADDING = 20;
+const GRID_GAP = 14;
 
 export default function HomeScreen() {
   const { dbUser } = useSession();
   const router = useRouter();
+  const { width: windowWidth } = useWindowDimensions();
 
   const role = (dbUser?.user_role ?? "driver") as RoleKey;
-  const allowedIds = ROLE_ACCESS[role] ?? [];
   const redirect = ROLE_REDIRECT[role];
 
   React.useEffect(() => {
@@ -111,7 +100,10 @@ export default function HomeScreen() {
     }
   };
 
-  const firstName = getFirstName(dbUser?.user_name ?? "");
+  // Responsive columns: 2 on phones, more as the screen (or split-view pane) widens.
+  const contentWidth = Math.min(windowWidth, CONTENT_MAX_WIDTH) - CONTENT_H_PADDING * 2;
+  const columns = windowWidth >= 900 ? 4 : windowWidth >= 600 ? 3 : 2;
+  const cardWidth = (contentWidth - GRID_GAP * (columns - 1)) / columns;
 
   return (
     <ScrollView
@@ -119,83 +111,51 @@ export default function HomeScreen() {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      {/* Greeting header */}
-      <View style={styles.header}>
-        <Text style={styles.greeting}>{getGreeting()},</Text>
-        <Text style={styles.name}>{firstName}</Text>
-        <Text style={styles.subtitle}>SKSBUS R&amp;M System</Text>
-      </View>
+      <HomeHeader
+        roleLabel="Administrator"
+        roleColor={ADMIN_ACCENT}
+        roleColorLight={ADMIN_ACCENT_LIGHT}
+      />
 
-      {/* Section label */}
-      <Text style={styles.sectionLabel}>MODULES</Text>
+      <Text style={styles.sectionLabel}>QUICK ACCESS</Text>
 
-      {/* Card grid */}
       <View style={styles.grid}>
-        {MODULES.map((mod) => {
-          const enabled = allowedIds.includes(mod.id);
-          return (
-            <Pressable
-              key={mod.id}
-              style={styles.cardWrap}
-              disabled={!enabled}
-              onPress={() => handlePress(mod.id)}
-            >
-              {({ pressed }) => (
-                <View
-                  style={[
-                    styles.card,
-                    pressed && enabled && styles.cardPressed,
-                    !enabled && styles.cardDisabled,
-                  ]}
-                >
-                  {/* Icon */}
-                  <View
-                    style={[
-                      styles.iconBox,
-                      { backgroundColor: enabled ? mod.accentLight : "#F3F4F6" },
-                    ]}
-                  >
-                    <FontAwesome5
-                      name={mod.icon as any}
-                      size={22}
-                      color={enabled ? mod.accent : "#9CA3AF"}
-                    />
-                  </View>
-
-                  {/* Text */}
-                  <Text style={[styles.cardTitle, !enabled && styles.textMuted]}>
-                    {mod.title}
-                  </Text>
-                  <Text style={[styles.cardDesc, !enabled && styles.textMuted]}>
-                    {mod.description}
-                  </Text>
-
-                  {/* Footer row */}
-                  <View style={styles.cardFooter}>
-                    {enabled ? (
-                      <View style={[styles.openPill, { backgroundColor: mod.accentLight }]}>
-                        <Text style={[styles.openPillText, { color: mod.accent }]}>
-                          Open
-                        </Text>
-                        <FontAwesome5 name="arrow-right" size={9} color={mod.accent} />
-                      </View>
-                    ) : (
-                      <View style={styles.lockedPill}>
-                        <FontAwesome5 name="lock" size={9} color="#9CA3AF" />
-                        <Text style={styles.lockedText}>No access</Text>
-                      </View>
-                    )}
-                  </View>
-
-                  {/* Accent bar */}
-                  {enabled && (
-                    <View style={[styles.accentBar, { backgroundColor: mod.accent }]} />
-                  )}
+        {MODULES.map((mod) => (
+          <Pressable
+            key={mod.id}
+            style={{ width: cardWidth }}
+            onPress={() => handlePress(mod.id)}
+          >
+            {({ pressed }) => (
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: mod.accentLight,
+                    borderColor: `${mod.accent}33`,
+                  },
+                  pressed && styles.cardPressed,
+                ]}
+              >
+                <View style={styles.iconBox}>
+                  <FontAwesome5 name={mod.icon as any} size={20} color={mod.accent} />
                 </View>
-              )}
-            </Pressable>
-          );
-        })}
+
+                <Text style={styles.cardTitle} numberOfLines={1}>
+                  {mod.title}
+                </Text>
+                <Text style={styles.cardDesc} numberOfLines={2}>
+                  {mod.description}
+                </Text>
+
+                <View style={styles.cardFooter}>
+                  <Text style={[styles.openText, { color: mod.accent }]}>Open</Text>
+                  <FontAwesome5 name="arrow-right" size={10} color={mod.accent} />
+                </View>
+              </View>
+            )}
+          </Pressable>
+        ))}
       </View>
     </ScrollView>
   );
@@ -207,33 +167,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#F9FAFB",
   },
   content: {
-    paddingHorizontal: 20,
+    width: "100%",
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    paddingHorizontal: CONTENT_H_PADDING,
     paddingTop: 8,
     paddingBottom: 32,
-  },
-
-  header: {
-    paddingVertical: 24,
-    marginBottom: 4,
-  },
-  greeting: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#6B7280",
-    marginBottom: 2,
-  },
-  name: {
-    fontSize: 34,
-    fontWeight: "800",
-    color: "#111827",
-    letterSpacing: -0.5,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#9CA3AF",
-    letterSpacing: 0.3,
   },
 
   sectionLabel: {
@@ -242,47 +181,37 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
     letterSpacing: 1.5,
     marginBottom: 14,
-    marginTop: 4,
   },
 
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 14,
-  },
-  cardWrap: {
-    width: "47.5%",
+    gap: GRID_GAP,
   },
   card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
+    aspectRatio: 0.98,
+    borderRadius: 22,
+    borderWidth: 1.5,
     padding: 18,
-    minHeight: 170,
-    overflow: "hidden",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
   },
   cardPressed: {
     transform: [{ scale: 0.97 }],
     shadowOpacity: 0.03,
   },
-  cardDisabled: {
-    backgroundColor: "#FAFAFA",
-    borderColor: "#F3F4F6",
-  },
 
   iconBox: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 14,
+    backgroundColor: "#FFFFFF",
   },
 
   cardTitle: {
@@ -295,53 +224,19 @@ const styles = StyleSheet.create({
   cardDesc: {
     fontSize: 12,
     fontWeight: "500",
-    color: "#6B7280",
+    color: "#4B5563",
     lineHeight: 17,
     flex: 1,
   },
-  textMuted: {
-    color: "#D1D5DB",
-  },
 
   cardFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
     marginTop: 16,
   },
-  openPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-  },
-  openPillText: {
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  lockedPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: "#F3F4F6",
-  },
-  lockedText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#9CA3AF",
-  },
-
-  accentBar: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    width: 4,
-    height: "100%",
-    borderTopRightRadius: 20,
-    borderBottomRightRadius: 20,
+  openText: {
+    fontSize: 12,
+    fontWeight: "800",
   },
 });

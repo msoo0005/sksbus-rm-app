@@ -13,6 +13,11 @@ export default function FleetManagerHomeScreen() {
       accent="#2563EB"
       accentLight="#EFF6FF"
       onPress={() => router.push("./project-selector")}
+      highlights={[
+        { icon: "exclamation-triangle", label: "Report vehicle problems & accidents" },
+        { icon: "wrench", label: "Request scheduled repairs" },
+        { icon: "history", label: "Track reports you've submitted" },
+      ]}
     />
   );
 }

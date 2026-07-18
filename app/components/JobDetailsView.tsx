@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 
-import type { ReportMedia } from "../api/client";
+import type { JobMedia, ReportMedia } from "../api/client";
 import { api } from "../api/client";
 import ImageViewerOverlay from "./ImageViewerOverlay";
 import type { StatusType } from "./StatusBadge";
@@ -139,18 +139,35 @@ export default function JobDetailsView({
   const [tasks, setTasks] = useState<JobTask[]>([]);
   const [reportPhotoUrls, setReportPhotoUrls] = useState<string[]>([]);
   const [loadingReportPhotos, setLoadingReportPhotos] = useState(false);
+  const [afterPhotoUrls, setAfterPhotoUrls] = useState<string[]>([]);
+  const [loadingAfterPhotos, setLoadingAfterPhotos] = useState(false);
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  const [afterViewerVisible, setAfterViewerVisible] = useState(false);
+  const [afterViewerIndex, setAfterViewerIndex] = useState(0);
 
   const viewerUrls = useMemo(
     () => reportPhotoUrls.map((u) => ({ url: u })),
     [reportPhotoUrls],
   );
 
+  const afterViewerUrls = useMemo(
+    () => afterPhotoUrls.map((u) => ({ url: u })),
+    [afterPhotoUrls],
+  );
+
   const openViewer = (index: number) => {
     if (!reportPhotoUrls.length) return;
     setViewerIndex(Math.min(Math.max(index, 0), reportPhotoUrls.length - 1));
     setViewerVisible(true);
+  };
+
+  const openAfterViewer = (index: number) => {
+    if (!afterPhotoUrls.length) return;
+    setAfterViewerIndex(
+      Math.min(Math.max(index, 0), afterPhotoUrls.length - 1),
+    );
+    setAfterViewerVisible(true);
   };
 
   const loadReportPhotos = async (reportId: number) => {
@@ -166,6 +183,22 @@ export default function JobDetailsView({
       setReportPhotoUrls([]);
     } finally {
       setLoadingReportPhotos(false);
+    }
+  };
+
+  const loadAfterPhotos = async (jId: number) => {
+    if (!Number.isFinite(jId) || jId <= 0) return;
+    setLoadingAfterPhotos(true);
+    try {
+      const media = (await api.listJobMedia(jId)) as JobMedia[];
+      const urls = (Array.isArray(media) ? media : [])
+        .map((m) => m?.viewUrl ?? null)
+        .filter(isNonEmptyString);
+      setAfterPhotoUrls(Array.from(new Set(urls)));
+    } catch {
+      setAfterPhotoUrls([]);
+    } finally {
+      setLoadingAfterPhotos(false);
     }
   };
 
@@ -191,6 +224,9 @@ export default function JobDetailsView({
 
       const t = (await api.listJobTasks(jobId)) as JobTask[];
       setTasks(Array.isArray(t) ? t : []);
+
+      setAfterPhotoUrls([]);
+      loadAfterPhotos(jobId);
     } catch (e: any) {
       Alert.alert("Failed to load job", e?.message ?? "Unknown error");
     } finally {
@@ -385,6 +421,45 @@ export default function JobDetailsView({
           )}
         </SectionCard>
 
+        {/* ── After Photos ── */}
+        <SectionCard title="After Photos" icon="camera">
+          <View style={s.photoSection}>
+            <View style={s.photoHeaderRow}>
+              <Text style={s.photoTitle}>UPLOADED</Text>
+              <View style={s.countPill}>
+                <Text style={s.countPillText}>
+                  {afterPhotoUrls.length} photo{afterPhotoUrls.length === 1 ? "" : "s"}
+                </Text>
+              </View>
+            </View>
+
+            {loadingAfterPhotos ? (
+              <Text style={s.mutedText}>Loading photos…</Text>
+            ) : afterPhotoUrls.length === 0 ? (
+              <Text style={s.mutedText}>No after photos uploaded yet.</Text>
+            ) : (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={s.photoStrip}
+              >
+                {afterPhotoUrls.map((uri, idx) => (
+                  <Pressable
+                    key={`${uri}-${idx}`}
+                    onPress={() => openAfterViewer(idx)}
+                    style={s.thumb}
+                  >
+                    <Image source={{ uri }} style={s.thumbImg} />
+                    <View style={s.thumbOverlay}>
+                      <FontAwesome5 name="expand-alt" size={14} color="#fff" />
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </SectionCard>
+
       </ScrollView>
 
       <ImageViewerOverlay
@@ -392,6 +467,13 @@ export default function JobDetailsView({
         imageUrls={viewerUrls}
         startIndex={viewerIndex}
         onClose={() => setViewerVisible(false)}
+      />
+
+      <ImageViewerOverlay
+        visible={afterViewerVisible}
+        imageUrls={afterViewerUrls}
+        startIndex={afterViewerIndex}
+        onClose={() => setAfterViewerVisible(false)}
       />
     </>
   );

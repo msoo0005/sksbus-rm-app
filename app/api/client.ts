@@ -14,6 +14,19 @@ export type ReportMedia = {
   viewUrl?: string; // ✅ add this
 };
 
+export type JobMedia = {
+  media_id: number;
+  job_id: number;
+  media_type: "image" | "video";
+  mime_type: string;
+  s3_bucket: string;
+  s3_key: string;
+  size_bytes?: number | null;
+  uploaded_at?: string | null;
+
+  viewUrl?: string;
+};
+
 const RAW_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 if (!RAW_BASE_URL) throw new Error("Missing EXPO_PUBLIC_API_BASE_URL");
 
@@ -493,7 +506,7 @@ export const api = {
     }),
 
   listJobMedia: (jobId: number) =>
-    requestWithIdToken<any[]>(`/jobs/${jobId}/media`),
+    requestWithIdToken<JobMedia[]>(`/jobs/${jobId}/media`),
 
   // ✅ FIX: protected → use ID token
   presignJobMedia: (jobId: number, mime: string) =>

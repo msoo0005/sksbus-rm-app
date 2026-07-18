@@ -13,6 +13,11 @@ export default function RmManagerHomeScreen() {
       accent="#16A34A"
       accentLight="#F0FDF4"
       onPress={() => router.push("./rm-manager")}
+      highlights={[
+        { icon: "check-circle", label: "Approve or decline pending reports" },
+        { icon: "tasks", label: "Track open & closed jobs" },
+        { icon: "chart-bar", label: "Monitor KPIs and completion rates" },
+      ]}
     />
   );
 }

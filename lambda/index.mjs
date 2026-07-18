@@ -235,7 +235,7 @@ export const handler = async (event) => {
       return await withConn((c) => addTaskPart(c, auth, taskId, mustJson(event)));
     }
 
-    return json(404, { message: "Not found" });
+    return json(404, { message: `Not found: ${method} ${path}` });
   } catch (e) {
     console.error("Lambda error:", e);
     const msg = e?.message || "Server error";
@@ -1325,7 +1325,21 @@ async function listJobMedia(conn, auth, jobId) {
      FROM JOB_MEDIA WHERE job_id=? ORDER BY uploaded_at DESC, media_id DESC`,
     [jobId]
   );
-  return json(200, rows);
+
+  const enriched = await Promise.all(
+    (rows || []).map(async (m) => {
+      try {
+        const cmd = new GetObjectCommand({ Bucket: m.s3_bucket || S3_BUCKET, Key: m.s3_key });
+        const viewUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
+        return { ...m, viewUrl };
+      } catch (e) {
+        console.error("Failed signing media", m?.s3_key, e);
+        return { ...m, viewUrl: null };
+      }
+    })
+  );
+
+  return json(200, enriched);
 }
 
 async function presignJobMedia(conn, auth, jobId, qs) {

@@ -13,6 +13,11 @@ export default function TechnicianHomeScreen() {
       accent="#EA580C"
       accentLight="#FFF7ED"
       onPress={() => router.push("./technician")}
+      highlights={[
+        { icon: "hand-paper", label: "Accept available jobs" },
+        { icon: "camera", label: "Log before & after photos" },
+        { icon: "check-double", label: "Mark jobs complete" },
+      ]}
     />
   );
 }

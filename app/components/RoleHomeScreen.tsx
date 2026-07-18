@@ -1,18 +1,12 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import React from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useSession } from "../ctx";
+import HomeHeader from "./HomeHeader";
 
-function getGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  return "Good evening";
-}
-
-function getFirstName(name: string) {
-  return name?.split(" ")[0] ?? name;
-}
+type Highlight = {
+  icon: string;
+  label: string;
+};
 
 type Props = {
   roleLabel: string;
@@ -22,6 +16,7 @@ type Props = {
   accent: string;
   accentLight: string;
   onPress: () => void;
+  highlights?: Highlight[];
 };
 
 export default function RoleHomeScreen({
@@ -32,41 +27,56 @@ export default function RoleHomeScreen({
   accent,
   accentLight,
   onPress,
+  highlights = [],
 }: Props) {
-  const { dbUser } = useSession();
-  const firstName = getFirstName(dbUser?.user_name ?? "");
-
   return (
     <ScrollView
       style={styles.page}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.header}>
-        <Text style={styles.greeting}>{getGreeting()},</Text>
-        <Text style={styles.name}>{firstName}</Text>
-        <Text style={styles.subtitle}>{roleLabel} • SKSBUS R&amp;M System</Text>
-      </View>
+      <HomeHeader roleLabel={roleLabel} roleColor={accent} roleColorLight={accentLight} />
 
-      <Pressable
-        onPress={onPress}
-        style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+      <Text style={styles.sectionLabel}>GET STARTED</Text>
+
+      <View
+        style={[
+          styles.heroCard,
+          { backgroundColor: accentLight, borderColor: `${accent}33` },
+        ]}
       >
-        <View style={[styles.iconBox, { backgroundColor: accentLight }]}>
-          <FontAwesome5 name={actionIcon as any} size={22} color={accent} />
+        <View style={styles.iconBox}>
+          <FontAwesome5 name={actionIcon as any} size={24} color={accent} />
         </View>
 
-        <View style={styles.textBlock}>
-          <Text style={styles.cardTitle}>{actionTitle}</Text>
-          <Text style={styles.cardDesc}>{actionDescription}</Text>
-        </View>
+        <Text style={styles.heroTitle}>{actionTitle}</Text>
+        <Text style={styles.heroDesc}>{actionDescription}</Text>
 
-        <View style={[styles.chevronBox, { backgroundColor: accentLight }]}>
-          <FontAwesome5 name="chevron-right" size={12} color={accent} />
-        </View>
+        {highlights.length > 0 && (
+          <View style={styles.highlights}>
+            {highlights.map((h) => (
+              <View key={h.label} style={styles.highlightRow}>
+                <View style={styles.highlightIcon}>
+                  <FontAwesome5 name={h.icon as any} size={11} color={accent} />
+                </View>
+                <Text style={styles.highlightText}>{h.label}</Text>
+              </View>
+            ))}
+          </View>
+        )}
 
-        <View style={[styles.accentBar, { backgroundColor: accent }]} />
-      </Pressable>
+        <Pressable
+          onPress={onPress}
+          style={({ pressed }) => [
+            styles.ctaButton,
+            { backgroundColor: accent },
+            pressed && styles.ctaPressed,
+          ]}
+        >
+          <Text style={styles.ctaText}>{actionTitle}</Text>
+          <FontAwesome5 name="arrow-right" size={13} color="#fff" />
+        </Pressable>
+      </View>
     </ScrollView>
   );
 }
@@ -77,94 +87,98 @@ const styles = StyleSheet.create({
     backgroundColor: "#F9FAFB",
   },
   content: {
+    width: "100%",
+    maxWidth: 640,
+    alignSelf: "center",
     paddingHorizontal: 20,
     paddingTop: 8,
     paddingBottom: 32,
   },
 
-  header: {
-    paddingVertical: 24,
-    marginBottom: 4,
-  },
-  greeting: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#6B7280",
-    marginBottom: 2,
-  },
-  name: {
-    fontSize: 34,
-    fontWeight: "800",
-    color: "#111827",
-    letterSpacing: -0.5,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 13,
-    fontWeight: "600",
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: "700",
     color: "#9CA3AF",
-    letterSpacing: 0.3,
+    letterSpacing: 1.5,
+    marginBottom: 14,
   },
 
-  card: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    padding: 18,
-    gap: 16,
-    overflow: "hidden",
+  heroCard: {
+    borderRadius: 26,
+    borderWidth: 1.5,
+    padding: 24,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  cardPressed: {
-    transform: [{ scale: 0.98 }],
-    shadowOpacity: 0.03,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    elevation: 3,
   },
 
   iconBox: {
     width: 52,
     height: 52,
-    borderRadius: 16,
+    borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
+    marginBottom: 16,
+    backgroundColor: "#FFFFFF",
   },
 
-  textBlock: {
-    flex: 1,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: "700",
+  heroTitle: {
+    fontSize: 20,
+    fontWeight: "800",
     color: "#111827",
-    marginBottom: 3,
+    marginBottom: 6,
+    letterSpacing: -0.3,
   },
-  cardDesc: {
-    fontSize: 13,
+  heroDesc: {
+    fontSize: 14,
     fontWeight: "500",
-    color: "#6B7280",
+    color: "#4B5563",
+    lineHeight: 20,
   },
 
-  chevronBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+  highlights: {
+    marginTop: 20,
+  },
+  highlightRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 9,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(17, 24, 39, 0.08)",
+  },
+  highlightIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 9,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#FFFFFF",
+  },
+  highlightText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
   },
 
-  accentBar: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    width: 4,
-    height: "100%",
-    borderTopRightRadius: 20,
-    borderBottomRightRadius: 20,
+  ctaButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    height: 52,
+    borderRadius: 16,
+    marginTop: 22,
+  },
+  ctaPressed: {
+    opacity: 0.85,
+  },
+  ctaText: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#fff",
   },
 });
