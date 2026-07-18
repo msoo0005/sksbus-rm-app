@@ -7,6 +7,7 @@ import { Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from "react
 import { api } from "../api/client";
 import ConfirmActionModal from "../components/ConfirmActionModal";
 import DeclineReasonModal from "../components/DeclineReasonModal";
+import JobDetailsModal from "../components/JobDetailsModal";
 import ReportCard from "../components/ReportCard";
 import SegmentedTabs from "../components/SegmentedTabs";
 import { useSession } from "../ctx";
@@ -396,6 +397,11 @@ export default function RMManagerScreen() {
   const [declineTarget, setDeclineTarget] = useState<Report | null>(null);
   const [declineVisible, setDeclineVisible] = useState(false);
 
+  const [detailsReport, setDetailsReport] = useState<Report | null>(null);
+  const [detailsVisible, setDetailsVisible] = useState(false);
+  const [detailsMedia, setDetailsMedia] = useState<any[]>([]);
+  const [loadingDetailsMedia, setLoadingDetailsMedia] = useState(false);
+
   const loadAllReports = useCallback(async (opts?: { refreshing?: boolean }) => {
     try {
       if (opts?.refreshing) {
@@ -452,32 +458,48 @@ export default function RMManagerScreen() {
     await loadAllReports({ refreshing: true });
   }, [loadAllReports]);
 
-  const openJobViewForReport = useCallback(
-    async (reportId: number) => {
+  const openReportDetails = useCallback(async (report: Report) => {
+    setDetailsReport(report);
+    setDetailsVisible(true);
+    setDetailsMedia([]);
+    setLoadingDetailsMedia(true);
+    try {
+      const media = await api.listReportMedia(report.id);
+      setDetailsMedia(Array.isArray(media) ? media : []);
+    } catch (e) {
+      console.log(e);
+    } finally {
+      setLoadingDetailsMedia(false);
+    }
+  }, []);
+
+  const handleViewDetails = useCallback(
+    async (report: Report) => {
+      const reportId = report.id;
       if (!Number.isFinite(reportId) || reportId <= 0) return;
 
+      // If a job already exists for this report (approved/open/closed), show the full job view.
       try {
         const jobs = await api.listJobs();
         const list = Array.isArray(jobs) ? (jobs as JobSummary[]) : [];
-
         const found = findJobForReport(list, reportId);
         const jobId = Number(found?.job_id);
 
-        if (!Number.isFinite(jobId) || jobId <= 0) {
-          Alert.alert("No job yet", "This report does not have a job created yet.");
+        if (Number.isFinite(jobId) && jobId > 0) {
+          router.push({
+            pathname: "/(app)/rm-manager/job/[id]",
+            params: { id: String(jobId) },
+          });
           return;
         }
-
-        router.push({
-          pathname: "/(app)/rm-manager/job/[id]",
-          params: { id: String(jobId) },
-        });
       } catch (e: any) {
         console.log(e);
-        Alert.alert("Couldn't open job", e?.message ?? "Unknown error");
       }
+
+      // No job yet (e.g. still pending review) — show the report details inline.
+      await openReportDetails(report);
     },
-    [router],
+    [router, openReportDetails],
   );
 
   const requestApprove = (report: Report) => {
@@ -617,7 +639,7 @@ export default function RMManagerScreen() {
             <ReportCard
               key={report.id}
               report={report}
-              onViewDetails={(r) => openJobViewForReport(r.id)}
+              onViewDetails={handleViewDetails}
               onApprove={tab === "pending" ? requestApprove : undefined}
               onDecline={tab === "pending" ? requestDecline : undefined}
             />
@@ -639,6 +661,14 @@ export default function RMManagerScreen() {
         visible={declineVisible}
         onCancel={() => setDeclineVisible(false)}
         onSubmit={submitDecline}
+      />
+
+      <JobDetailsModal
+        visible={detailsVisible}
+        report={detailsReport}
+        media={detailsMedia}
+        loadingMedia={loadingDetailsMedia}
+        onClose={() => setDetailsVisible(false)}
       />
     </>
   );

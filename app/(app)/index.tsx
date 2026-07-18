@@ -28,9 +28,9 @@ const ROLE_ACCESS: Record<RoleKey, string[]> = {
 };
 
 const ROLE_REDIRECT: Partial<Record<RoleKey, string>> = {
-  fleet_manager: "/project-selector",
-  rm_manager: "/rm-manager",
-  technician: "/technician",
+  fleet_manager: "/fleet-manager-home",
+  rm_manager: "/rm-manager-home",
+  technician: "/technician-home",
   inventory_manager: "/inventory",
   driver: "/project-selector",
 };

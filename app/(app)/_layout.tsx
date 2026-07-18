@@ -19,18 +19,18 @@ type RoleKey =
 
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
   admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses"],
-  fleet_manager: ["/fleet-manager", "/form", "/project-selector"],
-  rm_manager: ["/rm-manager"],
-  technician: ["/technician"],
+  fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector"],
+  rm_manager: ["/rm-manager-home", "/rm-manager"],
+  technician: ["/technician-home", "/technician"],
   inventory_manager: ["/inventory"],
   driver: ["/form", "/project-selector"],
 };
 
 const ROLE_HOME: Record<RoleKey, string> = {
   admin: "/",
-  fleet_manager: "/project-selector",
-  rm_manager: "/rm-manager",
-  technician: "/technician",
+  fleet_manager: "/fleet-manager-home",
+  rm_manager: "/rm-manager-home",
+  technician: "/technician-home",
   inventory_manager: "/inventory",
   driver: "/project-selector",
 };
@@ -162,6 +162,7 @@ export default function RootLayout() {
       />
       <Stack>
         <Stack.Screen name="index" options={{ title: "Home", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="fleet-manager-home" options={{ title: "Home", headerRight: renderHeaderRight }} />
         <Stack.Screen name="fleet-manager" options={{ title: "Fleet Manager", headerRight: renderHeaderRight }} />
         <Stack.Screen
           name="project-selector"
@@ -171,8 +172,10 @@ export default function RootLayout() {
           name="fleet-manager-history"
           options={{ title: "Your Submitted Reports", headerRight: renderHeaderRight }}
         />
+        <Stack.Screen name="rm-manager-home" options={{ title: "Home", headerRight: renderHeaderRight }} />
         <Stack.Screen name="rm-manager" options={{ title: "R&M Manager", headerRight: renderHeaderRight }} />
         <Stack.Screen name="rm-manager/job/[id]" options={{ title: "Job Details", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="technician-home" options={{ title: "Home", headerRight: renderHeaderRight }} />
         <Stack.Screen name="technician/index" options={{ title: "Technician", headerRight: renderHeaderRight }} />
         <Stack.Screen name="technician/job/[id]" options={{ title: "Job Details", headerRight: renderHeaderRight }} />
         <Stack.Screen name="inventory" options={{ title: "Inventory Manager", headerRight: renderHeaderRight }} />

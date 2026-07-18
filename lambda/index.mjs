@@ -806,13 +806,29 @@ async function createReport(conn, auth, b) {
 }
 
 async function updateReportStatus(conn, auth, reportId, b) {
-  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager"]);
-  if (deny) return deny;
-
   if (!b.report_status) throw new Error("report_status is required");
 
   const nextStatus = String(b.report_status).trim().toLowerCase();
   const action = b.report_review_action != null ? String(b.report_review_action).trim().toLowerCase() : null;
+
+  if (auth.role === "technician") {
+    // Technicians may only close the report tied to their own job when completing it —
+    // approve/decline stays exclusive to admin/fleet_manager/rm_manager below.
+    if (nextStatus !== "closed" || action != null) {
+      return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+    }
+    const techUserId = await getOrCreateUserId(conn, auth);
+    const [chk] = await conn.execute(
+      `SELECT r.report_id FROM REPORT r JOIN JOB j ON j.job_id = r.job_id
+       WHERE r.report_id=? AND j.technician_user_id=? LIMIT 1`,
+      [reportId, techUserId]
+    );
+    if (!chk.length) return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+  } else {
+    const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager"]);
+    if (deny) return deny;
+  }
+
   const shouldCreateJob = action === "approved" || nextStatus === "open";
 
   await conn.beginTransaction();
