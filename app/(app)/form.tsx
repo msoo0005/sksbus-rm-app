@@ -1,7 +1,17 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
+import {
+  ChevronDown,
+  ChevronLeft,
+  Cog,
+  ShieldCheck,
+  TriangleAlert,
+  Wrench,
+} from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,10 +20,151 @@ import {
   View,
 } from "react-native";
 import DropDownPicker from "react-native-dropdown-picker";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { api } from "../api/client";
 import ImagePickerField, { LocalMedia } from "../components/ImagePicker";
 import MapSelector, { LocationValue } from "../components/map";
 import { useProject } from "../project-ctx";
+
+type Priority = "low" | "medium" | "high" | "critical";
+
+const PRIORITY_OPTIONS: {
+  value: Priority;
+  label: string;
+  description: string;
+  color: string;
+  Icon: typeof ShieldCheck;
+}[] = [
+  {
+    value: "low",
+    label: "Low",
+    description:
+      "Minor issue that does not affect vehicle safety or operation. Bus can continue service and repair can be scheduled later.",
+    color: "#16A34A",
+    Icon: ShieldCheck,
+  },
+  {
+    value: "medium",
+    label: "Medium",
+    description:
+      "Issue affects comfort or performance but the bus can still operate safely. Repair required within a reasonable time.",
+    color: "#EAB308",
+    Icon: Wrench,
+  },
+  {
+    value: "high",
+    label: "High",
+    description:
+      "Major fault affecting vehicle operation or reliability, vehicle has entered limp mode or turtle mode. Bus should be withdrawn from service as soon as possible and repaired urgently.",
+    color: "#EA580C",
+    Icon: Cog,
+  },
+  {
+    value: "critical",
+    label: "Critical",
+    description:
+      "Serious safety issue or complete breakdown causing the bus to be immobile or unsafe to operate. Immediate action and emergency response required.",
+    color: "#DC2626",
+    Icon: TriangleAlert,
+  },
+];
+
+function PriorityPickerModal({
+  visible,
+  value,
+  onSelect,
+  onClose,
+}: {
+  visible: boolean;
+  value: Priority;
+  onSelect: (v: Priority) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={priorityModalStyles.backdrop}>
+        <View style={priorityModalStyles.sheet}>
+          <View style={priorityModalStyles.header}>
+            <TouchableOpacity onPress={onClose} hitSlop={12}>
+              <ChevronLeft size={24} color="#fff" />
+            </TouchableOpacity>
+            <Text style={priorityModalStyles.headerTitle}>
+              Priority Selection
+            </Text>
+            <View style={{ width: 24 }} />
+          </View>
+
+          <ScrollView contentContainerStyle={priorityModalStyles.body}>
+            <Text style={priorityModalStyles.sectionLabel}>
+              Select Criticality{" "}
+              <Text style={priorityModalStyles.required}>*</Text>
+            </Text>
+
+            {PRIORITY_OPTIONS.map((opt) => {
+              const selected = value === opt.value;
+              const Icon = opt.Icon;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  style={[
+                    priorityModalStyles.card,
+                    selected && { borderColor: opt.color },
+                  ]}
+                  onPress={() => onSelect(opt.value)}
+                  activeOpacity={0.7}
+                >
+                  <View
+                    style={[
+                      priorityModalStyles.iconCircle,
+                      { backgroundColor: opt.color },
+                    ]}
+                  >
+                    <Icon size={26} color="#fff" />
+                  </View>
+                  <View style={priorityModalStyles.cardText}>
+                    <Text style={priorityModalStyles.cardTitle}>
+                      {opt.label}
+                    </Text>
+                    <Text style={priorityModalStyles.cardDesc}>
+                      {opt.description}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      priorityModalStyles.radio,
+                      selected && { borderColor: opt.color },
+                    ]}
+                  >
+                    {selected && (
+                      <View
+                        style={[
+                          priorityModalStyles.radioDot,
+                          { backgroundColor: opt.color },
+                        ]}
+                      />
+                    )}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          <TouchableOpacity
+            style={priorityModalStyles.doneButton}
+            onPress={onClose}
+          >
+            <Text style={priorityModalStyles.doneText}>Done</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 type ReportType = "problem" | "repair" | "accident";
 
@@ -61,10 +212,8 @@ export default function ReportFormScreen() {
   const [vehicle, setVehicle] = useState<string | null>(null);
   const [vehicles, setVehicles] = useState<BusItem[]>([]);
 
-  const [priorityOpen, setPriorityOpen] = useState(false);
-  const [priority, setPriority] = useState<
-    "low" | "medium" | "high" | "critical"
-  >("medium");
+  const [priorityModalVisible, setPriorityModalVisible] = useState(false);
+  const [priority, setPriority] = useState<Priority>("medium");
 
   const [photos, setPhotos] = useState<LocalMedia[]>([]);
   const [description, setDescription] = useState("");
@@ -248,10 +397,16 @@ export default function ReportFormScreen() {
         ? "Select vehicle"
         : "Loading vehicles...";
 
+  const selectedPriorityOption =
+    PRIORITY_OPTIONS.find((o) => o.value === priority) ?? PRIORITY_OPTIONS[1];
+
   return (
-    <ScrollView
+    <KeyboardAwareScrollView
+      style={styles.flex}
       contentContainerStyle={styles.container}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+      bottomOffset={24}
     >
       <Text style={styles.title}>Report Details</Text>
 
@@ -314,26 +469,30 @@ export default function ReportFormScreen() {
       />
 
       <Text style={styles.label}>Priority</Text>
-      <View style={{ zIndex: 2000 }}>
-        <DropDownPicker
-          listMode="SCROLLVIEW"
-          open={priorityOpen}
-          value={priority}
-          items={[
-            { label: "Low", value: "low" },
-            { label: "Medium", value: "medium" },
-            { label: "High", value: "high" },
-            { label: "Critical", value: "critical" },
+      <TouchableOpacity
+        style={styles.priorityField}
+        onPress={() => setPriorityModalVisible(true)}
+        disabled={submitting}
+        activeOpacity={0.7}
+      >
+        <View
+          style={[
+            styles.priorityDot,
+            { backgroundColor: selectedPriorityOption.color },
           ]}
-          setOpen={setPriorityOpen}
-          setValue={setPriority}
-          setItems={() => {}}
-          style={styles.dropdown}
-          dropDownContainerStyle={styles.dropdownContainer}
-          zIndex={2000}
-          disabled={submitting}
         />
-      </View>
+        <Text style={styles.priorityFieldText}>
+          {selectedPriorityOption.label}
+        </Text>
+        <ChevronDown size={18} color="#6B7280" />
+      </TouchableOpacity>
+
+      <PriorityPickerModal
+        visible={priorityModalVisible}
+        value={priority}
+        onSelect={setPriority}
+        onClose={() => setPriorityModalVisible(false)}
+      />
 
       <Text style={styles.label}>Description *</Text>
       <TextInput
@@ -366,11 +525,14 @@ export default function ReportFormScreen() {
           <Text style={styles.submitText}>{submitLabel}</Text>
         </TouchableOpacity>
       </View>
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+  },
   container: {
     padding: 16,
     backgroundColor: "#FFFFFF",
@@ -437,6 +599,28 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
     borderRadius: 12,
   },
+  priorityField: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    minHeight: 48,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  priorityDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  priorityFieldText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#111827",
+  },
   textArea: {
     backgroundColor: "#F9FAFB",
     borderWidth: 1,
@@ -475,5 +659,105 @@ const styles = StyleSheet.create({
   submitText: {
     color: "#FFFFFF",
     fontWeight: "700",
+  },
+});
+
+const priorityModalStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    height: "90%",
+    overflow: "hidden",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#111827",
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  body: {
+    padding: 20,
+    paddingBottom: 12,
+  },
+  sectionLabel: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 14,
+  },
+  required: {
+    color: "#DC2626",
+  },
+  card: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    borderWidth: 1.5,
+    borderColor: "#E5E7EB",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    gap: 14,
+  },
+  iconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cardText: {
+    flex: 1,
+  },
+  cardTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#111827",
+    marginBottom: 4,
+  },
+  cardDesc: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#6B7280",
+  },
+  radio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "#D1D5DB",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  radioDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  doneButton: {
+    margin: 20,
+    marginTop: 4,
+    backgroundColor: "#111827",
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: "center",
+  },
+  doneText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 16,
   },
 });

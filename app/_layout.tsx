@@ -1,16 +1,19 @@
 import { Stack } from "expo-router";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { AuthProvider, useSession } from "./ctx";
 import { ProjectProvider } from "./project-ctx";
 import { SplashScreenController } from "./splash";
 
 export default function Root() {
   return (
-    <AuthProvider>
-      <ProjectProvider>
-        <SplashScreenController />
-        <RootNavigator />
-      </ProjectProvider>
-    </AuthProvider>
+    <KeyboardProvider>
+      <AuthProvider>
+        <ProjectProvider>
+          <SplashScreenController />
+          <RootNavigator />
+        </ProjectProvider>
+      </AuthProvider>
+    </KeyboardProvider>
   );
 }
 

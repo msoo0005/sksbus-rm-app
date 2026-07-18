@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 
+import { api } from "../../api/client";
 import ConfirmActionModal from "../../components/ConfirmActionModal";
 import JobDetailsModal from "../../components/JobDetailsModal";
 import ReportCard from "../../components/ReportCard";
@@ -50,66 +51,9 @@ function formatDate(isoLike?: string | null) {
   return d.toLocaleString();
 }
 
-function getBearer(session: any): string | null {
-  const token =
-    typeof session === "string"
-      ? session
-      : (session?.token ?? session?.idToken ?? session?.accessToken ?? null);
-
-  if (!token) return null;
-  return token.startsWith("Bearer ") ? token : `Bearer ${token}`;
-}
-
-function mergeHeaders(base?: HeadersInit, extra?: Record<string, string>) {
-  const h = new Headers(base);
-
-  if (extra) {
-    for (const [k, v] of Object.entries(extra)) {
-      if (v != null && v !== "") h.set(k, v);
-    }
-  }
-
-  return h;
-}
-
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || "";
-
-async function apiFetch<T = any>(
-  path: string,
-  opts: RequestInit = {},
-  session?: any,
-): Promise<T> {
-  const bearer = getBearer(session);
-
-  const headers = mergeHeaders(opts.headers, {
-    "Content-Type": "application/json",
-    ...(bearer ? { Authorization: bearer } : {}),
-  });
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...opts,
-    headers,
-  });
-
-  const text = await res.text();
-
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-
-  if (!res.ok) {
-    throw new Error(data?.message || `Request failed (${res.status})`);
-  }
-
-  return data as T;
-}
-
 export default function TechnicianScreen() {
   const router = useRouter();
-  const { session, dbUser } = useSession() as any;
+  const { dbUser } = useSession() as any;
 
   const myUserId = dbUser?.user_id ? Number(dbUser.user_id) : null;
 
@@ -132,11 +76,7 @@ export default function TechnicianScreen() {
     }
 
     try {
-      const rows = await apiFetch<JobListItem[]>(
-        "/jobs",
-        { method: "GET" },
-        session,
-      );
+      const rows = await api.listJobs();
 
       setJobs(Array.isArray(rows) ? rows : []);
     } catch (e: any) {
@@ -200,11 +140,7 @@ export default function TechnicianScreen() {
     if (!acceptTarget) return;
 
     try {
-      await apiFetch(
-        `/jobs/${acceptTarget.job_id}/assign`,
-        { method: "PATCH" },
-        session,
-      );
+      await api.assignJob(acceptTarget.job_id);
 
       setAcceptVisible(false);
       setAcceptTarget(null);

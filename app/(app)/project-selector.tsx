@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -12,8 +13,8 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { api } from "../api/client";
 import { Card, CardContent } from "../components/card";
-import { useSession } from "../ctx";
 import { useProject } from "../project-ctx"; // ✅ NEW: persisted project selection
 
 // Match your DB/API response (adjust field names if your PROJECT table differs)
@@ -23,34 +24,8 @@ type Project = {
   project_desc?: string | null;
 };
 
-// Put your API base URL in env (recommended)
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? "";
-
-async function fetchMyProjects(
-  token: string | null | undefined,
-): Promise<Project[]> {
-  if (!API_BASE_URL) throw new Error("Missing EXPO_PUBLIC_API_BASE_URL");
-
-  const res = await fetch(`${API_BASE_URL}/me/projects`, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Failed to load projects (${res.status}) ${text}`);
-  }
-
-  const data = await res.json();
-  return Array.isArray(data) ? (data as Project[]) : [];
-}
-
 export default function ProjectSelectorScreen() {
   const router = useRouter();
-  const { session } = useSession(); // your JWT/access token string
   const {
     projectId: selectedProjectId,
     setProjectId,
@@ -66,8 +41,8 @@ export default function ProjectSelectorScreen() {
   const load = useCallback(async () => {
     try {
       setError(null);
-      const data = await fetchMyProjects(session);
-      setProjects(data);
+      const data = await api.myProjects();
+      setProjects(Array.isArray(data) ? data : []);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load projects.");
       setProjects([]);
@@ -75,7 +50,7 @@ export default function ProjectSelectorScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [session]);
+  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -206,6 +181,8 @@ export default function ProjectSelectorScreen() {
           keyExtractor={(item) => item.project_id}
           renderItem={renderItem}
           contentContainerStyle={styles.listContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }

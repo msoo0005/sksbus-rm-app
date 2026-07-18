@@ -4,7 +4,9 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -256,6 +258,10 @@ export default function BusesScreen() {
         transparent
         onRequestClose={closeModal}
       >
+        <KeyboardAvoidingView
+          style={styles.modalKeyboardView}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
         <View style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
@@ -267,6 +273,7 @@ export default function BusesScreen() {
               </Pressable>
             </View>
 
+            <ScrollView style={{ flexShrink: 1 }} keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}>
             <View style={styles.fieldGroup}>
               <Text style={styles.label}>
                 Registration <Text style={styles.required}>*</Text>
@@ -387,8 +394,10 @@ export default function BusesScreen() {
                 </Text>
               )}
             </Pressable>
+            </ScrollView>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
     </SafeAreaView>
@@ -397,6 +406,7 @@ export default function BusesScreen() {
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#fff" },
+  modalKeyboardView: { flex: 1, justifyContent: "flex-end" },
 
   header: {
     flexDirection: "row",
@@ -494,6 +504,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   modalSheet: {
+    maxHeight: "90%",
     backgroundColor: "#fff",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,

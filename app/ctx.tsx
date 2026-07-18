@@ -1,6 +1,7 @@
 import * as SecureStore from "expo-secure-store";
 import React from "react";
-import { setUnauthorizedHandler } from "./api/client";
+import { AppState, AppStateStatus } from "react-native";
+import { ensureValidSession, setUnauthorizedHandler } from "./api/client";
 import { api } from "./api/client";
 
 type DbUser = {
@@ -35,26 +36,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = React.useState<string | null>(null);
   const [dbUser, setDbUser] = React.useState<DbUser | null>(null);
 
+  const clearSession = React.useCallback(() => {
+    setSession(null);
+    setDbUser(null);
+    SecureStore.deleteItemAsync("accessToken").catch(() => {});
+    SecureStore.deleteItemAsync("idToken").catch(() => {});
+    SecureStore.deleteItemAsync("refreshToken").catch(() => {});
+  }, []);
+
+  // Register first so it's already wired before anything below can trigger it.
+  React.useEffect(() => {
+    setUnauthorizedHandler(clearSession);
+    return () => setUnauthorizedHandler(null);
+  }, [clearSession]);
+
   React.useEffect(() => {
     (async () => {
       const token = await SecureStore.getItemAsync("accessToken");
       if (token) {
         setSession(token);
+
+        // Proactively refresh/validate rather than waiting for a failed request.
+        const valid = await ensureValidSession();
+        if (!valid) {
+          clearSession();
+          setLoading(false);
+          return;
+        }
+
         try {
           const me = await api.me();
           setDbUser(me);
         } catch {
-          await Promise.all([
-            SecureStore.deleteItemAsync("accessToken"),
-            SecureStore.deleteItemAsync("idToken"),
-            SecureStore.deleteItemAsync("refreshToken"),
-          ]);
-          setSession(null);
-          setDbUser(null);
+          clearSession();
         }
       }
       setLoading(false);
     })();
+  }, [clearSession]);
+
+  // Re-validate whenever the app comes back to the foreground, so an
+  // expired-while-away session bounces the user to sign-in immediately
+  // instead of waiting for them to trigger a request that then fails.
+  React.useEffect(() => {
+    const sub = AppState.addEventListener(
+      "change",
+      (state: AppStateStatus) => {
+        if (state === "active") {
+          ensureValidSession();
+        }
+      },
+    );
+    return () => sub.remove();
   }, []);
 
   const signInWithTokens = React.useCallback(
@@ -72,25 +105,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signOut = React.useCallback(async () => {
-    await Promise.all([
-      SecureStore.deleteItemAsync("accessToken"),
-      SecureStore.deleteItemAsync("idToken"),
-      SecureStore.deleteItemAsync("refreshToken"),
-    ]);
-    setSession(null);
-    setDbUser(null);
-  }, []);
-
-  React.useEffect(() => {
-    setUnauthorizedHandler(() => {
-      setSession(null);
-      setDbUser(null);
-      SecureStore.deleteItemAsync("accessToken").catch(() => {});
-      SecureStore.deleteItemAsync("idToken").catch(() => {});
-      SecureStore.deleteItemAsync("refreshToken").catch(() => {});
-    });
-    return () => setUnauthorizedHandler(null);
-  }, []);
+    clearSession();
+  }, [clearSession]);
 
   return (
     <SessionContext.Provider value={{ session, dbUser, loading, signInWithTokens, signOut }}>

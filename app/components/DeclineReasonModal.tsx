@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 type Props = {
   visible: boolean;
@@ -18,7 +18,10 @@ export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Prop
 
   return (
     <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.overlay}>
+      <KeyboardAvoidingView
+        style={styles.overlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <View style={styles.modal}>
           <Text style={styles.title}>Decline Report</Text>
 
@@ -40,7 +43,7 @@ export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Prop
             </Pressable>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

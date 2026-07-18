@@ -4,6 +4,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -341,7 +343,8 @@ export default function TechnicianJobDetailsScreen() {
     <>
       <Stack.Screen options={{ title: "Job Details" }} />
 
-      <ScrollView ref={scrollRef} style={s.page} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <KeyboardAvoidingView style={s.page} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      <ScrollView ref={scrollRef} style={s.page} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}>
 
         {/* ── Hero ── */}
         <View style={s.hero}>
@@ -589,6 +592,7 @@ export default function TechnicianJobDetailsScreen() {
         )}
 
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <ImageViewerOverlay visible={viewerVisible} imageUrls={viewerUrls} startIndex={viewerIndex} onClose={() => setViewerVisible(false)} />
     </>

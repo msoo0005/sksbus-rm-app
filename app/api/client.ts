@@ -105,6 +105,66 @@ async function refreshTokens(): Promise<boolean> {
   }
 }
 
+// Minimal base64url decoder — no atob/Buffer dependency assumed on RN.
+function base64UrlDecode(input: string): string {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+
+  let buffer = 0;
+  let bits = 0;
+  let output = "";
+  for (const c of normalized) {
+    const val = chars.indexOf(c);
+    if (val === -1) continue;
+    buffer = (buffer << 6) | val;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+  return output;
+}
+
+// Reads the `exp` claim off a JWT without verifying its signature — used only
+// to decide client-side whether it's worth proactively refreshing.
+function getTokenExpiryMs(token: string): number | null {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const json = JSON.parse(base64UrlDecode(payload));
+    return typeof json.exp === "number" ? json.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+const EXPIRY_BUFFER_MS = 60_000;
+
+/**
+ * Proactively checks the stored ID token and refreshes it if it's missing,
+ * unreadable, or close to expiry. Call this on app foreground/launch so an
+ * expired session bounces the user to sign-in immediately rather than
+ * waiting for the next failed request.
+ */
+export async function ensureValidSession(): Promise<boolean> {
+  const idToken = await getIdToken();
+  if (!idToken) return false;
+
+  const expiryMs = getTokenExpiryMs(idToken);
+  const isExpiringSoon = expiryMs == null || Date.now() >= expiryMs - EXPIRY_BUFFER_MS;
+
+  if (!isExpiringSoon) return true;
+
+  const refreshed = await refreshTokens();
+  if (!refreshed) {
+    _unauthorizedHandler?.();
+    return false;
+  }
+  return true;
+}
+
 function safeJson(t: string) {
   try {
     return JSON.parse(t);
@@ -157,9 +217,11 @@ export async function request<T = any>(
 
   const res = await fetch(url, { ...init, headers });
 
-  if (res.status === 401 && usingOwnToken && !_isRetry) {
-    const refreshed = await refreshTokens();
-    if (refreshed) return request<T>(path, init, true);
+  if (res.status === 401 && usingOwnToken) {
+    if (!_isRetry) {
+      const refreshed = await refreshTokens();
+      if (refreshed) return request<T>(path, init, true);
+    }
     _unauthorizedHandler?.();
   }
 
@@ -188,7 +250,10 @@ async function requestWithIdToken<T = any>(
   _isRetry = false,
 ): Promise<T> {
   const idToken = await getIdToken();
-  if (!idToken) throw new Error("Missing idToken");
+  if (!idToken) {
+    _unauthorizedHandler?.();
+    throw new Error("Missing idToken");
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -200,9 +265,11 @@ async function requestWithIdToken<T = any>(
 
   const res = await fetch(url, { ...init, headers });
 
-  if (res.status === 401 && !_isRetry) {
-    const refreshed = await refreshTokens();
-    if (refreshed) return requestWithIdToken<T>(path, init, true);
+  if (res.status === 401) {
+    if (!_isRetry) {
+      const refreshed = await refreshTokens();
+      if (refreshed) return requestWithIdToken<T>(path, init, true);
+    }
     _unauthorizedHandler?.();
   }
 
