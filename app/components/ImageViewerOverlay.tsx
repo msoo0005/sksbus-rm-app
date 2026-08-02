@@ -1,6 +1,7 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import ImageViewer from "react-native-image-zoom-viewer";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 type Props = {
   visible: boolean;
@@ -9,19 +10,16 @@ type Props = {
   onClose: () => void;
 };
 
-export default function ImageViewerOverlay({
-  visible,
+function ImageViewerContent({
   imageUrls,
   startIndex = 0,
   onClose,
-}: Props) {
+}: Omit<Props, "visible">) {
   const [index, setIndex] = React.useState(startIndex);
 
   React.useEffect(() => {
-    if (visible) setIndex(startIndex);
-  }, [visible, startIndex]);
-
-  if (!visible) return null;
+    setIndex(startIndex);
+  }, [startIndex]);
 
   const total = imageUrls.length;
   const current = total ? Math.min(Math.max(index, 0), total - 1) + 1 : 0;
@@ -37,17 +35,49 @@ export default function ImageViewerOverlay({
         onCancel={onClose}
         saveToLocalByLongPress={false}
         renderHeader={() => (
-          <View style={styles.header}>
-            <Text style={styles.counter}>
-              {total ? `${current} / ${total}` : ""}
-            </Text>
-            <Pressable onPress={onClose} style={styles.closeBtn}>
-              <Text style={styles.closeText}>Close</Text>
-            </Pressable>
-          </View>
+          <SafeAreaView
+            edges={["top"]}
+            pointerEvents="box-none"
+            style={styles.headerSafeArea}
+          >
+            <View style={styles.header}>
+              <Text style={styles.counter}>
+                {total ? `${current} / ${total}` : ""}
+              </Text>
+              <Pressable onPress={onClose} style={styles.closeBtn}>
+                <Text style={styles.closeText}>Close</Text>
+              </Pressable>
+            </View>
+          </SafeAreaView>
         )}
       />
     </View>
+  );
+}
+
+export default function ImageViewerOverlay({
+  visible,
+  imageUrls,
+  startIndex = 0,
+  onClose,
+}: Props) {
+  return (
+    <Modal
+      visible={visible}
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      {/* Modal opens a separate native window, so the app's root
+          SafeAreaProvider never re-measures insets for it — nest a fresh
+          one here so the header doesn't render under the status bar. */}
+      <SafeAreaProvider>
+        <ImageViewerContent
+          imageUrls={imageUrls}
+          startIndex={startIndex}
+          onClose={onClose}
+        />
+      </SafeAreaProvider>
+    </Modal>
   );
 }
 
@@ -58,12 +88,15 @@ const styles = StyleSheet.create({
     zIndex: 9999,
     elevation: 9999,
   },
-  header: {
+  headerSafeArea: {
     position: "absolute",
-    top: 44,
+    top: 0,
     left: 0,
     right: 0,
     zIndex: 10000,
+  },
+  header: {
+    marginTop: 10,
     paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",

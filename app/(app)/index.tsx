@@ -101,7 +101,8 @@ export default function HomeScreen() {
   };
 
   // Responsive columns: 2 on phones, more as the screen (or split-view pane) widens.
-  const contentWidth = Math.min(windowWidth, CONTENT_MAX_WIDTH) - CONTENT_H_PADDING * 2;
+  const contentWidth =
+    Math.min(windowWidth, CONTENT_MAX_WIDTH) - CONTENT_H_PADDING * 2;
   const columns = windowWidth >= 900 ? 4 : windowWidth >= 600 ? 3 : 2;
   const cardWidth = (contentWidth - GRID_GAP * (columns - 1)) / columns;
 
@@ -138,7 +139,11 @@ export default function HomeScreen() {
                 ]}
               >
                 <View style={styles.iconBox}>
-                  <FontAwesome5 name={mod.icon as any} size={20} color={mod.accent} />
+                  <FontAwesome5
+                    name={mod.icon as any}
+                    size={20}
+                    color={mod.accent}
+                  />
                 </View>
 
                 <Text style={styles.cardTitle} numberOfLines={1}>
@@ -149,8 +154,14 @@ export default function HomeScreen() {
                 </Text>
 
                 <View style={styles.cardFooter}>
-                  <Text style={[styles.openText, { color: mod.accent }]}>Open</Text>
-                  <FontAwesome5 name="arrow-right" size={10} color={mod.accent} />
+                  <Text style={[styles.openText, { color: mod.accent }]}>
+                    Open
+                  </Text>
+                  <FontAwesome5
+                    name="arrow-right"
+                    size={10}
+                    color={mod.accent}
+                  />
                 </View>
               </View>
             )}

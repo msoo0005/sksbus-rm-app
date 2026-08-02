@@ -195,7 +195,7 @@ export const handler = async (event) => {
 
     if (method === "GET" && isJobsMediaListPath(path)) {
       const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/media$/);
-      return await withConn((c) => listJobMedia(c, auth, jobId));
+      return await withConn((c) => listJobMedia(c, auth, jobId, qs));
     }
 
     if (method === "GET" && isJobsMediaPresignPath(path)) {
@@ -233,6 +233,29 @@ export const handler = async (event) => {
     if (method === "POST" && /^\/tasks\/\d+\/parts$/.test(path)) {
       const taskId = getIdFromParamsOrPath(params.task_id, path, /^\/tasks\/(\d+)\/parts$/);
       return await withConn((c) => addTaskPart(c, auth, taskId, mustJson(event)));
+    }
+
+    // ===== NOTIFICATIONS =====
+
+    if (method === "GET" && path === "/notifications") {
+      return await withConn((c) => listNotifications(c, auth, qs));
+    }
+
+    if (method === "GET" && path === "/notifications/unread-count") {
+      return await withConn((c) => getUnreadNotificationCount(c, auth));
+    }
+
+    if (method === "PATCH" && isNotificationReadPath(path)) {
+      const notificationId = getIdFromParamsOrPath(
+        params.notification_id,
+        path,
+        /^\/notifications\/(\d+)\/read$/
+      );
+      return await withConn((c) => markNotificationRead(c, auth, notificationId));
+    }
+
+    if (method === "POST" && path === "/notifications/read-all") {
+      return await withConn((c) => markAllNotificationsRead(c, auth));
     }
 
     return json(404, { message: `Not found: ${method} ${path}` });
@@ -340,6 +363,8 @@ const isJobsMediaConfirmPath = (p) => /^\/jobs\/\d+\/media\/confirm$/.test(p);
 
 const isPartIdPath = (p) => /^\/parts\/\d+$/.test(p);
 
+const isNotificationReadPath = (p) => /^\/notifications\/\d+\/read$/.test(p);
+
 // Matches /buses/<anything> — bus_id can be string or numeric
 const isBusIdPath = (p) => /^\/buses\/[^/]+$/.test(p);
 
@@ -435,6 +460,38 @@ function getAuthFromClaims(claims) {
   };
 }
 
+// ===================== NOTIFICATIONS (helper) =====================
+
+// Best-effort: a notification failure (e.g. the NOTIFICATION table hasn't
+// been migrated in yet) must never break the primary operation it's attached to.
+async function notifyUsersByRole(conn, { roles, type, title, body = null, reportId = null, jobId = null }) {
+  try {
+    if (!roles?.length) return;
+
+    const rolePlaceholders = roles.map(() => "?").join(",");
+    const [users] = await conn.execute(
+      `SELECT user_id FROM \`USER\` WHERE user_role IN (${rolePlaceholders})`,
+      roles
+    );
+    if (!users.length) return;
+
+    const rowPlaceholders = [];
+    const values = [];
+    for (const u of users) {
+      rowPlaceholders.push("(?,?,?,?,?,?)");
+      values.push(u.user_id, type, title, body, reportId, jobId);
+    }
+
+    await conn.execute(
+      `INSERT INTO NOTIFICATION (user_id, notification_type, notification_title, notification_body, report_id, job_id)
+       VALUES ${rowPlaceholders.join(",")}`,
+      values
+    );
+  } catch (e) {
+    console.error("Failed to create notifications", { type, title, e: e?.message });
+  }
+}
+
 // ===================== USERS =====================
 
 async function getOrCreateUserId(conn, auth) {
@@ -449,6 +506,20 @@ async function getOrCreateUserId(conn, auth) {
     [auth.name, auth.email, auth.sub, auth.role]
   );
   return Number(res.insertId);
+}
+
+// The Cognito ID token's `name`/`email` claims aren't always populated (falls
+// back to "Unknown" in getAuthFromClaims), but the USER table's own name is
+// reliably correct — it's what the rest of the app already displays
+// everywhere (report cards, job assignments, etc). Notifications should read
+// the same source of truth instead of the raw JWT claim.
+async function getDisplayName(conn, auth) {
+  const userId = await getOrCreateUserId(conn, auth);
+  const [rows] = await conn.execute(
+    "SELECT user_name FROM `USER` WHERE user_id=? LIMIT 1",
+    [userId]
+  );
+  return rows?.[0]?.user_name || auth.name || "Someone";
 }
 
 async function getMe(conn, auth) {
@@ -802,7 +873,18 @@ async function createReport(conn, auth, b) {
     ]
   );
 
-  return json(200, { report_id: res.insertId });
+  const reportId = res.insertId;
+
+  const reporterName = await getDisplayName(conn, auth);
+  await notifyUsersByRole(conn, {
+    roles: ["admin", "rm_manager"],
+    type: "new_report",
+    title: "New report submitted",
+    body: `${reporterName} submitted a ${b.report_type} report for bus ${b.bus_id}.`,
+    reportId,
+  });
+
+  return json(200, { report_id: reportId });
 }
 
 async function updateReportStatus(conn, auth, reportId, b) {
@@ -841,8 +923,9 @@ async function updateReportStatus(conn, auth, reportId, b) {
     if (!rRows.length) { await conn.rollback(); return json(404, { message: "Report not found" }); }
 
     let jobId = rRows[0].job_id ? Number(rRows[0].job_id) : null;
+    const jobWasCreated = shouldCreateJob && !jobId;
 
-    if (shouldCreateJob && !jobId) {
+    if (jobWasCreated) {
       const jobDesc = b.job_desc != null ? String(b.job_desc) : `Created from approved report #${reportId}`;
       const [jobRes] = await conn.execute(
         "INSERT INTO JOB (job_desc, job_status, job_created_at) VALUES (?, 'open', NOW())",
@@ -863,6 +946,18 @@ async function updateReportStatus(conn, auth, reportId, b) {
     values.push(reportId);
     await conn.execute(`UPDATE REPORT SET ${updates.join(", ")} WHERE report_id=?`, values);
     await conn.commit();
+
+    if (jobWasCreated) {
+      await notifyUsersByRole(conn, {
+        roles: ["technician"],
+        type: "new_job",
+        title: "New job available",
+        body: `A new job is available to accept (from report #${reportId}).`,
+        reportId,
+        jobId,
+      });
+    }
+
     return json(200, { success: true, job_id: jobId });
   } catch (e) {
     await conn.rollback();
@@ -996,6 +1091,16 @@ async function assignJobToMe(conn, auth, jobId) {
     [techUserId, jobId]
   );
   if (!res.affectedRows) return json(409, { message: "Job already assigned (or not found)" });
+
+  const technicianName = await getDisplayName(conn, auth);
+  await notifyUsersByRole(conn, {
+    roles: ["admin", "rm_manager"],
+    type: "job_progress",
+    title: "Job accepted",
+    body: `Job #${jobId} was accepted by ${technicianName}.`,
+    jobId,
+  });
+
   return json(200, { success: true });
 }
 
@@ -1094,6 +1199,15 @@ async function updateJobStatus(conn, auth, jobId, b) {
       [toStatus, jobId]
     );
   }
+
+  await notifyUsersByRole(conn, {
+    roles: ["admin", "rm_manager"],
+    type: "job_progress",
+    title: isTerminal ? "Job completed" : "Job status updated",
+    body: `Job #${jobId} status changed to "${toStatus}".`,
+    jobId,
+  });
+
   return json(200, { success: true });
 }
 
@@ -1147,10 +1261,23 @@ async function createJobTask(conn, auth, jobId, b) {
 
   if (!b.task_name) throw new Error("task_name is required");
 
+  const taskStatus = b.task_status ?? "pending";
   const [res] = await conn.execute(
     `INSERT INTO JOB_TASK (job_id, task_name, task_desc, task_status, task_order, completed_at, created_at) VALUES (?,?,?,?,?,NOW(),NOW())`,
-    [jobId, b.task_name, b.task_desc ?? null, b.task_status ?? "pending", b.task_order ?? 1]
+    [jobId, b.task_name, b.task_desc ?? null, taskStatus, b.task_order ?? 1]
   );
+
+  if (taskStatus === "done") {
+    const technicianName = await getDisplayName(conn, auth);
+    await notifyUsersByRole(conn, {
+      roles: ["admin", "rm_manager"],
+      type: "job_progress",
+      title: "Job progress update",
+      body: `${technicianName} completed a task on Job #${jobId}: ${b.task_name}.`,
+      jobId,
+    });
+  }
+
   return json(200, { task_id: res.insertId });
 }
 
@@ -1316,14 +1443,23 @@ async function confirmReportMedia(conn, auth, reportId, b) {
 
 // ===================== JOB MEDIA =====================
 
-async function listJobMedia(conn, auth, jobId) {
+async function listJobMedia(conn, auth, jobId, qs) {
   const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
   if (deny) return deny;
 
+  const untaggedOnly = qs?.task_id === "none";
+  const taskId = !untaggedOnly && qs?.task_id != null ? toId(qs.task_id, "task_id") : null;
+  const where = untaggedOnly
+    ? "job_id=? AND task_id IS NULL"
+    : taskId != null
+      ? "job_id=? AND task_id=?"
+      : "job_id=?";
+  const vals = taskId != null ? [jobId, taskId] : [jobId];
+
   const [rows] = await conn.execute(
-    `SELECT media_id, job_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, media_duration, uploaded_at
-     FROM JOB_MEDIA WHERE job_id=? ORDER BY uploaded_at DESC, media_id DESC`,
-    [jobId]
+    `SELECT media_id, job_id, task_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, media_duration, uploaded_at
+     FROM JOB_MEDIA WHERE ${where} ORDER BY uploaded_at DESC, media_id DESC`,
+    vals
   );
 
   const enriched = await Promise.all(
@@ -1355,8 +1491,11 @@ async function presignJobMedia(conn, auth, jobId, qs) {
   const [j] = await conn.execute("SELECT job_id FROM JOB WHERE job_id=?", [jobId]);
   if (!j?.length) throw new Error("job_id not found");
 
+  const taskId = qs?.task_id != null ? toId(qs.task_id, "task_id") : null;
   const ext = extFromMime(mime);
-  const key = `jobs/${jobId}/${crypto.randomUUID()}.${ext}`;
+  const key = taskId != null
+    ? `jobs/${jobId}/tasks/${taskId}/${crypto.randomUUID()}.${ext}`
+    : `jobs/${jobId}/${crypto.randomUUID()}.${ext}`;
   const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime });
   const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
   return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
@@ -1375,10 +1514,78 @@ async function confirmJobMedia(conn, auth, jobId, b) {
   const [j] = await conn.execute("SELECT job_id FROM JOB WHERE job_id=?", [jobId]);
   if (!j?.length) throw new Error("job_id not found");
 
+  let taskId = null;
+  if (b.task_id != null) {
+    taskId = toId(b.task_id, "task_id");
+    const [t] = await conn.execute("SELECT task_id FROM JOB_TASK WHERE task_id=? AND job_id=?", [taskId, jobId]);
+    if (!t?.length) throw new Error("task_id does not belong to this job");
+  }
+
   const mediaType = b.mime_type.toString().startsWith("video") ? "video" : "image";
   await conn.execute(
-    `INSERT INTO JOB_MEDIA (job_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, uploaded_at) VALUES (?,?,?,?,?,?,NOW())`,
-    [jobId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null]
+    `INSERT INTO JOB_MEDIA (job_id, task_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, uploaded_at) VALUES (?,?,?,?,?,?,?,NOW())`,
+    [jobId, taskId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null]
+  );
+  return json(200, { success: true });
+}
+
+// ===================== NOTIFICATIONS =====================
+
+const ALL_ROLES = ["admin", "fleet_manager", "rm_manager", "technician", "inventory_manager", "driver"];
+
+async function listNotifications(conn, auth, qs) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const where = ["user_id=?"];
+  const vals = [userId];
+  if (qs?.unread === "1") where.push("is_read=0");
+
+  const [rows] = await conn.execute(
+    `SELECT notification_id, notification_type, notification_title, notification_body,
+            report_id, job_id, is_read, created_at
+     FROM NOTIFICATION
+     WHERE ${where.join(" AND ")}
+     ORDER BY created_at DESC, notification_id DESC
+     LIMIT 100`,
+    vals
+  );
+  return json(200, rows);
+}
+
+async function getUnreadNotificationCount(conn, auth) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const [rows] = await conn.execute(
+    `SELECT COUNT(*) AS cnt FROM NOTIFICATION WHERE user_id=? AND is_read=0`,
+    [userId]
+  );
+  return json(200, { count: Number(rows[0]?.cnt ?? 0) });
+}
+
+async function markNotificationRead(conn, auth, notificationId) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(
+    `UPDATE NOTIFICATION SET is_read=1 WHERE notification_id=? AND user_id=?`,
+    [notificationId, userId]
+  );
+  return json(200, { success: true });
+}
+
+async function markAllNotificationsRead(conn, auth) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(
+    `UPDATE NOTIFICATION SET is_read=1 WHERE user_id=? AND is_read=0`,
+    [userId]
   );
   return json(200, { success: true });
 }

@@ -14,10 +14,18 @@ import {
 import type { JobMedia, ReportMedia } from "../api/client";
 import { api } from "../api/client";
 import ImageViewerOverlay from "./ImageViewerOverlay";
+import JobTaskCard from "./JobTaskCard";
+import JobTimeline, { TimelineEvent } from "./JobTimeline";
 import type { StatusType } from "./StatusBadge";
 import StatusBadge from "./StatusBadge";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
+
+// This task is auto-created by the backend the moment the initial odometer
+// reading is saved (see upsertOdometerRecordedTask in the lambda) — it's a
+// bookkeeping row, not a real repair task, so it's surfaced only in the
+// timeline and excluded from the Tasks list.
+const ODOMETER_TASK_NAME = "Recorded odometer reading";
 
 type JobListItem = {
   job_id: number;
@@ -26,6 +34,7 @@ type JobListItem = {
   technician_user_id: number | null;
   job_created_at?: string | null;
   job_accepted_at?: string | null;
+  job_completed_at?: string | null;
   job_odometer?: number | null;
   report_id: number | null;
   report_type: string | null;
@@ -190,7 +199,9 @@ export default function JobDetailsView({
     if (!Number.isFinite(jId) || jId <= 0) return;
     setLoadingAfterPhotos(true);
     try {
-      const media = (await api.listJobMedia(jId)) as JobMedia[];
+      const media = (await api.listJobMedia(jId, {
+        untaggedOnly: true,
+      })) as JobMedia[];
       const urls = (Array.isArray(media) ? media : [])
         .map((m) => m?.viewUrl ?? null)
         .filter(isNonEmptyString);
@@ -239,16 +250,98 @@ export default function JobDetailsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
-  const completedTasks = useMemo(() => {
-    return tasks
-      .filter((t) => t.task_status === "done")
-      .slice()
-      .sort((a, b) => {
-        const ad = a.completed_at ? new Date(a.completed_at).getTime() : 0;
-        const bd = b.completed_at ? new Date(b.completed_at).getTime() : 0;
-        return bd !== ad ? bd - ad : (b.task_order ?? 0) - (a.task_order ?? 0);
+  // The odometer-recorded row is bookkeeping, not a real task — it's shown
+  // only in the timeline, never in the Tasks list.
+  const visibleTasks = useMemo(
+    () =>
+      tasks
+        .filter((t) => t.task_name !== ODOMETER_TASK_NAME)
+        .slice()
+        .sort((a, b) => (a.task_order ?? 0) - (b.task_order ?? 0)),
+    [tasks],
+  );
+
+  const timelineEvents = useMemo<TimelineEvent[]>(() => {
+    const events: TimelineEvent[] = [];
+
+    if (report?.report_uploaded_at) {
+      events.push({
+        id: "report-submitted",
+        icon: "file-alt",
+        color: "#2563EB",
+        colorLight: "#EFF6FF",
+        title: "Report submitted",
+        subtitle: report.reporter_name ? `By ${report.reporter_name}` : undefined,
+        at: report.report_uploaded_at,
       });
-  }, [tasks]);
+    }
+
+    if (jobSummary?.job_created_at) {
+      events.push({
+        id: "job-created",
+        icon: "briefcase",
+        color: "#7C3AED",
+        colorLight: "#F5F3FF",
+        title: "Job created",
+        at: jobSummary.job_created_at,
+      });
+    }
+
+    if (jobSummary?.job_accepted_at) {
+      events.push({
+        id: "job-accepted",
+        icon: "hand-paper",
+        color: "#EA580C",
+        colorLight: "#FFF7ED",
+        title: "Job accepted",
+        subtitle: formatAssignee(jobSummary),
+        at: jobSummary.job_accepted_at,
+      });
+    }
+
+    const odometerTask = tasks.find((t) => t.task_name === ODOMETER_TASK_NAME);
+    if (odometerTask?.completed_at) {
+      events.push({
+        id: "odometer",
+        icon: "tachometer-alt",
+        color: "#0EA5E9",
+        colorLight: "#F0F9FF",
+        title: "Initial odometer recorded",
+        subtitle:
+          jobSummary?.job_odometer != null
+            ? `${jobSummary.job_odometer.toLocaleString()} km`
+            : undefined,
+        at: odometerTask.completed_at,
+      });
+    }
+
+    for (const t of visibleTasks) {
+      if (t.task_status === "done" && t.completed_at) {
+        events.push({
+          id: `task-${t.task_id}`,
+          icon: "check-circle",
+          color: "#16A34A",
+          colorLight: "#F0FDF4",
+          title: t.task_name,
+          subtitle: t.task_desc ?? undefined,
+          at: t.completed_at,
+        });
+      }
+    }
+
+    if (jobSummary?.job_completed_at) {
+      events.push({
+        id: "job-completed",
+        icon: "flag-checkered",
+        color: "#111827",
+        colorLight: "#F3F4F6",
+        title: "Job completed",
+        at: jobSummary.job_completed_at,
+      });
+    }
+
+    return events;
+  }, [report, jobSummary, tasks, visibleTasks]);
 
   const assigneeLabel = useMemo(() => formatAssignee(jobSummary), [jobSummary]);
 
@@ -394,31 +487,25 @@ export default function JobDetailsView({
           </View>
         </SectionCard>
 
-        {/* ── Completed Tasks ── */}
-        <SectionCard title="Completed Tasks" icon="check-circle">
-          {completedTasks.length === 0 ? (
-            <Text style={s.mutedText}>No completed tasks yet.</Text>
+        {/* ── Tasks ── */}
+        <SectionCard title="Tasks" icon="tasks">
+          {visibleTasks.length === 0 ? (
+            <Text style={s.mutedText}>No tasks added yet.</Text>
           ) : (
-            completedTasks.map((t, i) => (
-              <View
+            visibleTasks.map((t) => (
+              <JobTaskCard
                 key={t.task_id}
-                style={[s.taskRow, i > 0 && s.taskRowBorder]}
-              >
-                <View style={s.taskCheck}>
-                  <FontAwesome5 name="check" size={11} color="#16A34A" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.taskName}>{t.task_name}</Text>
-                  {!!t.task_desc && (
-                    <Text style={s.taskDesc}>{t.task_desc}</Text>
-                  )}
-                  <Text style={s.taskMeta}>
-                    Completed {formatDateTime(t.completed_at)}
-                  </Text>
-                </View>
-              </View>
+                task={t}
+                jobId={jobId}
+                editable={false}
+              />
             ))
           )}
+        </SectionCard>
+
+        {/* ── Job Progress Timeline ── */}
+        <SectionCard title="Job Progress" icon="stream">
+          <JobTimeline events={timelineEvents} />
         </SectionCard>
 
         {/* ── After Photos ── */}
@@ -705,42 +792,4 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
 
-  // Tasks
-  taskRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    paddingVertical: 12,
-  },
-  taskRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: "#F3F4F6",
-  },
-  taskCheck: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "#F0FDF4",
-    borderWidth: 1,
-    borderColor: "#BBF7D0",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 1,
-  },
-  taskName: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 2,
-  },
-  taskDesc: {
-    fontSize: 13,
-    color: "#6B7280",
-    marginBottom: 4,
-  },
-  taskMeta: {
-    fontSize: 12,
-    color: "#9CA3AF",
-    fontWeight: "500",
-  },
 });

@@ -1,13 +1,20 @@
+import { Ionicons } from "@expo/vector-icons";
 import { Stack, usePathname, useRouter } from "expo-router";
 import React from "react";
 import {
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { api } from "../api/client";
 import { useSession } from "../ctx";
+
+// Native stack header height when no large title is used.
+const HEADER_HEIGHT = Platform.OS === "ios" ? 44 : 56;
 
 type RoleKey =
   | "admin"
@@ -18,13 +25,16 @@ type RoleKey =
   | "inventory_manager";
 
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
-  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses"],
+  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications"],
   fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector"],
-  rm_manager: ["/rm-manager-home", "/rm-manager"],
-  technician: ["/technician-home", "/technician"],
+  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications"],
+  technician: ["/technician-home", "/technician", "/notifications"],
   inventory_manager: ["/inventory"],
   driver: ["/form", "/project-selector"],
 };
+
+// Roles that receive in-app notifications (per the feature's scope).
+const NOTIFIABLE_ROLES = new Set(["admin", "rm_manager", "technician"]);
 
 const ROLE_HOME: Record<RoleKey, string> = {
   admin: "/",
@@ -43,6 +53,18 @@ const ROLE_LABEL: Record<string, string> = {
   inventory_manager: "Inventory Manager",
   driver: "Driver",
 };
+
+// Same accent system used across HomeHeader / the home-screen module cards,
+// so the avatar reads as one consistent identity color for a given role.
+const ROLE_COLORS: Record<string, { accent: string; light: string }> = {
+  admin: { accent: "#4338CA", light: "#EEF2FF" },
+  fleet_manager: { accent: "#2563EB", light: "#EFF6FF" },
+  rm_manager: { accent: "#16A34A", light: "#F0FDF4" },
+  technician: { accent: "#EA580C", light: "#FFF7ED" },
+  inventory_manager: { accent: "#7C3AED", light: "#F5F3FF" },
+  driver: { accent: "#2563EB", light: "#EFF6FF" },
+};
+const DEFAULT_ROLE_COLOR = ROLE_COLORS.driver;
 
 function getInitials(name: string) {
   return name
@@ -74,20 +96,75 @@ function RouteGuard() {
   return null;
 }
 
-// Only the pressable avatar — no modal here so iOS doesn't render a pill affordance
-function AvatarButton({ onPress }: { onPress: () => void }) {
+// Rendered as a floating overlay above the Stack rather than through
+// headerRight — on iOS 26, native headerRight content is wrapped in a
+// UIBarButtonItem, and the OS unconditionally draws its own "Liquid Glass"
+// pill background behind it with no opt-out. Floating outside the native
+// header sidesteps that entirely.
+function FloatingHeaderButtons({ onAvatarPress }: { onAvatarPress: () => void }) {
   const { dbUser } = useSession();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const [unreadCount, setUnreadCount] = React.useState(0);
+
+  const canSeeNotifications = !!dbUser && NOTIFIABLE_ROLES.has(dbUser.user_role);
+
+  const refreshUnreadCount = React.useCallback(async () => {
+    try {
+      const { count } = await api.unreadNotificationCount();
+      setUnreadCount(count);
+    } catch {
+      // best-effort — badge just skips this refresh cycle
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!canSeeNotifications) return;
+    refreshUnreadCount();
+    const interval = setInterval(refreshUnreadCount, 30_000);
+    return () => clearInterval(interval);
+  }, [canSeeNotifications, refreshUnreadCount]);
+
   if (!dbUser) return null;
 
   const initials = getInitials(dbUser.user_name || dbUser.user_email);
+  const color = ROLE_COLORS[dbUser.user_role] ?? DEFAULT_ROLE_COLOR;
 
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.avatarBtn, pressed && { opacity: 0.8 }]}
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.floatingWrap,
+        { top: insets.top + (HEADER_HEIGHT - 34) / 2 },
+      ]}
     >
-      <Text style={styles.avatarText}>{initials}</Text>
-    </Pressable>
+      {canSeeNotifications && (
+        <Pressable
+          onPress={() => router.push("/notifications")}
+          style={({ pressed }) => [styles.bellBtn, pressed && { opacity: 0.75 }]}
+        >
+          <Ionicons name="notifications-outline" size={19} color="#374151" />
+          {unreadCount > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </Text>
+            </View>
+          )}
+        </Pressable>
+      )}
+
+      <Pressable
+        onPress={onAvatarPress}
+        style={({ pressed }) => [
+          styles.avatarBtn,
+          { backgroundColor: color.accent },
+          pressed && { opacity: 0.8 },
+        ]}
+      >
+        <Text style={styles.avatarText}>{initials}</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -101,6 +178,7 @@ function ProfileModal({
 }) {
   const router = useRouter();
   const { dbUser, signOut } = useSession();
+  const insets = useSafeAreaInsets();
 
   const handleSignOut = async () => {
     onClose();
@@ -112,6 +190,7 @@ function ProfileModal({
 
   const initials = getInitials(dbUser.user_name || dbUser.user_email);
   const roleLabel = ROLE_LABEL[dbUser.user_role] ?? dbUser.user_role;
+  const color = ROLE_COLORS[dbUser.user_role] ?? DEFAULT_ROLE_COLOR;
 
   return (
     <Modal
@@ -120,22 +199,37 @@ function ProfileModal({
       animationType="fade"
       onRequestClose={onClose}
     >
-      <Pressable style={styles.backdrop} onPress={onClose}>
+      <Pressable
+        style={[styles.backdrop, { paddingTop: insets.top + HEADER_HEIGHT + 6 }]}
+        onPress={onClose}
+      >
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.avatarLarge}>
+          <View
+            style={[styles.avatarLarge, { backgroundColor: color.accent }]}
+          >
             <Text style={styles.avatarLargeText}>{initials}</Text>
           </View>
 
           <Text style={styles.name}>{dbUser.user_name}</Text>
           <Text style={styles.email}>{dbUser.user_email}</Text>
 
-          <View style={styles.roleBadge}>
-            <Text style={styles.roleBadgeText}>{roleLabel}</Text>
+          <View style={[styles.roleBadge, { backgroundColor: color.light }]}>
+            <View style={[styles.roleDot, { backgroundColor: color.accent }]} />
+            <Text style={[styles.roleBadgeText, { color: color.accent }]}>
+              {roleLabel}
+            </Text>
           </View>
 
           <View style={styles.divider} />
 
-          <Pressable style={styles.signOutBtn} onPress={handleSignOut}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.signOutBtn,
+              pressed && { opacity: 0.85 },
+            ]}
+            onPress={handleSignOut}
+          >
+            <Ionicons name="log-out-outline" size={17} color="#DC2626" />
             <Text style={styles.signOutText}>Sign Out</Text>
           </Pressable>
         </Pressable>
@@ -147,55 +241,65 @@ function ProfileModal({
 export default function RootLayout() {
   const [profileVisible, setProfileVisible] = React.useState(false);
 
-  // Stable reference — setProfileVisible from useState never changes
-  const renderHeaderRight = React.useCallback(
-    () => <AvatarButton onPress={() => setProfileVisible(true)} />,
-    [],
-  );
-
   return (
-    <>
+    <View style={styles.root}>
       <RouteGuard />
       <ProfileModal
         visible={profileVisible}
         onClose={() => setProfileVisible(false)}
       />
       <Stack>
-        <Stack.Screen name="index" options={{ title: "Home", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="fleet-manager-home" options={{ title: "Home", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="fleet-manager" options={{ title: "Fleet Manager", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="index" options={{ title: "Home" }} />
+        <Stack.Screen name="fleet-manager-home" options={{ title: "Home" }} />
+        <Stack.Screen name="fleet-manager" options={{ title: "Fleet Manager" }} />
         <Stack.Screen
           name="project-selector"
-          options={{ title: "Select Your Project", headerRight: renderHeaderRight }}
+          options={{ title: "Select Your Project" }}
         />
         <Stack.Screen
           name="fleet-manager-history"
-          options={{ title: "Your Submitted Reports", headerRight: renderHeaderRight }}
+          options={{ title: "Your Submitted Reports" }}
         />
-        <Stack.Screen name="rm-manager-home" options={{ title: "Home", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="rm-manager" options={{ title: "R&M Manager", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="rm-manager/job/[id]" options={{ title: "Job Details", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="technician-home" options={{ title: "Home", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="technician/index" options={{ title: "Technician", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="technician/job/[id]" options={{ title: "Job Details", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="inventory" options={{ title: "Inventory Manager", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="form" options={{ title: "Report Form", headerRight: renderHeaderRight }} />
-        <Stack.Screen name="buses" options={{ title: "Bus Fleet", headerRight: renderHeaderRight }} />
+        <Stack.Screen name="rm-manager-home" options={{ title: "Home" }} />
+        <Stack.Screen name="rm-manager" options={{ title: "R&M Manager" }} />
+        <Stack.Screen name="rm-manager/job/[id]" options={{ title: "Job Details" }} />
+        <Stack.Screen name="technician-home" options={{ title: "Home" }} />
+        <Stack.Screen name="technician/index" options={{ title: "Technician" }} />
+        <Stack.Screen name="technician/job/[id]" options={{ title: "Job Details" }} />
+        <Stack.Screen name="inventory" options={{ title: "Inventory Manager" }} />
+        <Stack.Screen name="form" options={{ title: "Report Form" }} />
+        <Stack.Screen name="buses" options={{ title: "Bus Fleet" }} />
+        <Stack.Screen name="notifications" options={{ title: "Notifications" }} />
       </Stack>
-    </>
+      <FloatingHeaderButtons onAvatarPress={() => setProfileVisible(true)} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
+  floatingWrap: {
+    position: "absolute",
+    right: 16,
+    zIndex: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   avatarBtn: {
     width: 34,
     height: 34,
     borderRadius: 17,
-    backgroundColor: "#DC2626",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 8,
     overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
   avatarText: {
     color: "#fff",
@@ -204,70 +308,109 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
+  bellBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  badge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    paddingHorizontal: 3,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "#F9FAFB",
+  },
+  badgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+
   backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: "rgba(17,24,39,0.35)",
     justifyContent: "flex-start",
     alignItems: "flex-end",
-    paddingTop: 80,
     paddingRight: 16,
   },
   sheet: {
     backgroundColor: "#fff",
-    borderRadius: 20,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#F3F4F6",
     padding: 24,
-    width: 280,
+    width: 288,
     alignItems: "center",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.12,
+    shadowRadius: 28,
     elevation: 12,
   },
 
   avatarLarge: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: "#DC2626",
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 14,
   },
   avatarLargeText: {
     color: "#fff",
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: "800",
     letterSpacing: 0.5,
   },
 
   name: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: "800",
     color: "#111827",
     textAlign: "center",
-    marginBottom: 4,
+    marginBottom: 3,
   },
   email: {
     fontSize: 13,
     color: "#6B7280",
     fontWeight: "500",
     textAlign: "center",
-    marginBottom: 12,
+    marginBottom: 14,
   },
 
   roleBadge: {
-    paddingHorizontal: 14,
-    paddingVertical: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingHorizontal: 13,
+    paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "#F3F4F6",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
+  },
+  roleDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
   roleBadgeText: {
     fontSize: 12,
-    fontWeight: "700",
-    color: "#374151",
+    fontWeight: "800",
     letterSpacing: 0.3,
   },
 
@@ -279,14 +422,16 @@ const styles = StyleSheet.create({
   },
 
   signOutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     width: "100%",
     height: 48,
     borderRadius: 14,
     backgroundColor: "#FEF2F2",
     borderWidth: 1,
     borderColor: "#FECACA",
-    alignItems: "center",
-    justifyContent: "center",
   },
   signOutText: {
     fontSize: 15,

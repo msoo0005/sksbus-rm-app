@@ -17,6 +17,7 @@ export type ReportMedia = {
 export type JobMedia = {
   media_id: number;
   job_id: number;
+  task_id?: number | null;
   media_type: "image" | "video";
   mime_type: string;
   s3_bucket: string;
@@ -25,6 +26,30 @@ export type JobMedia = {
   uploaded_at?: string | null;
 
   viewUrl?: string;
+};
+
+export type TaskPart = {
+  task_id: number;
+  part_id: number;
+  qty: number;
+  line_cost: number | null;
+  part_name: string;
+  part_code: string;
+  part_cost: number | null;
+  part_stock: number | null;
+};
+
+export type NotificationType = "new_report" | "new_job" | "job_progress";
+
+export type AppNotification = {
+  notification_id: number;
+  notification_type: NotificationType;
+  notification_title: string;
+  notification_body?: string | null;
+  report_id?: number | null;
+  job_id?: number | null;
+  is_read: number | boolean;
+  created_at: string;
 };
 
 const RAW_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
@@ -505,19 +530,33 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  listJobMedia: (jobId: number) =>
-    requestWithIdToken<JobMedia[]>(`/jobs/${jobId}/media`),
+  listJobMedia: (
+    jobId: number,
+    params?: { taskId?: number; untaggedOnly?: boolean },
+  ) => {
+    const qs = new URLSearchParams();
+    if (params?.taskId != null) qs.set("task_id", String(params.taskId));
+    else if (params?.untaggedOnly) qs.set("task_id", "none");
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return requestWithIdToken<JobMedia[]>(`/jobs/${jobId}/media${suffix}`);
+  },
 
   // ✅ FIX: protected → use ID token
-  presignJobMedia: (jobId: number, mime: string) =>
-    requestWithIdToken<{
+  presignJobMedia: (jobId: number, mime: string, params?: { taskId?: number }) => {
+    const qs = new URLSearchParams({ mime });
+    if (params?.taskId != null) qs.set("task_id", String(params.taskId));
+    return requestWithIdToken<{
       uploadUrl: string;
       s3_bucket: string;
       s3_key: string;
-    }>(`/jobs/${jobId}/media/presign?mime=${encodeURIComponent(mime)}`),
+    }>(`/jobs/${jobId}/media/presign?${qs.toString()}`);
+  },
 
   // ✅ FIX: protected → use ID token
-  confirmJobMedia: (jobId: number, body: any) =>
+  confirmJobMedia: (
+    jobId: number,
+    body: { s3_key: string; mime_type: string; size_bytes?: number; task_id?: number },
+  ) =>
     requestWithIdToken<{ success: true }>(`/jobs/${jobId}/media/confirm`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -570,6 +609,9 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  listTaskParts: (taskId: number) =>
+    requestWithIdToken<TaskPart[]>(`/tasks/${taskId}/parts`),
+
   // PATCH /jobs/{job_id} (odometer)
   patchJob: (jobId: number, body: { job_odometer: number }) =>
     requestWithIdToken<{ success: true; job_odometer: number }>(
@@ -579,4 +621,26 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+
+  // ===== NOTIFICATIONS =====
+  listNotifications: (params?: { unread?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params?.unread) qs.set("unread", "1");
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return requestWithIdToken<AppNotification[]>(`/notifications${suffix}`);
+  },
+
+  unreadNotificationCount: () =>
+    requestWithIdToken<{ count: number }>("/notifications/unread-count"),
+
+  markNotificationRead: (notificationId: number) =>
+    requestWithIdToken<{ success: true }>(
+      `/notifications/${notificationId}/read`,
+      { method: "PATCH" },
+    ),
+
+  markAllNotificationsRead: () =>
+    requestWithIdToken<{ success: true }>("/notifications/read-all", {
+      method: "POST",
+    }),
 };
