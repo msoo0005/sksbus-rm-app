@@ -26,7 +26,7 @@ const TYPE_CONFIG: Record<
 function formatWhen(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
+  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 export default function NotificationsScreen() {

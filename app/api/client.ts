@@ -39,6 +39,110 @@ export type TaskPart = {
   part_stock: number | null;
 };
 
+export type TyreStatus = "spare" | "mounted" | "rejected" | "retreading" | "retired";
+export type TyreAxleSide = "left" | "right";
+export type TyreWheelPosition = "single" | "inner" | "outer";
+export type TyreInspectionResult = "pass" | "monitor" | "reject";
+
+export type Tyre = {
+  tyre_id: number;
+  tyre_serial_number: string;
+  tyre_brand?: string | null;
+  tyre_model?: string | null;
+  tyre_retread_count: number;
+  tyre_status: TyreStatus;
+  tyre_bought_date?: string | null;
+  created_at: string;
+  updated_at: string;
+
+  current_mounting_id?: number | null;
+  current_bus_id?: string | null;
+  axle_number?: number | null;
+  axle_side?: TyreAxleSide | null;
+  wheel_position?: TyreWheelPosition | null;
+  mounted_at?: string | null;
+};
+
+export type TyreMounting = {
+  tyre_mounting_id: number;
+  tyre_id: number;
+  bus_id: string;
+  axle_number: number;
+  axle_side: TyreAxleSide;
+  wheel_position: TyreWheelPosition;
+  mounted_at: string;
+  mounted_by?: number | null;
+  unmounted_at?: string | null;
+  unmounted_by?: number | null;
+  unmount_reason?: string | null;
+};
+
+export type TyreInspectionHistoryEntry = {
+  tyre_inspection_id: number;
+  session_id: number;
+  tyre_pressure?: number | null;
+  retread_count_observed?: number | null;
+  inspection_result: TyreInspectionResult;
+  reject_reason?: string | null;
+  bus_id: string;
+  inspection_datetime: string;
+};
+
+export type TyreDetail = Tyre & {
+  mounting_history: TyreMounting[];
+  inspection_history: TyreInspectionHistoryEntry[];
+};
+
+export type TyreTread = {
+  tyre_tread_id: number;
+  tyre_inspection_id: number;
+  tread_position: number;
+  tread_thickness_mm: number;
+};
+
+export type TyreInspectionSession = {
+  tyre_inspection_session_id: number;
+  bus_id: string;
+  technician_user_id: number;
+  technician_name?: string | null;
+  inspection_datetime: string;
+  odometer_reading?: number | null;
+  created_at: string;
+  bus_route?: string | null;
+  bus_model?: string | null;
+};
+
+export type TyreInspectionDetail = TyreInspectionSession & {
+  tyres: (TyreInspectionHistoryEntry & {
+    tyre_serial_number: string;
+    tyre_brand?: string | null;
+    tyre_model?: string | null;
+    treads: TyreTread[];
+  })[];
+};
+
+export type OverdueBus = {
+  bus_id: string;
+  bus_route?: string | null;
+  bus_model?: string | null;
+  last_inspected_at: string | null;
+  days_since_inspection: number | null;
+};
+
+export type LowTreadTyre = {
+  tyre_id: number;
+  tyre_serial_number: string;
+  tyre_brand?: string | null;
+  tyre_model?: string | null;
+  tyre_status: TyreStatus;
+  current_bus_id?: string | null;
+  axle_number?: number | null;
+  axle_side?: TyreAxleSide | null;
+  wheel_position?: TyreWheelPosition | null;
+  min_tread_mm: number;
+  inspection_datetime: string;
+};
+
 export type NotificationType = "new_report" | "new_job" | "job_progress";
 
 export type AppNotification = {
@@ -405,11 +509,13 @@ export const api = {
     status?: ReportStatus;
     mine?: boolean;
     type?: string;
+    project_id?: string;
   }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.mine) qs.set("mine", "1");
     if (params?.type) qs.set("type", params.type);
+    if (params?.project_id) qs.set("project_id", params.project_id);
 
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return requestWithIdToken<any[]>(`/reports${suffix}`);
@@ -488,9 +594,10 @@ export const api = {
     ),
 
   // ===== JOBS =====
-  listJobs: (params?: { status?: string }) => {
+  listJobs: (params?: { status?: string; project_id?: string }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
+    if (params?.project_id) qs.set("project_id", params.project_id);
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return requestWithIdToken<any[]>(`/jobs${suffix}`);
   },
@@ -643,4 +750,120 @@ export const api = {
     requestWithIdToken<{ success: true }>("/notifications/read-all", {
       method: "POST",
     }),
+
+  registerPushToken: (expoPushToken: string) =>
+    requestWithIdToken<{ success: true }>("/me/push-token", {
+      method: "POST",
+      body: JSON.stringify({ expo_push_token: expoPushToken }),
+    }),
+
+  unregisterPushToken: (expoPushToken: string) =>
+    requestWithIdToken<{ success: true }>("/me/push-token", {
+      method: "DELETE",
+      body: JSON.stringify({ expo_push_token: expoPushToken }),
+    }),
+
+  // ===== TYRES =====
+  listTyres: (params?: { status?: TyreStatus; unmounted?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.unmounted) qs.set("unmounted", "1");
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return requestWithIdToken<Tyre[]>(`/tyres${suffix}`);
+  },
+
+  getTyre: (tyreId: number) => requestWithIdToken<TyreDetail>(`/tyres/${tyreId}`),
+
+  createTyre: (body: {
+    tyre_serial_number: string;
+    tyre_brand?: string;
+    tyre_model?: string;
+    tyre_retread_count?: number;
+    tyre_bought_date?: string;
+  }) =>
+    requestWithIdToken<{ tyre_id: number }>("/tyres", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateTyre: (
+    tyreId: number,
+    body: {
+      tyre_serial_number?: string;
+      tyre_brand?: string;
+      tyre_model?: string;
+      tyre_retread_count?: number;
+      tyre_bought_date?: string;
+      tyre_status?: Exclude<TyreStatus, "mounted">;
+    },
+  ) =>
+    requestWithIdToken<{ success: true }>(`/tyres/${tyreId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  unmountTyre: (tyreId: number, body?: { reason?: string; new_status?: Exclude<TyreStatus, "mounted"> }) =>
+    requestWithIdToken<{ success: true }>(`/tyres/${tyreId}/unmount`, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
+
+  swapTyre: (body: {
+    bus_id: string;
+    axle_number: number;
+    axle_side: TyreAxleSide;
+    wheel_position?: TyreWheelPosition;
+    incoming_tyre_id: number;
+    outgoing_status?: Exclude<TyreStatus, "mounted">;
+  }) =>
+    requestWithIdToken<{ success: true; tyre_mounting_id: number }>("/tyres/swap", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listBusTyres: (busId: string) => requestWithIdToken<Tyre[]>(`/buses/${busId}/tyres`),
+
+  getTyreSettings: () =>
+    requestWithIdToken<{ inspection_interval_days: number }>("/tyres/settings"),
+
+  updateTyreSettings: (body: { inspection_interval_days: number }) =>
+    requestWithIdToken<{ success: true; inspection_interval_days: number }>(
+      "/tyres/settings",
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+
+  getOverdueTyreInspections: () =>
+    requestWithIdToken<{ inspection_interval_days: number; overdue_buses: OverdueBus[] }>(
+      "/tyres/overdue",
+    ),
+
+  getLowTreadTyres: () =>
+    requestWithIdToken<{ threshold_mm: number; low_tread_tyres: LowTreadTyre[] }>(
+      "/tyres/low-tread",
+    ),
+
+  createTyreInspectionSession: (
+    busId: string,
+    body: {
+      odometer_reading?: number;
+      tyres: {
+        tyre_id: number;
+        tyre_pressure?: number;
+        retread_count_observed?: number;
+        inspection_result?: TyreInspectionResult;
+        reject_reason?: string;
+        treads?: { tread_position: number; tread_thickness_mm: number }[];
+      }[];
+    },
+  ) =>
+    requestWithIdToken<{ session_id: number }>(`/buses/${busId}/tyre-inspections`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listBusTyreInspections: (busId: string) =>
+    requestWithIdToken<TyreInspectionSession[]>(`/buses/${busId}/tyre-inspections`),
+
+  getTyreInspectionSession: (sessionId: number) =>
+    requestWithIdToken<TyreInspectionDetail>(`/tyre-inspections/${sessionId}`),
 };

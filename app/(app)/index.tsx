@@ -72,6 +72,14 @@ const MODULES = [
     accent: "#0284C7",
     accentLight: "#F0F9FF",
   },
+  {
+    id: "rm-manager/tyres",
+    title: "Tyre Management",
+    description: "Fleet tyre inventory, swaps & overdue inspections",
+    icon: "dot-circle",
+    accent: "#16A34A",
+    accentLight: "#F0FDF4",
+  },
 ];
 
 const CONTENT_MAX_WIDTH = 720;
@@ -95,6 +103,10 @@ export default function HomeScreen() {
   const handlePress = (moduleId: string) => {
     if (moduleId === "fleet-manager") {
       router.push("./project-selector");
+    } else if (moduleId === "rm-manager") {
+      router.push("/rm-manager-home" as any);
+    } else if (moduleId === "technician") {
+      router.push("/technician-home" as any);
     } else {
       router.push(`./${moduleId}` as any);
     }

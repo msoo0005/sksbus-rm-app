@@ -1,6 +1,6 @@
 // app/(app)/project-selector.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -26,9 +26,13 @@ type Project = {
 
 export default function ProjectSelectorScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ returnTo?: string; allowClear?: string }>();
+  const returnTo = params.returnTo || "./fleet-manager";
+  const allowClear = params.allowClear === "1";
   const {
     projectId: selectedProjectId,
     setProjectId,
+    clearProject,
     loading: projectLoading,
   } = useProject();
 
@@ -73,12 +77,15 @@ export default function ProjectSelectorScreen() {
   const onSelect = useCallback(
     async (projectId: string) => {
       await setProjectId(projectId);
-
-      // If you want users to be able to go "back" to selector, change to router.push(...)
-      router.replace("./fleet-manager");
+      router.replace(returnTo as any);
     },
-    [router, setProjectId],
+    [router, setProjectId, returnTo],
   );
+
+  const onClear = useCallback(async () => {
+    await clearProject();
+    router.replace(returnTo as any);
+  }, [router, clearProject, returnTo]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -166,6 +173,17 @@ export default function ProjectSelectorScreen() {
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
+
+        {allowClear && (
+          <Pressable
+            style={styles.clearRow}
+            onPress={onClear}
+            disabled={projectLoading}
+          >
+            <FontAwesome5 name="globe" size={13} color="#374151" />
+            <Text style={styles.clearRowText}>View All Projects</Text>
+          </Pressable>
+        )}
       </View>
 
       {showLoading ? (
@@ -234,6 +252,21 @@ const styles = StyleSheet.create({
   },
   errorTitle: { fontWeight: "800", color: "#991B1B" },
   errorText: { marginTop: 4, fontWeight: "600", color: "#7F1D1D" },
+
+  clearRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    alignSelf: "flex-start",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#F9FAFB",
+  },
+  clearRowText: { fontSize: 13, fontWeight: "700", color: "#374151" },
 
   loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
   loadingText: { fontSize: 14, fontWeight: "700", color: "#6B7280" },

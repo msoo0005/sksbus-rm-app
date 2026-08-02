@@ -347,18 +347,19 @@ export default function ReportFormScreen() {
     });
   };
 
-  const onSubmit = async () => {
+  const validateForm = (): string | null => {
+    if (projectLoading) return "Loading project selection...";
+    if (!projectId) return "Project is not selected";
+    if (!vehicle) return "Vehicle is required";
+    if (!description.trim()) return "Description is required";
+    if (photos.length === 0) return "At least one photo is required";
+    return null;
+  };
+
+  const doSubmit = async () => {
     try {
       setSubmitting(true);
       setUploadingIndex(null);
-
-      if (projectLoading) throw new Error("Loading project selection...");
-      if (!projectId) throw new Error("Project is not selected");
-      if (!vehicle) throw new Error("Vehicle is required");
-      if (!description.trim()) throw new Error("Description is required");
-      if (photos.length === 0) {
-        throw new Error("At least one photo is required");
-      }
 
       const reportId = await createReport();
 
@@ -380,6 +381,23 @@ export default function ReportFormScreen() {
       setSubmitting(false);
       setUploadingIndex(null);
     }
+  };
+
+  const onSubmit = () => {
+    const error = validateForm();
+    if (error) {
+      Alert.alert("Error", error);
+      return;
+    }
+
+    Alert.alert(
+      "Submit Report",
+      "Are you sure you want to submit this report? You won't be able to edit it afterwards.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Submit", onPress: doSubmit },
+      ],
+    );
   };
 
   const submitLabel =
@@ -431,6 +449,8 @@ export default function ReportFormScreen() {
           setOpen={setVehicleOpen}
           setValue={setVehicle}
           setItems={setVehicles}
+          searchable
+          searchPlaceholder="Search vehicles…"
           placeholder={vehiclePlaceholder}
           style={styles.dropdown}
           dropDownContainerStyle={styles.dropdownContainer}

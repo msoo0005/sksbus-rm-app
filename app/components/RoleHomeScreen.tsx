@@ -8,6 +8,15 @@ type Highlight = {
   label: string;
 };
 
+type SecondaryAction = {
+  title: string;
+  description: string;
+  icon: string;
+  accent: string;
+  accentLight: string;
+  onPress: () => void;
+};
+
 type Props = {
   roleLabel: string;
   actionTitle: string;
@@ -17,6 +26,7 @@ type Props = {
   accentLight: string;
   onPress: () => void;
   highlights?: Highlight[];
+  secondaryAction?: SecondaryAction;
 };
 
 export default function RoleHomeScreen({
@@ -28,6 +38,7 @@ export default function RoleHomeScreen({
   accentLight,
   onPress,
   highlights = [],
+  secondaryAction,
 }: Props) {
   return (
     <ScrollView
@@ -77,6 +88,35 @@ export default function RoleHomeScreen({
           <FontAwesome5 name="arrow-right" size={13} color="#fff" />
         </Pressable>
       </View>
+
+      {secondaryAction && (
+        <Pressable
+          onPress={secondaryAction.onPress}
+          style={({ pressed }) => [
+            styles.secondaryCard,
+            { borderColor: "#E5E7EB" },
+            pressed && { opacity: 0.85 },
+          ]}
+        >
+          <View
+            style={[
+              styles.secondaryIconBox,
+              { backgroundColor: secondaryAction.accentLight },
+            ]}
+          >
+            <FontAwesome5
+              name={secondaryAction.icon as any}
+              size={18}
+              color={secondaryAction.accent}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.secondaryTitle}>{secondaryAction.title}</Text>
+            <Text style={styles.secondaryDesc}>{secondaryAction.description}</Text>
+          </View>
+          <FontAwesome5 name="chevron-right" size={13} color="#9CA3AF" />
+        </Pressable>
+      )}
     </ScrollView>
   );
 }
@@ -180,5 +220,39 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "800",
     color: "#fff",
+  },
+
+  secondaryCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginTop: 14,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 1,
+  },
+  secondaryIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  secondaryDesc: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#6B7280",
+    marginTop: 2,
   },
 });

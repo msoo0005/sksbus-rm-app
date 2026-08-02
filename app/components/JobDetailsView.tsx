@@ -91,7 +91,7 @@ function formatDateTime(iso?: string | null) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
-  return d.toLocaleString();
+  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function formatAssignee(job?: JobListItem | null) {
@@ -360,8 +360,7 @@ export default function JobDetailsView({
         <View style={s.hero}>
           <View style={s.heroTop}>
             <View style={s.heroLeft}>
-              <Text style={s.heroEyebrow}>JOB</Text>
-              <Text style={s.heroId}>#{jobId}</Text>
+              <Text style={s.heroId}>Job #{jobId}</Text>
               {loading && <Text style={s.loadingText}>Loading…</Text>}
             </View>
             <View style={s.badgeStack}>
@@ -589,18 +588,11 @@ const s = StyleSheet.create({
     alignItems: "flex-start",
   },
   heroLeft: { flex: 1 },
-  heroEyebrow: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#9CA3AF",
-    letterSpacing: 1.5,
-    marginBottom: 2,
-  },
   heroId: {
-    fontSize: 36,
+    fontSize: 32,
     fontWeight: "800",
     color: "#111827",
-    letterSpacing: -1,
+    letterSpacing: -0.5,
   },
   loadingText: {
     fontSize: 13,
@@ -620,11 +612,13 @@ const s = StyleSheet.create({
     alignItems: "center",
     gap: 6,
     backgroundColor: "#F9FAFB",
-    borderRadius: 999,
+    borderRadius: 16,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderWidth: 1,
     borderColor: "#E5E7EB",
+    maxWidth: "100%",
+    flexShrink: 1,
   },
   heroChipTappable: {
     backgroundColor: "#EFF6FF",
@@ -634,6 +628,7 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     color: "#374151",
+    flexShrink: 1,
   },
 
   hintBanner: {

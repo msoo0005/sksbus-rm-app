@@ -18,6 +18,14 @@ export default function TechnicianHomeScreen() {
         { icon: "camera", label: "Log before & after photos" },
         { icon: "check-double", label: "Mark jobs complete" },
       ]}
+      secondaryAction={{
+        title: "Tyre Inspections",
+        description: "Submit a periodic tyre inspection for a bus",
+        icon: "dot-circle",
+        accent: "#EA580C",
+        accentLight: "#FFF7ED",
+        onPress: () => router.push("/technician/tyres" as any),
+      }}
     />
   );
 }

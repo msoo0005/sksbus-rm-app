@@ -163,7 +163,9 @@ export default function TechnicianJobDetailsScreen() {
 
   const [issue, setIssue] = useState("");
   const [solution, setSolution] = useState("");
-  const [newTaskStatus, setNewTaskStatus] = useState<"pending" | "done">("done");
+  const [newTaskStatus, setNewTaskStatus] = useState<"pending" | "done">(
+    "done",
+  );
   const [newTaskPhotos, setNewTaskPhotos] = useState<LocalMedia[]>([]);
   const [savingTask, setSavingTask] = useState(false);
 
@@ -340,7 +342,11 @@ export default function TechnicianJobDetailsScreen() {
     setSavingOdometer(true);
     try {
       await api.patchJob(jobId, { job_odometer: n });
-      setJobSummary((prev) => (prev ? { ...prev, job_odometer: n } : prev));
+      // Saving the odometer also creates a "Recorded odometer reading" task
+      // server-side and unlocks the rest of the job — refetch everything
+      // rather than just patching jobSummary locally, so that task shows up
+      // immediately instead of only after leaving and re-entering the page.
+      await fetchAll();
       Alert.alert("Saved", "Initial odometer reading has been saved.");
     } catch (e: unknown) {
       handleApiError(e, "Failed to save odometer");
@@ -540,6 +546,11 @@ export default function TechnicianJobDetailsScreen() {
     [visibleTasks],
   );
 
+  const pendingTasks = useMemo(
+    () => visibleTasks.filter((t) => t.task_status !== "done"),
+    [visibleTasks],
+  );
+
   const timelineEvents = useMemo<TimelineEvent[]>(() => {
     const events: TimelineEvent[] = [];
 
@@ -679,7 +690,10 @@ export default function TechnicianJobDetailsScreen() {
         } catch (e: unknown) {
           // The job itself is already closed at this point — don't leave the
           // technician stuck retrying just because the report side failed.
-          handleApiError(e, "Job closed, but failed to close the linked report");
+          handleApiError(
+            e,
+            "Job closed, but failed to close the linked report",
+          );
           router.back();
           return;
         }
@@ -705,6 +719,13 @@ export default function TechnicianJobDetailsScreen() {
       Alert.alert(
         "Add a completed task first",
         "Please add at least 1 completed task before completing the job.",
+      );
+      return;
+    }
+    if (pendingTasks.length > 0) {
+      Alert.alert(
+        "Tasks still pending",
+        `${pendingTasks.length} task${pendingTasks.length === 1 ? " is" : "s are"} not marked done yet. Finish or remove ${pendingTasks.length === 1 ? "it" : "them"} before completing the job.`,
       );
       return;
     }
@@ -765,8 +786,7 @@ export default function TechnicianJobDetailsScreen() {
           <View style={s.hero}>
             <View style={s.heroTop}>
               <View style={s.heroLeft}>
-                <Text style={s.heroEyebrow}>JOB</Text>
-                <Text style={s.heroId}>#{jobId}</Text>
+                <Text style={s.heroId}>Job #{jobId}</Text>
                 {loading && <Text style={s.loadingText}>Loading…</Text>}
               </View>
               <View style={s.badgeStack}>
@@ -862,7 +882,8 @@ export default function TechnicianJobDetailsScreen() {
               ) : (
                 <>
                   <Text style={s.mutedText}>
-                    Enter the current odometer reading to unlock job updates.
+                    Upon arrival, please enter the current odometer reading of
+                    bus to unlock job updates.
                   </Text>
                   <View style={[s.inputWrap, { marginTop: 12 }]}>
                     <TextInput
@@ -1286,11 +1307,7 @@ export default function TechnicianJobDetailsScreen() {
                   >
                     <Image source={{ uri }} style={s.thumbImg} />
                     <View style={s.thumbOverlay}>
-                      <FontAwesome5
-                        name="expand-alt"
-                        size={14}
-                        color="#fff"
-                      />
+                      <FontAwesome5 name="expand-alt" size={14} color="#fff" />
                     </View>
                   </Pressable>
                 ))}
@@ -1335,6 +1352,7 @@ export default function TechnicianJobDetailsScreen() {
                   s.btnGreen,
                   (jobLocked ||
                     completedTasks.length === 0 ||
+                    pendingTasks.length > 0 ||
                     afterMedia.length === 0 ||
                     completing) && { opacity: 0.6 },
                 ]}
@@ -1342,6 +1360,7 @@ export default function TechnicianJobDetailsScreen() {
                 disabled={
                   jobLocked ||
                   completedTasks.length === 0 ||
+                  pendingTasks.length > 0 ||
                   afterMedia.length === 0 ||
                   completing
                 }
@@ -1363,6 +1382,11 @@ export default function TechnicianJobDetailsScreen() {
               ) : completedTasks.length === 0 ? (
                 <Text style={s.helperText}>
                   Add at least 1 completed task to complete the job.
+                </Text>
+              ) : pendingTasks.length > 0 ? (
+                <Text style={s.helperText}>
+                  {pendingTasks.length} task{pendingTasks.length === 1 ? "" : "s"} still not done — finish or remove{" "}
+                  {pendingTasks.length === 1 ? "it" : "them"} to complete the job.
                 </Text>
               ) : afterMedia.length === 0 ? (
                 <Text style={s.helperText}>
@@ -1414,18 +1438,11 @@ const s = StyleSheet.create({
     alignItems: "flex-start",
   },
   heroLeft: { flex: 1 },
-  heroEyebrow: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#9CA3AF",
-    letterSpacing: 1.5,
-    marginBottom: 2,
-  },
   heroId: {
-    fontSize: 36,
+    fontSize: 32,
     fontWeight: "800",
     color: "#111827",
-    letterSpacing: -1,
+    letterSpacing: -0.5,
   },
   loadingText: { fontSize: 13, color: "#9CA3AF", marginTop: 4 },
   badgeStack: {
@@ -1441,14 +1458,21 @@ const s = StyleSheet.create({
     alignItems: "center",
     gap: 6,
     backgroundColor: "#F9FAFB",
-    borderRadius: 999,
+    borderRadius: 16,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderWidth: 1,
     borderColor: "#E5E7EB",
+    maxWidth: "100%",
+    flexShrink: 1,
   },
   chipTappable: { backgroundColor: "#EFF6FF", borderColor: "#BFDBFE" },
-  chipText: { fontSize: 13, fontWeight: "600", color: "#374151" },
+  chipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#374151",
+    flexShrink: 1,
+  },
   hintBanner: {
     flexDirection: "row",
     alignItems: "center",

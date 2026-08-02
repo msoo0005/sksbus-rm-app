@@ -70,6 +70,14 @@ export const handler = async (event) => {
       return await withConn((c) => listMyProjects(c, auth));
     }
 
+    if (method === "POST" && path === "/me/push-token") {
+      return await withConn((c) => registerPushToken(c, auth, mustJson(event)));
+    }
+
+    if (method === "DELETE" && path === "/me/push-token") {
+      return await withConn((c) => unregisterPushToken(c, auth, mustJson(event)));
+    }
+
     // GET /projects  (admin: all projects)
     if (method === "GET" && path === "/projects") {
       return await withConn((c) => listAllProjects(c, auth));
@@ -233,6 +241,71 @@ export const handler = async (event) => {
     if (method === "POST" && /^\/tasks\/\d+\/parts$/.test(path)) {
       const taskId = getIdFromParamsOrPath(params.task_id, path, /^\/tasks\/(\d+)\/parts$/);
       return await withConn((c) => addTaskPart(c, auth, taskId, mustJson(event)));
+    }
+
+    // ===== TYRES =====
+
+    if (method === "GET" && path === "/tyres/overdue") {
+      return await withConn((c) => getOverdueTyreInspections(c, auth));
+    }
+
+    if (method === "GET" && path === "/tyres/low-tread") {
+      return await withConn((c) => getLowTreadTyres(c, auth));
+    }
+
+    if (method === "GET" && path === "/tyres/settings") {
+      return await withConn((c) => getTyreSettings(c, auth));
+    }
+
+    if (method === "PATCH" && path === "/tyres/settings") {
+      return await withConn((c) => updateTyreSettings(c, auth, mustJson(event)));
+    }
+
+    if (method === "POST" && path === "/tyres/swap") {
+      return await withConn((c) => swapTyre(c, auth, mustJson(event)));
+    }
+
+    if (method === "GET" && path === "/tyres") {
+      return await withConn((c) => listTyres(c, auth, qs));
+    }
+
+    if (method === "POST" && path === "/tyres") {
+      return await withConn((c) => createTyre(c, auth, mustJson(event)));
+    }
+
+    if (method === "GET" && /^\/tyres\/\d+$/.test(path)) {
+      const tyreId = getIdFromParamsOrPath(params.tyre_id, path, /^\/tyres\/(\d+)$/);
+      return await withConn((c) => getTyre(c, auth, tyreId));
+    }
+
+    if (method === "PATCH" && /^\/tyres\/\d+$/.test(path)) {
+      const tyreId = getIdFromParamsOrPath(params.tyre_id, path, /^\/tyres\/(\d+)$/);
+      return await withConn((c) => updateTyre(c, auth, tyreId, mustJson(event)));
+    }
+
+    if (method === "POST" && /^\/tyres\/\d+\/unmount$/.test(path)) {
+      const tyreId = getIdFromParamsOrPath(params.tyre_id, path, /^\/tyres\/(\d+)\/unmount$/);
+      return await withConn((c) => unmountTyre(c, auth, tyreId, mustJson(event)));
+    }
+
+    if (method === "GET" && /^\/buses\/[^/]+\/tyres$/.test(path)) {
+      const busId = getBusIdFromPath(params.bus_id, path.replace(/\/tyres$/, ""));
+      return await withConn((c) => listBusTyres(c, auth, busId));
+    }
+
+    if (method === "POST" && /^\/buses\/[^/]+\/tyre-inspections$/.test(path)) {
+      const busId = getBusIdFromPath(params.bus_id, path.replace(/\/tyre-inspections$/, ""));
+      return await withConn((c) => createTyreInspectionSession(c, auth, busId, mustJson(event)));
+    }
+
+    if (method === "GET" && /^\/buses\/[^/]+\/tyre-inspections$/.test(path)) {
+      const busId = getBusIdFromPath(params.bus_id, path.replace(/\/tyre-inspections$/, ""));
+      return await withConn((c) => listBusTyreInspections(c, auth, busId));
+    }
+
+    if (method === "GET" && /^\/tyre-inspections\/\d+$/.test(path)) {
+      const sessionId = getIdFromParamsOrPath(params.session_id, path, /^\/tyre-inspections\/(\d+)$/);
+      return await withConn((c) => getTyreInspectionSession(c, auth, sessionId));
     }
 
     // ===== NOTIFICATIONS =====
@@ -462,6 +535,53 @@ function getAuthFromClaims(claims) {
 
 // ===================== NOTIFICATIONS (helper) =====================
 
+const EXPO_PUSH_TOKEN_RE = /^Expo(nent)?PushToken\[.+\]$/;
+
+// Best-effort: a push failure (bad token, Expo outage) must never break the
+// primary operation, same contract as the in-app NOTIFICATION insert below.
+async function sendExpoPushNotifications(conn, { userIds, title, body, data }) {
+  try {
+    if (!userIds?.length) return;
+
+    const placeholders = userIds.map(() => "?").join(",");
+    const [rows] = await conn.execute(
+      `SELECT DISTINCT expo_push_token FROM PUSH_TOKEN WHERE user_id IN (${placeholders})`,
+      userIds
+    );
+    const tokens = (rows || [])
+      .map((r) => r.expo_push_token)
+      .filter((t) => EXPO_PUSH_TOKEN_RE.test(t));
+    if (!tokens.length) return;
+
+    const messages = tokens.map((to) => ({
+      to,
+      title,
+      body: body ?? undefined,
+      data: data ?? {},
+      sound: "default",
+    }));
+
+    // Expo's push API caps each request at 100 messages.
+    for (let i = 0; i < messages.length; i += 100) {
+      const chunk = messages.slice(i, i + 100);
+      const res = await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Accept-Encoding": "gzip, deflate",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(chunk),
+      });
+      if (!res.ok) {
+        console.error("Expo push send failed", res.status, await res.text().catch(() => ""));
+      }
+    }
+  } catch (e) {
+    console.error("Failed to send push notifications", { title, e: e?.message });
+  }
+}
+
 // Best-effort: a notification failure (e.g. the NOTIFICATION table hasn't
 // been migrated in yet) must never break the primary operation it's attached to.
 async function notifyUsersByRole(conn, { roles, type, title, body = null, reportId = null, jobId = null }) {
@@ -487,6 +607,13 @@ async function notifyUsersByRole(conn, { roles, type, title, body = null, report
        VALUES ${rowPlaceholders.join(",")}`,
       values
     );
+
+    await sendExpoPushNotifications(conn, {
+      userIds: users.map((u) => u.user_id),
+      title,
+      body,
+      data: { type, reportId, jobId },
+    });
   } catch (e) {
     console.error("Failed to create notifications", { type, title, e: e?.message });
   }
@@ -520,6 +647,40 @@ async function getDisplayName(conn, auth) {
     [userId]
   );
   return rows?.[0]?.user_name || auth.name || "Someone";
+}
+
+async function registerPushToken(conn, auth, b) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+
+  const token = (b.expo_push_token || "").toString().trim();
+  if (!token) throw new Error("expo_push_token is required");
+
+  const userId = await getOrCreateUserId(conn, auth);
+  // A device's token is unique — if it's re-registered under a different
+  // signed-in user (e.g. shared device, logout/login), reassign it rather
+  // than erroring on the unique constraint.
+  await conn.execute(
+    `INSERT INTO PUSH_TOKEN (user_id, expo_push_token) VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), updated_at = NOW()`,
+    [userId, token]
+  );
+  return json(200, { success: true });
+}
+
+async function unregisterPushToken(conn, auth, b) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+
+  const token = (b.expo_push_token || "").toString().trim();
+  if (!token) throw new Error("expo_push_token is required");
+
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(
+    `DELETE FROM PUSH_TOKEN WHERE expo_push_token=? AND user_id=?`,
+    [token, userId]
+  );
+  return json(200, { success: true });
 }
 
 async function getMe(conn, auth) {
@@ -772,6 +933,7 @@ async function listReports(conn, auth, qs) {
   const mine = qs.mine === "1";
   const status = qs.status ? String(qs.status).trim().toLowerCase() : null;
   const type = qs.type ? String(qs.type).trim() : null;
+  const projectId = qs.project_id ? String(qs.project_id).trim() : null;
 
   const userId = await getOrCreateUserId(conn, auth);
   const where = [];
@@ -789,6 +951,7 @@ async function listReports(conn, auth, qs) {
   }
 
   if (type) { where.push("LOWER(TRIM(r.report_type))=?"); vals.push(type.toLowerCase()); }
+  if (projectId) { where.push("r.project_id=?"); vals.push(projectId); }
 
   const sql = `
     SELECT
@@ -1109,9 +1272,11 @@ async function listJobs(conn, auth, qs) {
   if (deny) return deny;
 
   const status = qs.status ? String(qs.status) : null;
+  const projectId = qs.project_id ? String(qs.project_id).trim() : null;
   const where = [];
   const vals = [];
   if (status) { where.push("j.job_status=?"); vals.push(status); }
+  if (projectId) { where.push("r.project_id=?"); vals.push(projectId); }
 
   const sql = `
     SELECT
@@ -1119,7 +1284,7 @@ async function listJobs(conn, auth, qs) {
       tech.user_name AS technician_name,
       j.job_odometer, j.job_created_at, j.job_accepted_at, j.job_updated_at, j.job_completed_at,
       r.report_id, r.report_type, r.report_priority, r.report_desc,
-      r.report_location, r.report_uploaded_at, r.bus_id,
+      r.report_location, r.report_uploaded_at, r.bus_id, r.project_id,
       reporter.user_name AS reporter_name
     FROM JOB j
     LEFT JOIN REPORT r ON r.job_id = j.job_id
@@ -1349,6 +1514,485 @@ async function addTaskPart(conn, auth, taskId, b) {
     [taskId, partId, qty, lineCost]
   );
   return json(200, { success: true });
+}
+
+// ===================== TYRES =====================
+
+const TYRE_AXLE_SIDES = ["left", "right"];
+const TYRE_WHEEL_POSITIONS = ["single", "inner", "outer"];
+const TYRE_INSPECTION_RESULTS = ["pass", "monitor", "reject"];
+// Statuses a tyre may be moved to directly via PATCH/unmount — "mounted" is
+// only ever set by swapTyre, so it's excluded here to keep TYRE_MOUNTING the
+// single source of truth for "is this tyre currently on a bus".
+const TYRE_MANUAL_STATUSES = ["spare", "rejected", "retreading", "retired"];
+const TYRE_UNMOUNTABLE_STATUSES = ["rejected", "retired", "retreading"];
+// Any tyre whose most recently recorded groove reading is below this is
+// surfaced by getLowTreadTyres() regardless of the technician's pass/monitor/
+// reject call on that inspection — it's an independent safety threshold.
+const TYRE_LOW_TREAD_THRESHOLD_MM = 5;
+
+function requireOneOf(value, allowed, name) {
+  const v = (value ?? "").toString().trim().toLowerCase();
+  if (!allowed.includes(v)) throw new Error(`Invalid ${name}`);
+  return v;
+}
+
+async function getTyreInspectionIntervalDays(conn) {
+  const [rows] = await conn.execute(
+    `SELECT setting_value FROM APP_SETTING WHERE setting_key='tyre_inspection_interval_days' LIMIT 1`
+  );
+  const days = rows?.length ? Number(rows[0].setting_value) : NaN;
+  return Number.isFinite(days) && days > 0 ? days : 30;
+}
+
+async function listTyres(conn, auth, qs) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "fleet_manager", "technician"]);
+  if (deny) return deny;
+
+  const where = [];
+  const vals = [];
+  if (qs?.status) { where.push("t.tyre_status=?"); vals.push(requireOneOf(qs.status, [...TYRE_MANUAL_STATUSES, "mounted"], "status")); }
+  if (qs?.unmounted === "1") where.push("m.tyre_mounting_id IS NULL");
+
+  const [rows] = await conn.execute(
+    `SELECT t.*, m.tyre_mounting_id AS current_mounting_id, m.bus_id AS current_bus_id,
+            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at
+     FROM TYRE t
+     LEFT JOIN TYRE_MOUNTING m ON m.tyre_id = t.tyre_id AND m.unmounted_at IS NULL
+     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+     ORDER BY t.tyre_serial_number ASC
+     LIMIT 500`,
+    vals
+  );
+  return json(200, rows);
+}
+
+async function getTyre(conn, auth, tyreId) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "fleet_manager", "technician"]);
+  if (deny) return deny;
+
+  const [rows] = await conn.execute(
+    `SELECT t.*, m.tyre_mounting_id AS current_mounting_id, m.bus_id AS current_bus_id,
+            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at
+     FROM TYRE t
+     LEFT JOIN TYRE_MOUNTING m ON m.tyre_id = t.tyre_id AND m.unmounted_at IS NULL
+     WHERE t.tyre_id=?`,
+    [tyreId]
+  );
+  if (!rows.length) return json(404, { message: "Tyre not found" });
+
+  const [mountingHistory] = await conn.execute(
+    `SELECT * FROM TYRE_MOUNTING WHERE tyre_id=? ORDER BY mounted_at DESC, tyre_mounting_id DESC`,
+    [tyreId]
+  );
+
+  const [inspectionHistory] = await conn.execute(
+    `SELECT ti.tyre_inspection_id, ti.session_id, ti.tyre_pressure, ti.retread_count_observed,
+            ti.inspection_result, ti.reject_reason,
+            s.bus_id, s.inspection_datetime
+     FROM TYRE_INSPECTION ti
+     JOIN TYRE_INSPECTION_SESSION s ON s.tyre_inspection_session_id = ti.session_id
+     WHERE ti.tyre_id=?
+     ORDER BY s.inspection_datetime DESC
+     LIMIT 50`,
+    [tyreId]
+  );
+
+  return json(200, { ...rows[0], mounting_history: mountingHistory, inspection_history: inspectionHistory });
+}
+
+async function createTyre(conn, auth, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+
+  if (!b.tyre_serial_number) throw new Error("tyre_serial_number is required");
+
+  const retreadCount = b.tyre_retread_count != null ? toWholeNumber(b.tyre_retread_count, "tyre_retread_count") : 0;
+  const treadCount = b.tyre_tread_count != null ? toWholeNumber(b.tyre_tread_count, "tyre_tread_count") : 4;
+  if (treadCount <= 0) throw new Error("tyre_tread_count must be a whole number > 0");
+
+  const [res] = await conn.execute(
+    `INSERT INTO TYRE (tyre_serial_number, tyre_brand, tyre_model, tyre_retread_count, tyre_tread_count, tyre_bought_date)
+     VALUES (?,?,?,?,?,?)`,
+    [
+      String(b.tyre_serial_number).trim(),
+      b.tyre_brand ? String(b.tyre_brand).trim() : null,
+      b.tyre_model ? String(b.tyre_model).trim() : null,
+      retreadCount,
+      treadCount,
+      b.tyre_bought_date ?? null,
+    ]
+  );
+  return json(200, { tyre_id: res.insertId });
+}
+
+async function updateTyre(conn, auth, tyreId, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+
+  const updates = [];
+  const vals = [];
+
+  if (b.tyre_serial_number != null) { updates.push("tyre_serial_number=?"); vals.push(String(b.tyre_serial_number).trim()); }
+  if (b.tyre_brand !== undefined)   { updates.push("tyre_brand=?");         vals.push(b.tyre_brand ? String(b.tyre_brand).trim() : null); }
+  if (b.tyre_model !== undefined)   { updates.push("tyre_model=?");         vals.push(b.tyre_model ? String(b.tyre_model).trim() : null); }
+  if (b.tyre_retread_count != null) { updates.push("tyre_retread_count=?"); vals.push(toWholeNumber(b.tyre_retread_count, "tyre_retread_count")); }
+  if (b.tyre_bought_date !== undefined) { updates.push("tyre_bought_date=?"); vals.push(b.tyre_bought_date ?? null); }
+  if (b.tyre_status != null) {
+    updates.push("tyre_status=?");
+    vals.push(requireOneOf(b.tyre_status, TYRE_MANUAL_STATUSES, "tyre_status"));
+  }
+
+  if (!updates.length) return json(200, { success: true });
+
+  vals.push(tyreId);
+  await conn.execute(`UPDATE TYRE SET ${updates.join(", ")} WHERE tyre_id=?`, vals);
+  return json(200, { success: true });
+}
+
+async function listBusTyres(conn, auth, busId) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const [rows] = await conn.execute(
+    `SELECT t.*, m.tyre_mounting_id AS current_mounting_id, m.axle_number, m.axle_side, m.wheel_position, m.mounted_at
+     FROM TYRE_MOUNTING m
+     JOIN TYRE t ON t.tyre_id = m.tyre_id
+     WHERE m.bus_id=? AND m.unmounted_at IS NULL
+     ORDER BY m.axle_number ASC, m.axle_side ASC, m.wheel_position ASC`,
+    [busId]
+  );
+  return json(200, rows);
+}
+
+async function swapTyre(conn, auth, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+
+  if (!b.bus_id) throw new Error("bus_id is required");
+  const busId = String(b.bus_id).trim();
+  const axleNumber = toWholeNumber(b.axle_number, "axle_number");
+  if (axleNumber <= 0) throw new Error("axle_number must be a whole number > 0");
+  const axleSide = requireOneOf(b.axle_side, TYRE_AXLE_SIDES, "axle_side");
+  const wheelPosition = b.wheel_position != null ? requireOneOf(b.wheel_position, TYRE_WHEEL_POSITIONS, "wheel_position") : "single";
+  const incomingTyreId = toId(b.incoming_tyre_id, "incoming_tyre_id");
+  const outgoingStatus = b.outgoing_status != null ? requireOneOf(b.outgoing_status, TYRE_MANUAL_STATUSES, "outgoing_status") : "spare";
+
+  const userId = await getOrCreateUserId(conn, auth);
+
+  await conn.beginTransaction();
+  try {
+    const [busRows] = await conn.execute("SELECT bus_id FROM BUS WHERE bus_id=? LIMIT 1", [busId]);
+    if (!busRows.length) throw new Error("bus_id not found");
+
+    const [incomingRows] = await conn.execute(
+      "SELECT tyre_id, tyre_status FROM TYRE WHERE tyre_id=? FOR UPDATE",
+      [incomingTyreId]
+    );
+    if (!incomingRows.length) throw new Error("incoming_tyre_id not found");
+    if (TYRE_UNMOUNTABLE_STATUSES.includes(incomingRows[0].tyre_status)) {
+      await conn.rollback();
+      return json(409, { code: "TYRE_NOT_MOUNTABLE", message: `Tyre is ${incomingRows[0].tyre_status} and cannot be mounted` });
+    }
+
+    const [incomingOpenMount] = await conn.execute(
+      "SELECT tyre_mounting_id FROM TYRE_MOUNTING WHERE tyre_id=? AND unmounted_at IS NULL FOR UPDATE",
+      [incomingTyreId]
+    );
+    if (incomingOpenMount.length) {
+      await conn.rollback();
+      return json(409, { code: "TYRE_ALREADY_MOUNTED", message: "Tyre is already mounted elsewhere — unmount it first" });
+    }
+
+    const [existingAtPosition] = await conn.execute(
+      `SELECT tyre_mounting_id, tyre_id FROM TYRE_MOUNTING
+       WHERE bus_id=? AND axle_number=? AND axle_side=? AND wheel_position=? AND unmounted_at IS NULL
+       FOR UPDATE`,
+      [busId, axleNumber, axleSide, wheelPosition]
+    );
+
+    if (existingAtPosition.length) {
+      const outgoing = existingAtPosition[0];
+      await conn.execute(
+        `UPDATE TYRE_MOUNTING SET unmounted_at=NOW(), unmounted_by=?, unmount_reason='swapped out' WHERE tyre_mounting_id=?`,
+        [userId, outgoing.tyre_mounting_id]
+      );
+      await conn.execute(`UPDATE TYRE SET tyre_status=? WHERE tyre_id=?`, [outgoingStatus, outgoing.tyre_id]);
+    }
+
+    const [mountRes] = await conn.execute(
+      `INSERT INTO TYRE_MOUNTING (tyre_id, bus_id, axle_number, axle_side, wheel_position, mounted_by)
+       VALUES (?,?,?,?,?,?)`,
+      [incomingTyreId, busId, axleNumber, axleSide, wheelPosition, userId]
+    );
+    await conn.execute(`UPDATE TYRE SET tyre_status='mounted' WHERE tyre_id=?`, [incomingTyreId]);
+
+    await conn.commit();
+    return json(200, { success: true, tyre_mounting_id: mountRes.insertId });
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+}
+
+async function unmountTyre(conn, auth, tyreId, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+
+  const newStatus = b.new_status != null ? requireOneOf(b.new_status, TYRE_MANUAL_STATUSES, "new_status") : "spare";
+  const userId = await getOrCreateUserId(conn, auth);
+
+  await conn.beginTransaction();
+  try {
+    const [openMount] = await conn.execute(
+      "SELECT tyre_mounting_id FROM TYRE_MOUNTING WHERE tyre_id=? AND unmounted_at IS NULL FOR UPDATE",
+      [tyreId]
+    );
+    if (!openMount.length) {
+      await conn.rollback();
+      return json(409, { code: "TYRE_NOT_MOUNTED", message: "Tyre is not currently mounted" });
+    }
+
+    await conn.execute(
+      `UPDATE TYRE_MOUNTING SET unmounted_at=NOW(), unmounted_by=?, unmount_reason=? WHERE tyre_mounting_id=?`,
+      [userId, b.reason ? String(b.reason).trim() : null, openMount[0].tyre_mounting_id]
+    );
+    await conn.execute(`UPDATE TYRE SET tyre_status=? WHERE tyre_id=?`, [newStatus, tyreId]);
+
+    await conn.commit();
+    return json(200, { success: true });
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+}
+
+async function getOverdueTyreInspections(conn, auth) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+
+  const intervalDays = await getTyreInspectionIntervalDays(conn);
+
+  const [rows] = await conn.execute(
+    `SELECT b.bus_id, b.bus_route, b.bus_model, s.last_inspected_at,
+            CASE WHEN s.last_inspected_at IS NULL THEN NULL ELSE DATEDIFF(NOW(), s.last_inspected_at) END AS days_since_inspection
+     FROM BUS b
+     LEFT JOIN (
+       SELECT bus_id, MAX(inspection_datetime) AS last_inspected_at
+       FROM TYRE_INSPECTION_SESSION
+       GROUP BY bus_id
+     ) s ON s.bus_id = b.bus_id
+     WHERE s.last_inspected_at IS NULL OR s.last_inspected_at < DATE_SUB(NOW(), INTERVAL ? DAY)
+     ORDER BY (s.last_inspected_at IS NULL) DESC, s.last_inspected_at ASC`,
+    [intervalDays]
+  );
+
+  return json(200, { inspection_interval_days: intervalDays, overdue_buses: rows });
+}
+
+async function getLowTreadTyres(conn, auth) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "fleet_manager", "technician"]);
+  if (deny) return deny;
+
+  // For each tyre, find its most recent inspection (by session datetime) and
+  // the shallowest groove reading recorded in that inspection, then keep only
+  // tyres whose latest reading is below the threshold.
+  const [rows] = await conn.execute(
+    `SELECT t.tyre_id, t.tyre_serial_number, t.tyre_brand, t.tyre_model, t.tyre_status,
+            m.bus_id AS current_bus_id, m.axle_number, m.axle_side, m.wheel_position,
+            latest.min_tread_mm, latest.inspection_datetime
+     FROM TYRE t
+     JOIN (
+       SELECT x.tyre_id, x.min_tread_mm, x.inspection_datetime
+       FROM (
+         SELECT ti.tyre_id, s.inspection_datetime, MIN(tt.tread_thickness_mm) AS min_tread_mm
+         FROM TYRE_INSPECTION ti
+         JOIN TYRE_INSPECTION_SESSION s ON s.tyre_inspection_session_id = ti.session_id
+         JOIN TYRE_TREAD tt ON tt.tyre_inspection_id = ti.tyre_inspection_id
+         GROUP BY ti.tyre_inspection_id, ti.tyre_id, s.inspection_datetime
+       ) x
+       JOIN (
+         SELECT ti2.tyre_id, MAX(s2.inspection_datetime) AS max_dt
+         FROM TYRE_INSPECTION ti2
+         JOIN TYRE_INSPECTION_SESSION s2 ON s2.tyre_inspection_session_id = ti2.session_id
+         GROUP BY ti2.tyre_id
+       ) d ON d.tyre_id = x.tyre_id AND d.max_dt = x.inspection_datetime
+     ) latest ON latest.tyre_id = t.tyre_id
+     LEFT JOIN TYRE_MOUNTING m ON m.tyre_id = t.tyre_id AND m.unmounted_at IS NULL
+     WHERE latest.min_tread_mm < ?
+     ORDER BY latest.min_tread_mm ASC`,
+    [TYRE_LOW_TREAD_THRESHOLD_MM]
+  );
+
+  return json(200, { threshold_mm: TYRE_LOW_TREAD_THRESHOLD_MM, low_tread_tyres: rows });
+}
+
+async function getTyreSettings(conn, auth) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+
+  const days = await getTyreInspectionIntervalDays(conn);
+  return json(200, { inspection_interval_days: days });
+}
+
+async function updateTyreSettings(conn, auth, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+
+  const days = toWholeNumber(b.inspection_interval_days, "inspection_interval_days");
+  if (days <= 0) throw new Error("inspection_interval_days must be a whole number > 0");
+
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(
+    `INSERT INTO APP_SETTING (setting_key, setting_value, updated_by) VALUES ('tyre_inspection_interval_days', ?, ?)
+     ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value), updated_by=VALUES(updated_by)`,
+    [String(days), userId]
+  );
+  return json(200, { success: true, inspection_interval_days: days });
+}
+
+async function createTyreInspectionSession(conn, auth, busId, b) {
+  const deny = requireRole(auth, ["admin", "technician"]);
+  if (deny) return deny;
+
+  const tyres = Array.isArray(b.tyres) ? b.tyres : [];
+  if (!tyres.length) throw new Error("tyres is required and must be a non-empty array");
+
+  const odometer = b.odometer_reading != null ? toWholeNumber(b.odometer_reading, "odometer_reading") : null;
+  const userId = await getOrCreateUserId(conn, auth);
+
+  await conn.beginTransaction();
+  try {
+    const [busRows] = await conn.execute("SELECT bus_id FROM BUS WHERE bus_id=? LIMIT 1", [busId]);
+    if (!busRows.length) throw new Error("bus_id not found");
+
+    const [mountedRows] = await conn.execute(
+      `SELECT tyre_id FROM TYRE_MOUNTING WHERE bus_id=? AND unmounted_at IS NULL`,
+      [busId]
+    );
+    const mountedTyreIds = new Set(mountedRows.map((r) => Number(r.tyre_id)));
+
+    const [sessionRes] = await conn.execute(
+      `INSERT INTO TYRE_INSPECTION_SESSION (bus_id, technician_user_id, odometer_reading) VALUES (?,?,?)`,
+      [busId, userId, odometer]
+    );
+    const sessionId = sessionRes.insertId;
+
+    for (const entry of tyres) {
+      const tyreId = toId(entry.tyre_id, "tyre_id");
+      if (!mountedTyreIds.has(tyreId)) throw new Error(`tyre_id ${tyreId} is not currently mounted on this bus`);
+
+      const result = entry.inspection_result != null ? requireOneOf(entry.inspection_result, TYRE_INSPECTION_RESULTS, "inspection_result") : "pass";
+      const pressure = entry.tyre_pressure != null ? Number(entry.tyre_pressure) : null;
+      if (pressure != null && !Number.isFinite(pressure)) throw new Error("Invalid tyre_pressure");
+      const retreadCountObserved = entry.retread_count_observed != null
+        ? toWholeNumber(entry.retread_count_observed, "retread_count_observed")
+        : null;
+
+      const [inspRes] = await conn.execute(
+        `INSERT INTO TYRE_INSPECTION (session_id, tyre_id, tyre_pressure, retread_count_observed, inspection_result, reject_reason)
+         VALUES (?,?,?,?,?,?)`,
+        [
+          sessionId,
+          tyreId,
+          pressure,
+          retreadCountObserved,
+          result,
+          result === "reject" ? (entry.reject_reason ? String(entry.reject_reason).trim() : null) : null,
+        ]
+      );
+      const inspectionId = inspRes.insertId;
+
+      // The technician's observed retread count during a routine inspection is
+      // the most up-to-date read on the physical tyre — keep TYRE in sync with
+      // it the same way a "reject" result updates tyre_status below.
+      if (retreadCountObserved != null) {
+        await conn.execute(`UPDATE TYRE SET tyre_retread_count=? WHERE tyre_id=?`, [retreadCountObserved, tyreId]);
+      }
+
+      const treads = Array.isArray(entry.treads) ? entry.treads : [];
+      for (const tread of treads) {
+        const pos = toWholeNumber(tread.tread_position, "tread_position");
+        if (pos < 1 || pos > 4) throw new Error("tread_position must be between 1 and 4");
+        const thickness = Number(tread.tread_thickness_mm);
+        if (!Number.isFinite(thickness) || thickness < 0) throw new Error("Invalid tread_thickness_mm");
+        await conn.execute(
+          `INSERT INTO TYRE_TREAD (tyre_inspection_id, tread_position, tread_thickness_mm) VALUES (?,?,?)`,
+          [inspectionId, pos, thickness]
+        );
+      }
+
+      if (result === "reject") {
+        await conn.execute(`UPDATE TYRE SET tyre_status='rejected' WHERE tyre_id=?`, [tyreId]);
+      }
+    }
+
+    await conn.commit();
+    return json(200, { session_id: sessionId });
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+}
+
+async function listBusTyreInspections(conn, auth, busId) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const [rows] = await conn.execute(
+    `SELECT s.*, u.user_name AS technician_name
+     FROM TYRE_INSPECTION_SESSION s
+     LEFT JOIN \`USER\` u ON u.user_id = s.technician_user_id
+     WHERE s.bus_id=?
+     ORDER BY s.inspection_datetime DESC, s.tyre_inspection_session_id DESC`,
+    [busId]
+  );
+  return json(200, rows);
+}
+
+async function getTyreInspectionSession(conn, auth, sessionId) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const [sessionRows] = await conn.execute(
+    `SELECT s.*, u.user_name AS technician_name, b.bus_route, b.bus_model
+     FROM TYRE_INSPECTION_SESSION s
+     LEFT JOIN \`USER\` u ON u.user_id = s.technician_user_id
+     LEFT JOIN BUS b ON b.bus_id = s.bus_id
+     WHERE s.tyre_inspection_session_id=?`,
+    [sessionId]
+  );
+  if (!sessionRows.length) return json(404, { message: "Inspection session not found" });
+
+  const [tyreRows] = await conn.execute(
+    `SELECT ti.*, t.tyre_serial_number, t.tyre_brand, t.tyre_model
+     FROM TYRE_INSPECTION ti
+     JOIN TYRE t ON t.tyre_id = ti.tyre_id
+     WHERE ti.session_id=?`,
+    [sessionId]
+  );
+
+  const inspectionIds = tyreRows.map((r) => r.tyre_inspection_id);
+  let treadRows = [];
+  if (inspectionIds.length) {
+    const placeholders = inspectionIds.map(() => "?").join(",");
+    const [tRows] = await conn.execute(
+      `SELECT * FROM TYRE_TREAD WHERE tyre_inspection_id IN (${placeholders}) ORDER BY tread_position ASC`,
+      inspectionIds
+    );
+    treadRows = tRows;
+  }
+
+  const treadsByInspection = new Map();
+  for (const t of treadRows) {
+    const list = treadsByInspection.get(t.tyre_inspection_id) ?? [];
+    list.push(t);
+    treadsByInspection.set(t.tyre_inspection_id, list);
+  }
+
+  const tyres = tyreRows.map((r) => ({ ...r, treads: treadsByInspection.get(r.tyre_inspection_id) ?? [] }));
+
+  return json(200, { ...sessionRows[0], tyres });
 }
 
 // ===================== REPORT MEDIA =====================

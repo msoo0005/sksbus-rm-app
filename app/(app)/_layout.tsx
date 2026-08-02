@@ -27,7 +27,7 @@ type RoleKey =
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
   admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications"],
   fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector"],
-  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications"],
+  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector"],
   technician: ["/technician-home", "/technician", "/notifications"],
   inventory_manager: ["/inventory"],
   driver: ["/form", "/project-selector"],
@@ -263,9 +263,20 @@ export default function RootLayout() {
         <Stack.Screen name="rm-manager-home" options={{ title: "Home" }} />
         <Stack.Screen name="rm-manager" options={{ title: "R&M Manager" }} />
         <Stack.Screen name="rm-manager/job/[id]" options={{ title: "Job Details" }} />
+        <Stack.Screen name="rm-manager/tyres" options={{ title: "Tyre Management" }} />
+        <Stack.Screen name="rm-manager/tyres/[busId]" options={{ title: "Bus Tyres" }} />
+        <Stack.Screen
+          name="rm-manager/tyres/inspection/[sessionId]"
+          options={{ title: "Inspection Details" }}
+        />
         <Stack.Screen name="technician-home" options={{ title: "Home" }} />
         <Stack.Screen name="technician/index" options={{ title: "Technician" }} />
         <Stack.Screen name="technician/job/[id]" options={{ title: "Job Details" }} />
+        <Stack.Screen name="technician/tyres" options={{ title: "Tyre Inspections" }} />
+        <Stack.Screen
+          name="technician/tyre-inspection/[busId]"
+          options={{ title: "Tyre Inspection" }}
+        />
         <Stack.Screen name="inventory" options={{ title: "Inventory Manager" }} />
         <Stack.Screen name="form" options={{ title: "Report Form" }} />
         <Stack.Screen name="buses" options={{ title: "Bus Fleet" }} />

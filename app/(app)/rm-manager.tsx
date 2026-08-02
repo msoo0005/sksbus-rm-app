@@ -1,8 +1,8 @@
 // RMManagerScreen.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
+import React, { useCallback, useMemo, useState } from "react";
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { api } from "../api/client";
 import ConfirmActionModal from "../components/ConfirmActionModal";
@@ -11,6 +11,7 @@ import JobDetailsModal from "../components/JobDetailsModal";
 import ReportCard from "../components/ReportCard";
 import SegmentedTabs from "../components/SegmentedTabs";
 import { useSession } from "../ctx";
+import { useProject } from "../project-ctx";
 import { Report } from "../types/report";
 
 type Tab = "pending" | "open" | "closed" | "kpi";
@@ -42,7 +43,7 @@ function formatDate(isoLike?: string | null) {
   if (!isoLike) return "—";
   const d = new Date(isoLike);
   if (Number.isNaN(d.getTime())) return String(isoLike);
-  return d.toLocaleString();
+  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function toLower(x: unknown) {
@@ -154,8 +155,8 @@ function getBadgeVariant(value: string): BadgeVariant {
   return "outline";
 }
 
-function Badge({ label }: { label: string }) {
-  const variant = getBadgeVariant(label);
+function Badge({ label, neutral }: { label: string; neutral?: boolean }) {
+  const variant = neutral ? "outline" : getBadgeVariant(label);
   const bg =
     variant === "filled-red" ? "#EF4444"
     : variant === "filled-dark" ? "#111827"
@@ -197,7 +198,7 @@ function JobsTable({ jobs }: { jobs: JobSummary[] }) {
                   <Text style={[tblStyles.cell, { width: colWidths[0] }]}>#{j.job_id}</Text>
                   <Text style={[tblStyles.cell, { width: colWidths[1] }]}>{j.bus_id ?? "—"}</Text>
                   <View style={{ width: colWidths[2], justifyContent: "center" }}>
-                    {j.report_type ? <Badge label={j.report_type} /> : <Text style={tblStyles.cell}>—</Text>}
+                    {j.report_type ? <Badge label={j.report_type} neutral /> : <Text style={tblStyles.cell}>—</Text>}
                   </View>
                   <View style={{ width: colWidths[3], justifyContent: "center" }}>
                     {j.report_priority ? <Badge label={j.report_priority} /> : <Text style={tblStyles.cell}>—</Text>}
@@ -382,6 +383,7 @@ function KpiTab({
 export default function RMManagerScreen() {
   const router = useRouter();
   const { dbUser } = useSession() as any;
+  const { projectId } = useProject();
 
   const MANAGER_NAME = dbUser?.user_name ?? "RM Manager";
 
@@ -411,8 +413,8 @@ export default function RMManagerScreen() {
       }
 
       const [reportRows, jobRows] = await Promise.all([
-        api.listReports(),
-        api.listJobs(),
+        api.listReports(projectId ? { project_id: projectId } : undefined),
+        api.listJobs(projectId ? { project_id: projectId } : undefined),
       ]);
 
       const jobs = Array.isArray(jobRows) ? (jobRows as JobSummary[]) : [];
@@ -435,11 +437,13 @@ export default function RMManagerScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [projectId]);
 
-  useEffect(() => {
-    loadAllReports();
-  }, [loadAllReports]);
+  useFocusEffect(
+    useCallback(() => {
+      loadAllReports();
+    }, [loadAllReports]),
+  );
 
   const reports = useMemo(() => {
     return allReports.filter((r) => r.status === tab);
@@ -613,6 +617,17 @@ export default function RMManagerScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
       >
+        <Pressable
+          style={styles.projectFilterChip}
+          onPress={() => router.push("/project-selector?returnTo=/rm-manager&allowClear=1" as any)}
+        >
+          <FontAwesome5 name="folder" size={12} color="#374151" />
+          <Text style={styles.projectFilterChipText}>
+            {projectId ? `Project: ${projectId}` : "All Projects"}
+          </Text>
+          <FontAwesome5 name="chevron-down" size={10} color="#9CA3AF" />
+        </Pressable>
+
         <SegmentedTabs<Tab>
           value={tab}
           onChange={setTab}
@@ -675,6 +690,24 @@ export default function RMManagerScreen() {
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  projectFilterChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    backgroundColor: "#fff",
+  },
+  projectFilterChipText: { fontSize: 13, fontWeight: "700", color: "#374151" },
+});
 
 const kpiStyles = StyleSheet.create({
   page: { padding: 16, gap: 16, paddingBottom: 40 },

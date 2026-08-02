@@ -18,6 +18,14 @@ export default function RmManagerHomeScreen() {
         { icon: "tasks", label: "Track open & closed jobs" },
         { icon: "chart-bar", label: "Monitor KPIs and completion rates" },
       ]}
+      secondaryAction={{
+        title: "Tyre Management",
+        description: "Fleet tyre inventory, swaps & overdue inspections",
+        icon: "dot-circle",
+        accent: "#16A34A",
+        accentLight: "#F0FDF4",
+        onPress: () => router.push("/rm-manager/tyres" as any),
+      }}
     />
   );
 }

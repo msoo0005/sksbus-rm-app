@@ -3,6 +3,7 @@ import React from "react";
 import { AppState, AppStateStatus } from "react-native";
 import { ensureValidSession, setUnauthorizedHandler } from "./api/client";
 import { api } from "./api/client";
+import { registerForPushNotificationsAsync } from "./notifications/registerPushToken";
 
 type DbUser = {
   user_id: number;
@@ -35,6 +36,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = React.useState(true);
   const [session, setSession] = React.useState<string | null>(null);
   const [dbUser, setDbUser] = React.useState<DbUser | null>(null);
+  const pushTokenRef = React.useRef<string | null>(null);
+
+  // Best-effort: register this device for push once we know who's signed in.
+  // Covers both a fresh sign-in and restoring an existing session on launch.
+  React.useEffect(() => {
+    if (!dbUser) return;
+    (async () => {
+      try {
+        const token = await registerForPushNotificationsAsync();
+        if (!token) return;
+        pushTokenRef.current = token;
+        await api.registerPushToken(token);
+      } catch {
+        // best-effort — a missing token just means no push for this session
+      }
+    })();
+  }, [dbUser]);
 
   const clearSession = React.useCallback(() => {
     setSession(null);
@@ -105,6 +123,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signOut = React.useCallback(async () => {
+    if (pushTokenRef.current) {
+      try {
+        await api.unregisterPushToken(pushTokenRef.current);
+      } catch {
+        // best-effort — a stray token just means this device may still
+        // receive push for the outgoing user until the next login rebinds it
+      }
+      pushTokenRef.current = null;
+    }
     clearSession();
   }, [clearSession]);
 

@@ -48,7 +48,7 @@ function formatDate(isoLike?: string | null) {
   if (!isoLike) return "—";
   const d = new Date(isoLike);
   if (Number.isNaN(d.getTime())) return String(isoLike);
-  return d.toLocaleString();
+  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 export default function TechnicianScreen() {

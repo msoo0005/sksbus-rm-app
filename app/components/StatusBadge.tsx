@@ -34,18 +34,19 @@ const STATUS_STYLES: Record<
   StatusType,
   { container: ViewStyle; text?: { color?: string } }
 > = {
-  // Report types
+  // Report types — deliberately neutral grey rather than status-style colours,
+  // since these are a category label, not a severity/urgency signal.
   repair: {
-    container: { backgroundColor: "#111827" },
-    text: { color: "#FFFFFF" },
+    container: { backgroundColor: "#E5E7EB" },
+    text: { color: "#374151" },
   },
   problem: {
-    container: { backgroundColor: "#D64545" },
-    text: { color: "#FFFFFF" },
+    container: { backgroundColor: "#E5E7EB" },
+    text: { color: "#374151" },
   },
   accident: {
-    container: { backgroundColor: "#F97316" },
-    text: { color: "#FFFFFF" },
+    container: { backgroundColor: "#E5E7EB" },
+    text: { color: "#374151" },
   },
 
   // Severity
