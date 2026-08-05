@@ -279,7 +279,7 @@ export default function BusTyresScreen() {
                   <Text style={styles.positionTyre}>{formatDateTime(s.inspection_datetime)}</Text>
                   <Text style={styles.positionMeta}>
                     {s.technician_name ?? "Unknown technician"}
-                    {s.odometer_reading != null ? ` · ${s.odometer_reading} km` : ""}
+                    {s.odometer_reading != null ? ` · ${s.odometer_reading.toLocaleString()} km` : ""}
                   </Text>
                 </View>
                 <FontAwesome5 name="chevron-right" size={12} color="#9CA3AF" />

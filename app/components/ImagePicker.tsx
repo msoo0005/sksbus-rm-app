@@ -19,6 +19,44 @@ export type LocalMedia = {
   mime_type: string;
 };
 
+// Shared by ImagePickerField and any compact/custom photo pickers (e.g. the
+// fixed-slot after-photo grid) — permission request, capture/pick, and the
+// resize/compress step, without any of ImagePickerField's own UI or state.
+export async function pickImage(fromCamera: boolean): Promise<LocalMedia | null> {
+  const permission = fromCamera
+    ? await ImagePicker.requestCameraPermissionsAsync()
+    : await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+  if (!permission.granted) {
+    Alert.alert(
+      "Permission required",
+      `Permission to access ${fromCamera ? "camera" : "gallery"} is required!`,
+    );
+    return null;
+  }
+
+  const result = fromCamera
+    ? await ImagePicker.launchCameraAsync({ quality: 0.7 })
+    : await ImagePicker.launchImageLibraryAsync({
+        quality: 0.7,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      });
+
+  if (result.canceled || !result.assets?.length) return null;
+
+  const asset = result.assets[0];
+
+  const MAX_DIM = 1920;
+  const needsResize = (asset.width ?? 0) > MAX_DIM || (asset.height ?? 0) > MAX_DIM;
+
+  const ctx = ImageManipulator.manipulate(asset.uri);
+  if (needsResize) ctx.resize({ width: MAX_DIM });
+  const ref = await ctx.renderAsync();
+  const manipulated = await ref.saveAsync({ compress: 0.8, format: SaveFormat.JPEG });
+
+  return { localUri: manipulated.uri, mime_type: "image/jpeg" };
+}
+
 type Props = {
   title: string;
   required?: boolean;
@@ -34,6 +72,11 @@ type Props = {
   showUploadButton?: boolean;
 
   disabled?: boolean;
+
+  // When set, selecting a new photo once this many are already present
+  // replaces the existing one(s) instead of appending — used for fixed
+  // single-photo "slots" (e.g. one photo per side of a vehicle).
+  maxItems?: number;
 };
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
@@ -50,6 +93,7 @@ export default function ImagePickerField({
   uploadLabel = "Upload Photo",
   showUploadButton = true,
   disabled = false,
+  maxItems,
 }: Props) {
   const [items, setItems] = useState<LocalMedia[]>(value);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -73,39 +117,12 @@ export default function ImagePickerField({
     }
     if (disabled) return;
 
-    const permission = fromCamera
-      ? await ImagePicker.requestCameraPermissionsAsync()
-      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const newItem = await pickImage(fromCamera);
+    if (!newItem) return;
 
-    if (!permission.granted) {
-      Alert.alert(
-        "Permission required",
-        `Permission to access ${fromCamera ? "camera" : "gallery"} is required!`,
-      );
-      return;
-    }
-
-    const result = fromCamera
-      ? await ImagePicker.launchCameraAsync({ quality: 0.7 })
-      : await ImagePicker.launchImageLibraryAsync({
-          quality: 0.7,
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        });
-
-    if (result.canceled || !result.assets?.length) return;
-
-    const asset = result.assets[0];
-
-    const MAX_DIM = 1920;
-    const needsResize =
-      (asset.width ?? 0) > MAX_DIM || (asset.height ?? 0) > MAX_DIM;
-
-    const ctx = ImageManipulator.manipulate(asset.uri);
-    if (needsResize) ctx.resize({ width: MAX_DIM });
-    const ref = await ctx.renderAsync();
-    const manipulated = await ref.saveAsync({ compress: 0.8, format: SaveFormat.JPEG });
-
-    commit([...items, { localUri: manipulated.uri, mime_type: "image/jpeg" }]);
+    commit(
+      maxItems && items.length >= maxItems ? [newItem] : [...items, newItem],
+    );
   };
 
   const removeImage = (index: number) => {

@@ -1773,6 +1773,10 @@ async function getOverdueTyreInspections(conn, auth) {
 
   const intervalDays = await getTyreInspectionIntervalDays(conn);
 
+  // Every bus, not just overdue ones — the tyre management home screen uses
+  // the full list to show each bus card's last-inspection / days-remaining
+  // status, while overdue_buses (a filtered view of the same rows) keeps
+  // backing the existing overdue banner.
   const [rows] = await conn.execute(
     `SELECT b.bus_id, b.bus_route, b.bus_model, s.last_inspected_at,
             CASE WHEN s.last_inspected_at IS NULL THEN NULL ELSE DATEDIFF(NOW(), s.last_inspected_at) END AS days_since_inspection
@@ -1782,12 +1786,18 @@ async function getOverdueTyreInspections(conn, auth) {
        FROM TYRE_INSPECTION_SESSION
        GROUP BY bus_id
      ) s ON s.bus_id = b.bus_id
-     WHERE s.last_inspected_at IS NULL OR s.last_inspected_at < DATE_SUB(NOW(), INTERVAL ? DAY)
-     ORDER BY (s.last_inspected_at IS NULL) DESC, s.last_inspected_at ASC`,
-    [intervalDays]
+     ORDER BY (s.last_inspected_at IS NULL) DESC, s.last_inspected_at ASC`
   );
 
-  return json(200, { inspection_interval_days: intervalDays, overdue_buses: rows });
+  const overdueBuses = rows.filter(
+    (r) => r.last_inspected_at == null || r.days_since_inspection > intervalDays
+  );
+
+  return json(200, {
+    inspection_interval_days: intervalDays,
+    overdue_buses: overdueBuses,
+    all_buses: rows,
+  });
 }
 
 async function getLowTreadTyres(conn, auth) {

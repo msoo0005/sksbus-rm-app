@@ -15,6 +15,11 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import type { Tyre, TyreInspectionResult } from "../../../api/client";
 import { api } from "../../../api/client";
 
+// Matches the odometer validation on the technician job page — an
+// unrealistic reading (letters, decimals, commas, or an absurd value) is
+// rejected before it can ever reach the confirmation dialog.
+const MAX_ODOMETER = 9_999_999;
+
 type TreadState = [string, string, string, string];
 
 type TyreFormState = {
@@ -49,6 +54,7 @@ export default function TyreInspectionFormScreen() {
   const [loading, setLoading] = useState(true);
   const [tyres, setTyres] = useState<Tyre[]>([]);
   const [odometer, setOdometer] = useState("");
+  const [odometerLocked, setOdometerLocked] = useState(false);
   const [forms, setForms] = useState<Record<number, TyreFormState>>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -106,7 +112,51 @@ export default function TyreInspectionFormScreen() {
     [tyres, forms],
   );
 
+  const saveOdometer = () => {
+    const raw = odometer.trim();
+    if (!raw) {
+      Alert.alert("Odometer required", "Please enter the current odometer reading.");
+      return;
+    }
+    // Digits only — rejects things like "1e5", "0x10", "12,345", decimals,
+    // and negative signs that `Number()` would otherwise happily parse.
+    if (!/^\d+$/.test(raw)) {
+      Alert.alert(
+        "Invalid odometer",
+        "Please enter numbers only, with no letters, symbols, or decimal points (e.g., 123456).",
+      );
+      return;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n > MAX_ODOMETER) {
+      Alert.alert(
+        "Invalid odometer",
+        `Please enter a realistic reading (up to ${MAX_ODOMETER.toLocaleString()}).`,
+      );
+      return;
+    }
+    Alert.alert(
+      "Save Odometer",
+      `Are you sure you want to save ${n.toLocaleString()} as the odometer reading for this inspection? This cannot be changed later.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Save",
+          style: "default",
+          onPress: () => {
+            setOdometer(String(n));
+            setOdometerLocked(true);
+          },
+        },
+      ],
+    );
+  };
+
   const submit = () => {
+    if (!odometerLocked) {
+      Alert.alert("Odometer required", "Please save the odometer reading before submitting the inspection.");
+      return;
+    }
     if (!tyres.length) {
       Alert.alert("No tyres", "This bus has no tyres currently mounted.");
       return;
@@ -137,7 +187,7 @@ export default function TyreInspectionFormScreen() {
     setSubmitting(true);
     try {
       const payload = {
-        odometer_reading: odometer.trim() ? Number(odometer.trim()) : undefined,
+        odometer_reading: Number(odometer),
         tyres: tyres.map((t) => {
           const f = forms[t.tyre_id];
           const treads = f.treads
@@ -184,16 +234,56 @@ export default function TyreInspectionFormScreen() {
       <Text style={styles.title}>Tyre Inspection</Text>
       <Text style={styles.subtitle}>Bus {busId}</Text>
 
-      <Text style={styles.label}>Odometer Reading (km)</Text>
-      <TextInput
-        style={styles.input}
-        value={odometer}
-        onChangeText={setOdometer}
-        placeholder="e.g. 128340"
-        placeholderTextColor="#9CA3AF"
-        keyboardType="number-pad"
-        editable={!submitting}
-      />
+      <View style={[styles.odometerCard, odometerLocked ? styles.odometerCardLocked : styles.odometerCardWarn]}>
+        <View style={styles.odometerHeaderRow}>
+          <View
+            style={[
+              styles.odometerIconBox,
+              { backgroundColor: odometerLocked ? "#F0FDF4" : "#FEF2F2" },
+            ]}
+          >
+            <FontAwesome5
+              name="tachometer-alt"
+              size={13}
+              color={odometerLocked ? "#16A34A" : "#DC2626"}
+            />
+          </View>
+          <Text style={[styles.odometerTitle, { color: odometerLocked ? "#111827" : "#DC2626" }]}>
+            Odometer Reading
+          </Text>
+        </View>
+
+        {odometerLocked ? (
+          <>
+            <Text style={styles.fieldLabel}>Recorded Reading</Text>
+            <Text style={styles.odometerValue}>{Number(odometer).toLocaleString()} km</Text>
+          </>
+        ) : (
+          <>
+            <Text style={styles.helperText}>
+              Please enter the current odometer reading of the bus before recording tyre readings.
+            </Text>
+            <TextInput
+              style={[styles.input, { marginTop: 10 }]}
+              value={odometer}
+              onChangeText={setOdometer}
+              placeholder="e.g. 128340"
+              placeholderTextColor="#9CA3AF"
+              keyboardType="number-pad"
+              returnKeyType="done"
+              onSubmitEditing={saveOdometer}
+              editable={!submitting}
+            />
+            <Pressable
+              style={[styles.submitButton, { marginTop: 10 }]}
+              onPress={saveOdometer}
+              disabled={submitting}
+            >
+              <Text style={styles.submitButtonText}>Save Odometer</Text>
+            </Pressable>
+          </>
+        )}
+      </View>
 
       {tyres.length === 0 ? (
         <Text style={styles.emptyText}>No tyres currently mounted on this bus.</Text>
@@ -315,9 +405,12 @@ export default function TyreInspectionFormScreen() {
       )}
 
       <Pressable
-        style={[styles.submitButton, (submitting || tyres.length === 0) && { opacity: 0.6 }]}
+        style={[
+          styles.submitButton,
+          (submitting || tyres.length === 0 || !odometerLocked) && { opacity: 0.6 },
+        ]}
         onPress={submit}
-        disabled={submitting || tyres.length === 0}
+        disabled={submitting || tyres.length === 0 || !odometerLocked}
       >
         {submitting ? (
           <ActivityIndicator color="#fff" size="small" />
@@ -337,6 +430,26 @@ const styles = StyleSheet.create({
 
   title: { fontSize: 20, fontWeight: "800", color: "#111827" },
   subtitle: { fontSize: 13, fontWeight: "600", color: "#6B7280", marginTop: 2, marginBottom: 16 },
+
+  odometerCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 16,
+    backgroundColor: "#fff",
+  },
+  odometerCardWarn: { borderColor: "#FECACA", backgroundColor: "#FEF2F2" },
+  odometerCardLocked: { borderColor: "#E5E7EB" },
+  odometerHeaderRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  odometerIconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  odometerTitle: { fontSize: 14, fontWeight: "800" },
+  odometerValue: { fontSize: 18, fontWeight: "800", color: "#111827" },
 
   label: { fontSize: 13, fontWeight: "700", color: "#374151", marginBottom: 6 },
   fieldLabel: { fontSize: 12, fontWeight: "700", color: "#6B7280", marginTop: 12, marginBottom: 6 },

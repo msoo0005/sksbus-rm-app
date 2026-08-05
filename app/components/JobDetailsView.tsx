@@ -13,6 +13,7 @@ import {
 
 import type { JobMedia, ReportMedia } from "../api/client";
 import { api } from "../api/client";
+import BusDetailsModal from "./BusDetailsModal";
 import ImageViewerOverlay from "./ImageViewerOverlay";
 import JobTaskCard from "./JobTaskCard";
 import JobTimeline, { TimelineEvent } from "./JobTimeline";
@@ -56,6 +57,7 @@ type ReportDto = {
   report_uploaded_at?: string | null;
   reporter_name?: string | null;
   reporter_email?: string | null;
+  report_review_by?: string | null;
 };
 
 type JobTask = {
@@ -154,6 +156,7 @@ export default function JobDetailsView({
   const [viewerIndex, setViewerIndex] = useState(0);
   const [afterViewerVisible, setAfterViewerVisible] = useState(false);
   const [afterViewerIndex, setAfterViewerIndex] = useState(0);
+  const [busDetailsVisible, setBusDetailsVisible] = useState(false);
 
   const viewerUrls = useMemo(
     () => reportPhotoUrls.map((u) => ({ url: u })),
@@ -271,7 +274,7 @@ export default function JobDetailsView({
         color: "#2563EB",
         colorLight: "#EFF6FF",
         title: "Report submitted",
-        subtitle: report.reporter_name ? `By ${report.reporter_name}` : undefined,
+        by: report.reporter_name,
         at: report.report_uploaded_at,
       });
     }
@@ -283,6 +286,7 @@ export default function JobDetailsView({
         color: "#7C3AED",
         colorLight: "#F5F3FF",
         title: "Job created",
+        by: report?.report_review_by,
         at: jobSummary.job_created_at,
       });
     }
@@ -294,7 +298,7 @@ export default function JobDetailsView({
         color: "#EA580C",
         colorLight: "#FFF7ED",
         title: "Job accepted",
-        subtitle: formatAssignee(jobSummary),
+        by: formatAssignee(jobSummary),
         at: jobSummary.job_accepted_at,
       });
     }
@@ -311,6 +315,7 @@ export default function JobDetailsView({
           jobSummary?.job_odometer != null
             ? `${jobSummary.job_odometer.toLocaleString()} km`
             : undefined,
+        by: jobSummary?.technician_name,
         at: odometerTask.completed_at,
       });
     }
@@ -324,6 +329,7 @@ export default function JobDetailsView({
           colorLight: "#F0FDF4",
           title: t.task_name,
           subtitle: t.task_desc ?? undefined,
+          by: jobSummary?.technician_name,
           at: t.completed_at,
         });
       }
@@ -336,6 +342,7 @@ export default function JobDetailsView({
         color: "#111827",
         colorLight: "#F3F4F6",
         title: "Job completed",
+        by: jobSummary.technician_name,
         at: jobSummary.job_completed_at,
       });
     }
@@ -372,10 +379,13 @@ export default function JobDetailsView({
           {(jobSummary?.bus_id || report?.report_location) && (
             <View style={s.heroSubRow}>
               {jobSummary?.bus_id && (
-                <View style={s.heroChip}>
-                  <FontAwesome5 name="bus" size={11} color="#6B7280" />
-                  <Text style={s.heroChipText}>{jobSummary.bus_id}</Text>
-                </View>
+                <Pressable
+                  style={({ pressed }) => [s.heroChip, s.heroChipTappable, pressed && { opacity: 0.6 }]}
+                  onPress={() => setBusDetailsVisible(true)}
+                >
+                  <FontAwesome5 name="bus" size={11} color="#2563EB" />
+                  <Text style={[s.heroChipText, { color: "#2563EB" }]}>{jobSummary.bus_id}</Text>
+                </Pressable>
               )}
               {report?.report_location && (
                 <Pressable
@@ -422,7 +432,11 @@ export default function JobDetailsView({
           <Field label="Status" value={jobSummary?.job_status} />
           <Field
             label="Initial Odometer"
-            value={jobSummary?.job_odometer != null ? String(jobSummary.job_odometer) : null}
+            value={
+              jobSummary?.job_odometer != null
+                ? `${jobSummary.job_odometer.toLocaleString()} km`
+                : null
+            }
           />
           {!!jobSummary?.job_desc && (
             <Field label="Notes" value={jobSummary.job_desc} />
@@ -560,6 +574,12 @@ export default function JobDetailsView({
         imageUrls={afterViewerUrls}
         startIndex={afterViewerIndex}
         onClose={() => setAfterViewerVisible(false)}
+      />
+
+      <BusDetailsModal
+        visible={busDetailsVisible}
+        busId={jobSummary?.bus_id ?? null}
+        onClose={() => setBusDetailsVisible(false)}
       />
     </>
   );

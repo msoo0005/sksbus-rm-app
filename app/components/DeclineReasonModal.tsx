@@ -9,11 +9,24 @@ type Props = {
 
 export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Props) {
   const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+
+  const isValid = !!reason.trim();
 
   const handleSubmit = () => {
-    if (!reason.trim()) return;
+    if (!isValid) {
+      setTouched(true);
+      return;
+    }
     onSubmit(reason.trim());
     setReason('');
+    setTouched(false);
+  };
+
+  const handleCancel = () => {
+    setReason('');
+    setTouched(false);
+    onCancel();
   };
 
   return (
@@ -29,16 +42,25 @@ export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Prop
             placeholder="Enter reason for declining"
             placeholderTextColor="#9CA3AF"
             value={reason}
-            onChangeText={setReason}
-            style={styles.input}
+            onChangeText={(v) => {
+              setReason(v);
+              if (touched) setTouched(false);
+            }}
+            style={[styles.input, touched && !isValid && styles.inputError]}
             multiline
           />
+          {touched && !isValid && (
+            <Text style={styles.errorText}>A reason is required to decline this report.</Text>
+          )}
 
           <View style={styles.actions}>
-            <Pressable style={styles.cancel} onPress={onCancel}>
+            <Pressable style={styles.cancel} onPress={handleCancel}>
               <Text>Cancel</Text>
             </Pressable>
-            <Pressable style={styles.confirm} onPress={handleSubmit}>
+            <Pressable
+              style={[styles.confirm, !isValid && styles.confirmDisabled]}
+              onPress={handleSubmit}
+            >
               <Text style={{ color: '#fff' }}>Submit</Text>
             </Pressable>
           </View>
@@ -69,6 +91,8 @@ const styles = StyleSheet.create({
     padding: 12,
     textAlignVertical: 'top',
   },
+  inputError: { borderColor: '#E53935' },
+  errorText: { color: '#E53935', fontSize: 12, fontWeight: '600', marginTop: 6 },
   actions: { flexDirection: 'row', gap: 10, marginTop: 16 },
   cancel: {
     flex: 1,
@@ -84,4 +108,5 @@ const styles = StyleSheet.create({
     backgroundColor: '#E53935',
     alignItems: 'center',
   },
+  confirmDisabled: { opacity: 0.5 },
 });

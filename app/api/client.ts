@@ -833,9 +833,11 @@ export const api = {
     ),
 
   getOverdueTyreInspections: () =>
-    requestWithIdToken<{ inspection_interval_days: number; overdue_buses: OverdueBus[] }>(
-      "/tyres/overdue",
-    ),
+    requestWithIdToken<{
+      inspection_interval_days: number;
+      overdue_buses: OverdueBus[];
+      all_buses: OverdueBus[];
+    }>("/tyres/overdue"),
 
   getLowTreadTyres: () =>
     requestWithIdToken<{ threshold_mm: number; low_tread_tyres: LowTreadTyre[] }>(

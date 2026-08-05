@@ -16,6 +16,8 @@ import {
 
 import type { JobMedia, ReportMedia } from "../../../api/client";
 import { api } from "../../../api/client";
+import AfterPhotoSlots from "../../../components/AfterPhotoSlots";
+import BusDetailsModal from "../../../components/BusDetailsModal";
 import type { LocalMedia } from "../../../components/ImagePicker";
 import ImagePickerField from "../../../components/ImagePicker";
 import ImageViewerOverlay from "../../../components/ImageViewerOverlay";
@@ -33,6 +35,16 @@ type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 // timeline and excluded from the Tasks list.
 const ODOMETER_TASK_NAME = "Recorded odometer reading";
 
+// Completing a job requires exactly one after-photo per side of the bus —
+// these are the 4 fixed slots shown in the "After Photos" section.
+type AfterPhotoSlot = "front" | "back" | "left" | "right";
+const AFTER_PHOTO_SLOTS: { key: AfterPhotoSlot; label: string }[] = [
+  { key: "front", label: "Front" },
+  { key: "back", label: "Back" },
+  { key: "left", label: "Left Side" },
+  { key: "right", label: "Right Side" },
+];
+
 type JobListItem = {
   job_id: number;
   job_desc: string | null;
@@ -47,6 +59,7 @@ type JobListItem = {
   report_priority: string | null;
   bus_id: string | null;
   reporter_name: string | null;
+  technician_name?: string | null;
 };
 
 type ReportDto = {
@@ -61,6 +74,7 @@ type ReportDto = {
   report_uploaded_at?: string | null;
   reporter_name?: string | null;
   reporter_email?: string | null;
+  report_review_by?: string | null;
 };
 
 type JobTask = {
@@ -163,9 +177,6 @@ export default function TechnicianJobDetailsScreen() {
 
   const [issue, setIssue] = useState("");
   const [solution, setSolution] = useState("");
-  const [newTaskStatus, setNewTaskStatus] = useState<"pending" | "done">(
-    "done",
-  );
   const [newTaskPhotos, setNewTaskPhotos] = useState<LocalMedia[]>([]);
   const [savingTask, setSavingTask] = useState(false);
 
@@ -180,7 +191,12 @@ export default function TechnicianJobDetailsScreen() {
   const [odometerInput, setOdometerInput] = useState("");
   const [savingOdometer, setSavingOdometer] = useState(false);
 
-  const [afterMedia, setAfterMedia] = useState<LocalMedia[]>([]);
+  const [afterPhotoSlots, setAfterPhotoSlots] = useState<Record<AfterPhotoSlot, LocalMedia[]>>({
+    front: [],
+    back: [],
+    left: [],
+    right: [],
+  });
   const [reportPhotoUrls, setReportPhotoUrls] = useState<string[]>([]);
   const [loadingReportPhotos, setLoadingReportPhotos] = useState(false);
 
@@ -191,6 +207,7 @@ export default function TechnicianJobDetailsScreen() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const [afterViewerVisible, setAfterViewerVisible] = useState(false);
   const [afterViewerIndex, setAfterViewerIndex] = useState(0);
+  const [busDetailsVisible, setBusDetailsVisible] = useState(false);
   const [completing, setCompleting] = useState(false);
 
   const viewerUrls = useMemo(
@@ -456,7 +473,7 @@ export default function TechnicianJobDetailsScreen() {
       const created = await api.createJobTask(jobId, {
         task_name: issue.trim(),
         task_desc: solution.trim() || null,
-        task_status: newTaskStatus,
+        task_status: "done",
         task_order: nextOrder,
       });
       const taskId = Number((created as { task_id?: number }).task_id);
@@ -489,7 +506,6 @@ export default function TechnicianJobDetailsScreen() {
       setPartsSearch("");
       setPartsOpen(false);
       setNewTaskPhotos([]);
-      setNewTaskStatus("done");
       await fetchAll();
     } catch (e: unknown) {
       handleApiError(e, "Failed to add task");
@@ -512,13 +528,12 @@ export default function TechnicianJobDetailsScreen() {
       );
       return;
     }
-    const statusLabel = newTaskStatus === "done" ? "completed" : "pending";
     const photoNote = newTaskPhotos.length
       ? ` with ${newTaskPhotos.length} photo${newTaskPhotos.length === 1 ? "" : "s"}`
       : "";
     Alert.alert(
       "Add Task",
-      `Add "${issueText}" as a ${statusLabel} task${photoNote}?`,
+      `Add "${issueText}" as a completed task${photoNote}? Once added, it cannot be edited.`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -551,6 +566,16 @@ export default function TechnicianJobDetailsScreen() {
     [visibleTasks],
   );
 
+  const afterMedia = useMemo(
+    () => AFTER_PHOTO_SLOTS.flatMap((s) => afterPhotoSlots[s.key]),
+    [afterPhotoSlots],
+  );
+
+  const missingAfterPhotoSlots = useMemo(
+    () => AFTER_PHOTO_SLOTS.filter((s) => afterPhotoSlots[s.key].length === 0),
+    [afterPhotoSlots],
+  );
+
   const timelineEvents = useMemo<TimelineEvent[]>(() => {
     const events: TimelineEvent[] = [];
 
@@ -561,9 +586,7 @@ export default function TechnicianJobDetailsScreen() {
         color: "#2563EB",
         colorLight: "#EFF6FF",
         title: "Report submitted",
-        subtitle: report.reporter_name
-          ? `By ${report.reporter_name}`
-          : undefined,
+        by: report.reporter_name,
         at: report.report_uploaded_at,
       });
     }
@@ -575,6 +598,7 @@ export default function TechnicianJobDetailsScreen() {
         color: "#7C3AED",
         colorLight: "#F5F3FF",
         title: "Job created",
+        by: report?.report_review_by,
         at: jobSummary.job_created_at,
       });
     }
@@ -586,6 +610,7 @@ export default function TechnicianJobDetailsScreen() {
         color: "#EA580C",
         colorLight: "#FFF7ED",
         title: "Job accepted",
+        by: jobSummary.technician_name,
         at: jobSummary.job_accepted_at,
       });
     }
@@ -601,6 +626,7 @@ export default function TechnicianJobDetailsScreen() {
         subtitle: hasOdometer
           ? `${jobSummary?.job_odometer?.toLocaleString()} km`
           : undefined,
+        by: jobSummary?.technician_name,
         at: odometerTask.completed_at,
       });
     }
@@ -614,6 +640,7 @@ export default function TechnicianJobDetailsScreen() {
           colorLight: "#F0FDF4",
           title: t.task_name,
           subtitle: t.task_desc ?? undefined,
+          by: jobSummary?.technician_name,
           at: t.completed_at,
         });
       }
@@ -626,6 +653,7 @@ export default function TechnicianJobDetailsScreen() {
         color: "#111827",
         colorLight: "#F3F4F6",
         title: "Job completed",
+        by: jobSummary.technician_name,
         at: jobSummary.job_completed_at,
       });
     }
@@ -729,10 +757,10 @@ export default function TechnicianJobDetailsScreen() {
       );
       return;
     }
-    if (afterMedia.length === 0) {
+    if (missingAfterPhotoSlots.length > 0) {
       Alert.alert(
-        "After photo required",
-        "Please add at least 1 after photo before completing the job.",
+        "After photos required",
+        `Please add a photo of the ${missingAfterPhotoSlots.map((slot) => slot.label).join(", ")} before completing the job.`,
       );
       return;
     }
@@ -755,12 +783,12 @@ export default function TechnicianJobDetailsScreen() {
     [reportPhotoUrls],
   );
 
-  const onAfterPhotosChange = (next: LocalMedia[]) => {
-    if (jobLocked && next.length > afterMedia.length) {
+  const onAfterPhotoSlotChange = (slot: AfterPhotoSlot, next: LocalMedia[]) => {
+    if (jobLocked && next.length > afterPhotoSlots[slot].length) {
       handleOdometerRequired();
       return;
     }
-    setAfterMedia(next);
+    setAfterPhotoSlots((prev) => ({ ...prev, [slot]: next }));
   };
 
   const hasLocation = report?.report_lat != null && report?.report_lng != null;
@@ -802,10 +830,13 @@ export default function TechnicianJobDetailsScreen() {
             {(jobSummary?.bus_id || report?.report_location) && (
               <View style={s.heroSubRow}>
                 {jobSummary?.bus_id && (
-                  <View style={s.chip}>
-                    <FontAwesome5 name="bus" size={11} color="#6B7280" />
-                    <Text style={s.chipText}>{jobSummary.bus_id}</Text>
-                  </View>
+                  <Pressable
+                    style={({ pressed }) => [s.chip, s.chipTappable, pressed && { opacity: 0.6 }]}
+                    onPress={() => setBusDetailsVisible(true)}
+                  >
+                    <FontAwesome5 name="bus" size={11} color="#2563EB" />
+                    <Text style={[s.chipText, { color: "#2563EB" }]}>{jobSummary.bus_id}</Text>
+                  </Pressable>
                 )}
                 {report?.report_location && (
                   <Pressable
@@ -877,7 +908,11 @@ export default function TechnicianJobDetailsScreen() {
               {hasOdometer ? (
                 <Field
                   label="Recorded Reading"
-                  value={String(jobSummary?.job_odometer)}
+                  value={
+                    jobSummary?.job_odometer != null
+                      ? `${jobSummary.job_odometer.toLocaleString()} km`
+                      : undefined
+                  }
                 />
               ) : (
                 <>
@@ -992,7 +1027,7 @@ export default function TechnicianJobDetailsScreen() {
                   key={t.task_id}
                   task={t}
                   jobId={jobId}
-                  editable={canEdit && !jobLocked}
+                  editable={false}
                   onUpdated={fetchAll}
                 />
               ))
@@ -1002,47 +1037,9 @@ export default function TechnicianJobDetailsScreen() {
           {/* ── Add Task ── */}
           {canEdit && (
             <SectionCard title="Add Task" icon="plus-circle">
-              <Text style={s.inputLabel}>Task Status</Text>
-              <View style={s.statusToggleRow}>
-                <Pressable
-                  style={[
-                    s.statusToggleBtn,
-                    newTaskStatus === "pending" && s.statusToggleBtnPending,
-                  ]}
-                  onPress={() => {
-                    if (jobLocked) return handleOdometerRequired();
-                    setNewTaskStatus("pending");
-                  }}
-                >
-                  <Text
-                    style={[
-                      s.statusToggleText,
-                      newTaskStatus === "pending" && s.statusToggleTextPending,
-                    ]}
-                  >
-                    Pending
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={[
-                    s.statusToggleBtn,
-                    newTaskStatus === "done" && s.statusToggleBtnDone,
-                  ]}
-                  onPress={() => {
-                    if (jobLocked) return handleOdometerRequired();
-                    setNewTaskStatus("done");
-                  }}
-                >
-                  <Text
-                    style={[
-                      s.statusToggleText,
-                      newTaskStatus === "done" && s.statusToggleTextDone,
-                    ]}
-                  >
-                    Completed
-                  </Text>
-                </Pressable>
-              </View>
+              <Text style={s.helperText}>
+                Tasks are added as complete and cannot be edited afterwards — make sure the issue and solution are correct before submitting.
+              </Text>
 
               <Text style={s.inputLabel}>Task Issue</Text>
               <View style={s.inputWrap}>
@@ -1319,28 +1316,28 @@ export default function TechnicianJobDetailsScreen() {
           {canEdit &&
             (jobLocked ? (
               <Pressable onPress={handleOdometerRequired}>
-                <ImagePickerField
-                  title="Add After Photos"
-                  value={afterMedia}
-                  onChange={onAfterPhotosChange}
-                  captureLabel="Capture After Photo"
-                  uploadLabel="Upload After Photo"
-                  showUploadButton
+                <AfterPhotoSlots
+                  slots={AFTER_PHOTO_SLOTS}
+                  value={afterPhotoSlots}
+                  onChange={(key, next) => onAfterPhotoSlotChange(key as AfterPhotoSlot, next)}
                   readOnly
+                  onPressReadOnly={handleOdometerRequired}
                 />
                 <Text style={[s.helperText, { marginTop: 8 }]}>
                   Save the initial odometer reading to upload after photos.
                 </Text>
               </Pressable>
             ) : (
-              <ImagePickerField
-                title="Add After Photos"
-                value={afterMedia}
-                onChange={onAfterPhotosChange}
-                captureLabel="Capture After Photo"
-                uploadLabel="Upload After Photo"
-                showUploadButton
-              />
+              <>
+                <Text style={[s.helperText, { marginBottom: 4 }]}>
+                  Add one photo of each side of the bus to complete the job.
+                </Text>
+                <AfterPhotoSlots
+                  slots={AFTER_PHOTO_SLOTS}
+                  value={afterPhotoSlots}
+                  onChange={(key, next) => onAfterPhotoSlotChange(key as AfterPhotoSlot, next)}
+                />
+              </>
             ))}
 
           {/* ── Complete Job ── */}
@@ -1353,7 +1350,7 @@ export default function TechnicianJobDetailsScreen() {
                   (jobLocked ||
                     completedTasks.length === 0 ||
                     pendingTasks.length > 0 ||
-                    afterMedia.length === 0 ||
+                    missingAfterPhotoSlots.length > 0 ||
                     completing) && { opacity: 0.6 },
                 ]}
                 onPress={completeJob}
@@ -1361,7 +1358,7 @@ export default function TechnicianJobDetailsScreen() {
                   jobLocked ||
                   completedTasks.length === 0 ||
                   pendingTasks.length > 0 ||
-                  afterMedia.length === 0 ||
+                  missingAfterPhotoSlots.length > 0 ||
                   completing
                 }
               >
@@ -1388,9 +1385,9 @@ export default function TechnicianJobDetailsScreen() {
                   {pendingTasks.length} task{pendingTasks.length === 1 ? "" : "s"} still not done — finish or remove{" "}
                   {pendingTasks.length === 1 ? "it" : "them"} to complete the job.
                 </Text>
-              ) : afterMedia.length === 0 ? (
+              ) : missingAfterPhotoSlots.length > 0 ? (
                 <Text style={s.helperText}>
-                  Add at least 1 after photo to complete the job.
+                  Add a photo of the {missingAfterPhotoSlots.map((slot) => slot.label).join(", ")} to complete the job.
                 </Text>
               ) : null}
             </View>
@@ -1410,6 +1407,12 @@ export default function TechnicianJobDetailsScreen() {
         imageUrls={afterViewerUrls}
         startIndex={afterViewerIndex}
         onClose={() => setAfterViewerVisible(false)}
+      />
+
+      <BusDetailsModal
+        visible={busDetailsVisible}
+        busId={jobSummary?.bus_id ?? null}
+        onClose={() => setBusDetailsVisible(false)}
       />
     </>
   );
@@ -1557,31 +1560,6 @@ const s = StyleSheet.create({
   },
   countPillText: { fontSize: 12, fontWeight: "600", color: "#6B7280" },
 
-  statusToggleRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginBottom: 14,
-  },
-  statusToggleBtn: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 12,
-    paddingVertical: 11,
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  statusToggleBtnPending: {
-    borderColor: "#D97706",
-    backgroundColor: "#FFFBEB",
-  },
-  statusToggleBtnDone: {
-    borderColor: "#16A34A",
-    backgroundColor: "#F0FDF4",
-  },
-  statusToggleText: { fontSize: 14, fontWeight: "700", color: "#6B7280" },
-  statusToggleTextPending: { color: "#D97706" },
-  statusToggleTextDone: { color: "#16A34A" },
   photoStrip: { gap: 10, paddingBottom: 2 },
   thumb: { width: 96, height: 96, borderRadius: 14, overflow: "hidden" },
   thumbImg: { width: "100%", height: "100%" },

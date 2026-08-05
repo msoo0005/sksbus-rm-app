@@ -9,6 +9,10 @@ export type TimelineEvent = {
   colorLight: string;
   title: string;
   subtitle?: string | null;
+  // Who performed this event, rendered as its own "by NAME" line — kept
+  // separate from `subtitle` since subtitle is also used for unrelated
+  // event details (e.g. a task's description, the odometer reading).
+  by?: string | null;
   at: string;
 };
 
@@ -50,6 +54,7 @@ export default function JobTimeline({ events }: { events: TimelineEvent[] }) {
           >
             <Text style={s.title}>{e.title}</Text>
             {!!e.subtitle && <Text style={s.subtitle}>{e.subtitle}</Text>}
+            {!!e.by && <Text style={s.by}>by {e.by}</Text>}
             <Text style={s.time}>{formatDateTime(e.at)}</Text>
           </View>
         </View>
@@ -83,5 +88,6 @@ const s = StyleSheet.create({
     fontWeight: "500",
     marginTop: 2,
   },
+  by: { fontSize: 12, color: "#6B7280", fontWeight: "600", marginTop: 2 },
   time: { fontSize: 12, color: "#9CA3AF", fontWeight: "600", marginTop: 3 },
 });

@@ -41,6 +41,7 @@ export default function TyreManagementScreen() {
   const [buses, setBuses] = useState<BusRow[]>([]);
   const [overdue, setOverdue] = useState<OverdueBus[]>([]);
   const [overdueExpanded, setOverdueExpanded] = useState(false);
+  const [busInspectionStatus, setBusInspectionStatus] = useState<OverdueBus[]>([]);
   const [lowTread, setLowTread] = useState<LowTreadTyre[]>([]);
   const [lowTreadExpanded, setLowTreadExpanded] = useState(false);
 
@@ -70,6 +71,7 @@ export default function TyreManagementScreen() {
       setBuses(Array.isArray(busRows) ? busRows : []);
       if (overdueRes) {
         setOverdue(overdueRes.overdue_buses ?? []);
+        setBusInspectionStatus(overdueRes.all_buses ?? []);
         setIntervalDays(String(overdueRes.inspection_interval_days ?? 30));
       }
       setLowTread(lowTreadRes?.low_tread_tyres ?? []);
@@ -108,6 +110,58 @@ export default function TyreManagementScreen() {
   }, [buses, tyres, query]);
 
   const lowTreadIds = useMemo(() => new Set(lowTread.map((t) => t.tyre_id)), [lowTread]);
+
+  const inspectionStatusByBus = useMemo(() => {
+    const intervalNum = Number(intervalDays) || 30;
+    const map = new Map<
+      string,
+      { lastInspectedLabel: string; daysLabel: string; color: string; bg: string }
+    >();
+    for (const b of busInspectionStatus) {
+      const lastInspectedLabel = b.last_inspected_at
+        ? new Date(b.last_inspected_at).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })
+        : "Never inspected";
+
+      if (b.days_since_inspection == null) {
+        map.set(b.bus_id, {
+          lastInspectedLabel,
+          daysLabel: "No inspection on record",
+          color: "#DC2626",
+          bg: "#FEF2F2",
+        });
+        continue;
+      }
+
+      const remaining = intervalNum - b.days_since_inspection;
+      if (remaining < 0) {
+        map.set(b.bus_id, {
+          lastInspectedLabel,
+          daysLabel: `Overdue by ${Math.abs(remaining)} day${Math.abs(remaining) === 1 ? "" : "s"}`,
+          color: "#DC2626",
+          bg: "#FEF2F2",
+        });
+      } else if (remaining <= 7) {
+        map.set(b.bus_id, {
+          lastInspectedLabel,
+          daysLabel: `Due in ${remaining} day${remaining === 1 ? "" : "s"}`,
+          color: "#D97706",
+          bg: "#FFFBEB",
+        });
+      } else {
+        map.set(b.bus_id, {
+          lastInspectedLabel,
+          daysLabel: `Due in ${remaining} days`,
+          color: "#16A34A",
+          bg: "#F0FDF4",
+        });
+      }
+    }
+    return map;
+  }, [busInspectionStatus, intervalDays]);
 
   const spareTyres = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -298,27 +352,42 @@ export default function TyreManagementScreen() {
             <Text style={styles.emptyText}>No buses found.</Text>
           ) : (
             <View style={styles.listContent}>
-              {busesWithCounts.map((b) => (
-                <Pressable
-                  key={String(b.bus_id)}
-                  style={styles.busRow}
-                  onPress={() => router.push(`/rm-manager/tyres/${b.bus_id}` as any)}
-                >
-                  <View style={styles.busIconWrap}>
-                    <FontAwesome5 name="bus" size={16} color="#111827" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.busTitle}>{b.bus_id}</Text>
-                    <Text style={styles.busMeta}>
-                      {[b.bus_route, b.bus_model].filter(Boolean).join(" · ") || "No details"}
-                    </Text>
-                  </View>
-                  <View style={styles.tyreCountPill}>
-                    <Text style={styles.tyreCountText}>{b.tyreCount} tyres</Text>
-                  </View>
-                  <FontAwesome5 name="chevron-right" size={13} color="#9CA3AF" />
-                </Pressable>
-              ))}
+              {busesWithCounts.map((b) => {
+                const status = inspectionStatusByBus.get(String(b.bus_id));
+                return (
+                  <Pressable
+                    key={String(b.bus_id)}
+                    style={styles.busRow}
+                    onPress={() => router.push(`/rm-manager/tyres/${b.bus_id}` as any)}
+                  >
+                    <View style={styles.busIconWrap}>
+                      <FontAwesome5 name="bus" size={16} color="#111827" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.busTitle}>{b.bus_id}</Text>
+                      <Text style={styles.busMeta}>
+                        {[b.bus_route, b.bus_model].filter(Boolean).join(" · ") || "No details"}
+                      </Text>
+                      {status && (
+                        <View style={styles.inspectionStatusRow}>
+                          <Text style={styles.inspectionLastText}>
+                            Last inspected: {status.lastInspectedLabel}
+                          </Text>
+                          <View style={[styles.inspectionBadge, { backgroundColor: status.bg }]}>
+                            <Text style={[styles.inspectionBadgeText, { color: status.color }]}>
+                              {status.daysLabel}
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                    <View style={styles.tyreCountPill}>
+                      <Text style={styles.tyreCountText}>{b.tyreCount} tyres</Text>
+                    </View>
+                    <FontAwesome5 name="chevron-right" size={13} color="#9CA3AF" />
+                  </Pressable>
+                );
+              })}
             </View>
           )
         ) : spareTyres.length === 0 ? (
@@ -598,7 +667,7 @@ const styles = StyleSheet.create({
   listContent: { padding: 16, gap: 10 },
   busRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 12,
     backgroundColor: "#fff",
     borderRadius: 14,
@@ -616,6 +685,16 @@ const styles = StyleSheet.create({
   },
   busTitle: { fontSize: 15, fontWeight: "700", color: "#111827" },
   busMeta: { fontSize: 12, fontWeight: "600", color: "#6B7280", marginTop: 2 },
+  inspectionStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 6,
+  },
+  inspectionLastText: { fontSize: 11, fontWeight: "600", color: "#9CA3AF" },
+  inspectionBadge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
+  inspectionBadgeText: { fontSize: 10, fontWeight: "800" },
   tyreCountPill: {
     backgroundColor: "#F3F4F6",
     borderRadius: 999,
