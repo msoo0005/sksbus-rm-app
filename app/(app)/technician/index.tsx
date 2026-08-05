@@ -17,6 +17,7 @@ import JobDetailsModal from "../../components/JobDetailsModal";
 import ReportCard from "../../components/ReportCard";
 import SegmentedTabs from "../../components/SegmentedTabs";
 import { useSession } from "../../ctx";
+import { useI18n } from "../../i18n/i18n-ctx";
 
 type Tab = "available" | "myJobs" | "completed";
 
@@ -54,6 +55,7 @@ function formatDate(isoLike?: string | null) {
 export default function TechnicianScreen() {
   const router = useRouter();
   const { dbUser } = useSession() as any;
+  const { t } = useI18n();
 
   const myUserId = dbUser?.user_id ? Number(dbUser.user_id) : null;
 
@@ -80,7 +82,7 @@ export default function TechnicianScreen() {
 
       setJobs(Array.isArray(rows) ? rows : []);
     } catch (e: any) {
-      Alert.alert("Failed to load jobs", e?.message ?? "Unknown error");
+      Alert.alert(t("jobsList.failedToLoadJobs"), e?.message ?? t("common.unknownError"));
     } finally {
       if (isRefresh) {
         setRefreshing(false);
@@ -148,7 +150,7 @@ export default function TechnicianScreen() {
 
       await fetchJobs(true);
     } catch (e: any) {
-      Alert.alert("Accept failed", e?.message ?? "Unknown error");
+      Alert.alert(t("jobsList.acceptFailedTitle"), e?.message ?? t("common.unknownError"));
     }
   };
 
@@ -181,9 +183,9 @@ export default function TechnicianScreen() {
           value={tab}
           onChange={setTab}
           tabs={[
-            { key: "available", label: `Available (${tabCounts.available})` },
-            { key: "myJobs", label: `My Jobs (${tabCounts.myJobs})` },
-            { key: "completed", label: `Completed (${tabCounts.completed})` },
+            { key: "available", label: `${t("jobsList.tabAvailable")} (${tabCounts.available})` },
+            { key: "myJobs", label: `${t("jobsList.tabMyJobs")} (${tabCounts.myJobs})` },
+            { key: "completed", label: `${t("jobsList.tabCompleted")} (${tabCounts.completed})` },
           ]}
         />
 
@@ -201,11 +203,11 @@ export default function TechnicianScreen() {
 
         {loading ? (
           <View style={{ padding: 16 }}>
-            <Text style={{ color: "#666" }}>Loading jobs…</Text>
+            <Text style={{ color: "#666" }}>{t("jobsList.loading")}</Text>
           </View>
         ) : filtered.length === 0 ? (
           <View style={{ padding: 16 }}>
-            <Text style={{ color: "#666" }}>No jobs in this tab.</Text>
+            <Text style={{ color: "#666" }}>{t("jobsList.empty")}</Text>
           </View>
         ) : (
           filtered.map((job) => {
@@ -266,9 +268,9 @@ export default function TechnicianScreen() {
 
       <ConfirmActionModal
         visible={acceptVisible}
-        title="Accept Job"
-        message="Accept this job and assign it to you?"
-        confirmLabel="Accept Job"
+        title={t("jobsList.acceptTitle")}
+        message={t("jobsList.acceptMessage")}
+        confirmLabel={t("jobsList.acceptConfirm")}
         confirmColor="#4CAF50"
         onCancel={() => setAcceptVisible(false)}
         onConfirm={confirmAccept}

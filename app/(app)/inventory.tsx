@@ -21,6 +21,7 @@ import {
   CardTitle,
 } from '../components/card';
 import SegmentedTabs from '../components/SegmentedTabs';
+import { useI18n } from '../i18n/i18n-ctx';
 
 type TabKey = 'all' | 'low' | 'recent';
 
@@ -125,6 +126,7 @@ function computeColumnWidths(available: number) {
 
 export default function Inventory() {
   const router = useRouter();
+  const { t } = useI18n();
   const { width: windowWidth } = useWindowDimensions();
 
   const [tab, setTab] = useState<TabKey>('all');
@@ -203,21 +205,21 @@ export default function Inventory() {
             <View style={styles.topBar}>
               <Pressable onPress={() => router.back()} style={styles.backBtn}>
                 <Text style={styles.backArrow}>←</Text>
-                <Text style={styles.backText}>Back to Roles</Text>
+                <Text style={styles.backText}>{t('inventory.backToRoles')}</Text>
               </Pressable>
             </View>
 
             {/* Title */}
             <View style={styles.header}>
-              <Text style={styles.title}>Inventory Manager</Text>
-              <Text style={styles.subtitle}>Manage parts and supplies</Text>
+              <Text style={styles.title}>{t('inventory.navTitle')}</Text>
+              <Text style={styles.subtitle}>{t('inventory.subtitle')}</Text>
             </View>
 
             {/* Stats cards */}
             <View style={styles.statsRow}>
-              <StatCard title="Total Parts" value={`${totalParts}`} subtitle="Active SKUs" />
-              <StatCard title="Low Stock Alerts" value={`${lowStockCount}`} subtitle="Items need restocking" danger />
-              <StatCard title="Total Value" value={money(totalValue)} subtitle="Current inventory value" />
+              <StatCard title={t('inventory.totalParts')} value={`${totalParts}`} subtitle={t('inventory.activeSkus')} />
+              <StatCard title={t('inventory.lowStockAlerts')} value={`${lowStockCount}`} subtitle={t('inventory.itemsNeedRestocking')} danger />
+              <StatCard title={t('inventory.totalValue')} value={money(totalValue)} subtitle={t('inventory.currentInventoryValue')} />
             </View>
 
             {/* Tabs */}
@@ -226,9 +228,9 @@ export default function Inventory() {
                 value={tab}
                 onChange={setTab}
                 tabs={[
-                  { key: 'all', label: `All Parts (${tabCounts.all})` },
-                  { key: 'low', label: `Low Stock (${tabCounts.low})` },
-                  { key: 'recent', label: 'Recent Activity' },
+                  { key: 'all', label: `${t('inventory.tabAllParts')} (${tabCounts.all})` },
+                  { key: 'low', label: `${t('inventory.tabLowStock')} (${tabCounts.low})` },
+                  { key: 'recent', label: t('inventory.tabRecentActivity') },
                 ]}
               />
             </View>
@@ -240,7 +242,7 @@ export default function Inventory() {
                 <TextInput
                   value={query}
                   onChangeText={setQuery}
-                  placeholder="Search parts by name, code, or category..."
+                  placeholder={t('inventory.searchPlaceholder')}
                   placeholderTextColor="#8A8FA3"
                   style={styles.searchInput}
                 />
@@ -252,14 +254,14 @@ export default function Inventory() {
               <View style={[styles.table, { width: tableLayout.tableWidth }]}>
                 {/* Header */}
                 <View style={styles.tableHeader}>
-                  <Text style={[styles.th, cell('code')]}>Code</Text>
-                  <Text style={[styles.th, cell('name')]}>Name</Text>
-                  <Text style={[styles.th, cell('category')]}>Category</Text>
-                  <Text style={[styles.th, cell('stock'), styles.centerText]}>Stock</Text>
-                  <Text style={[styles.th, cell('min'), styles.centerText]}>Min.</Text>
-                  <Text style={[styles.th, cell('unit'), styles.rightText]}>Unit</Text>
-                  <Text style={[styles.th, cell('status')]}>Status</Text>
-                  <Text style={[styles.th, cell('actions')]}>Actions</Text>
+                  <Text style={[styles.th, cell('code')]}>{t('inventory.colCode')}</Text>
+                  <Text style={[styles.th, cell('name')]}>{t('inventory.colName')}</Text>
+                  <Text style={[styles.th, cell('category')]}>{t('inventory.colCategory')}</Text>
+                  <Text style={[styles.th, cell('stock'), styles.centerText]}>{t('inventory.colStock')}</Text>
+                  <Text style={[styles.th, cell('min'), styles.centerText]}>{t('inventory.colMin')}</Text>
+                  <Text style={[styles.th, cell('unit'), styles.rightText]}>{t('inventory.colUnit')}</Text>
+                  <Text style={[styles.th, cell('status')]}>{t('inventory.colStatus')}</Text>
+                  <Text style={[styles.th, cell('actions')]}>{t('inventory.colActions')}</Text>
                 </View>
 
                 {/* Rows (vertical scroll handled by outer screen, so this list is not scrollable) */}
@@ -270,8 +272,8 @@ export default function Inventory() {
                   ItemSeparatorComponent={() => <View style={styles.sepInner} />}
                   ListEmptyComponent={
                     <View style={styles.empty}>
-                      <Text style={styles.emptyTitle}>No items found</Text>
-                      <Text style={styles.emptySub}>Try clearing your search or changing tabs.</Text>
+                      <Text style={styles.emptyTitle}>{t('inventory.noItemsFound')}</Text>
+                      <Text style={styles.emptySub}>{t('inventory.tryClearingSearchOrTabs')}</Text>
                     </View>
                   }
                   renderItem={({ item }) => {
@@ -311,16 +313,16 @@ export default function Inventory() {
                           ]}
                           numberOfLines={1}
                         >
-                          {low ? 'Low Stock' : 'In Stock'}
+                          {low ? t('statusBadge.lowStock') : t('statusBadge.inStock')}
                         </Text>
 
                         <View style={[cell('actions'), styles.actionsCell]}>
                           <Pressable onPress={() => onAdd(item.id)} style={styles.actionBtn}>
-                            <Text style={styles.actionBtnText}>＋ Add</Text>
+                            <Text style={styles.actionBtnText}>＋ {t('inventory.addAction')}</Text>
                           </Pressable>
 
                           <Pressable onPress={() => onRemove(item.id)} style={styles.actionBtn}>
-                            <Text style={styles.actionBtnText}>Remove</Text>
+                            <Text style={styles.actionBtnText}>{t('inventory.removeAction')}</Text>
                           </Pressable>
                         </View>
                       </View>

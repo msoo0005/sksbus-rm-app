@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { api } from "../api/client";
 import { Card, CardContent } from "../components/card";
+import { useI18n } from "../i18n/i18n-ctx";
 import { useProject } from "../project-ctx"; // ✅ NEW: persisted project selection
 
 // Match your DB/API response (adjust field names if your PROJECT table differs)
@@ -26,6 +27,7 @@ type Project = {
 
 export default function ProjectSelectorScreen() {
   const router = useRouter();
+  const { t } = useI18n();
   const params = useLocalSearchParams<{ returnTo?: string; allowClear?: string }>();
   const returnTo = params.returnTo || "./fleet-manager";
   const allowClear = params.allowClear === "1";
@@ -48,13 +50,13 @@ export default function ProjectSelectorScreen() {
       const data = await api.myProjects();
       setProjects(Array.isArray(data) ? data : []);
     } catch (e: any) {
-      setError(e?.message ?? "Failed to load projects.");
+      setError(e?.message ?? t("projectSelector.failedToLoadProjects"));
       setProjects([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     setLoading(true);
@@ -133,7 +135,7 @@ export default function ProjectSelectorScreen() {
                     {item.project_desc ? ` • ${item.project_desc}` : ""}
                   </Text>
 
-                  {selected && <Text style={styles.selectedTag}>Selected</Text>}
+                  {selected && <Text style={styles.selectedTag}>{t("projectSelector.selected")}</Text>}
                 </View>
               </View>
 
@@ -150,15 +152,15 @@ export default function ProjectSelectorScreen() {
   return (
     <View style={styles.page}>
       <View style={styles.header}>
-        <Text style={styles.h1}>Select a Project</Text>
-        <Text style={styles.sub}>Projects assigned to your account</Text>
+        <Text style={styles.h1}>{t("projectSelector.title")}</Text>
+        <Text style={styles.sub}>{t("projectSelector.subtitle")}</Text>
 
         <View style={styles.searchBox}>
           <Text style={styles.searchIcon}>🔎</Text>
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search projects…"
+            placeholder={t("projectSelector.searchPlaceholder")}
             placeholderTextColor="#9CA3AF"
             style={styles.searchInput}
             autoCorrect={false}
@@ -169,7 +171,7 @@ export default function ProjectSelectorScreen() {
 
         {!!error && (
           <View style={styles.errorBox}>
-            <Text style={styles.errorTitle}>Couldn’t load projects</Text>
+            <Text style={styles.errorTitle}>{t("projectSelector.couldntLoadProjects")}</Text>
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
@@ -181,7 +183,7 @@ export default function ProjectSelectorScreen() {
             disabled={projectLoading}
           >
             <FontAwesome5 name="globe" size={13} color="#374151" />
-            <Text style={styles.clearRowText}>View All Projects</Text>
+            <Text style={styles.clearRowText}>{t("projectSelector.viewAllProjects")}</Text>
           </Pressable>
         )}
       </View>
@@ -190,7 +192,7 @@ export default function ProjectSelectorScreen() {
         <View style={styles.loading}>
           <ActivityIndicator />
           <Text style={styles.loadingText}>
-            {loading ? "Loading projects…" : "Restoring selection…"}
+            {loading ? t("projectSelector.loadingProjects") : t("projectSelector.restoringSelection")}
           </Text>
         </View>
       ) : (
@@ -206,11 +208,11 @@ export default function ProjectSelectorScreen() {
           }
           ListEmptyComponent={
             <View style={styles.empty}>
-              <Text style={styles.emptyTitle}>No projects found</Text>
+              <Text style={styles.emptyTitle}>{t("projectSelector.emptyTitle")}</Text>
               <Text style={styles.emptySub}>
                 {projects.length === 0
-                  ? "You’re not assigned to any projects yet."
-                  : "Try clearing your search."}
+                  ? t("projectSelector.emptyNoneAssigned")
+                  : t("projectSelector.emptyTrySearch")}
               </Text>
             </View>
           }

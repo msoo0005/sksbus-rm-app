@@ -1,51 +1,57 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React from "react";
+import React, { useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+
+import { useI18n } from "../i18n/i18n-ctx";
 
 type ReportType = "problem" | "repair" | "accident";
 
-const ACTIONS = [
-  {
-    id: "report-problem",
-    title: "Report Problem",
-    description: "Vehicle issue or malfunction",
-    icon: "exclamation-triangle",
-    accent: "#DC2626",
-    accentLight: "#FEF2F2",
-    formType: "problem" as ReportType,
-  },
-  {
-    id: "request-repair",
-    title: "Request Repair",
-    description: "Schedule maintenance or servicing",
-    icon: "wrench",
-    accent: "#2563EB",
-    accentLight: "#EFF6FF",
-    formType: "repair" as ReportType,
-  },
-  {
-    id: "report-accident",
-    title: "Report Accident",
-    description: "Collision or damage incident",
-    icon: "car-crash",
-    accent: "#EA580C",
-    accentLight: "#FFF7ED",
-    formType: "accident" as ReportType,
-  },
-  {
-    id: "my-report-history",
-    title: "My Report History",
-    description: "View reports you've submitted",
-    icon: "history",
-    accent: "#374151",
-    accentLight: "#F3F4F6",
-    formType: "problem" as ReportType,
-  },
-];
+function buildActions(t: (key: string) => string) {
+  return [
+    {
+      id: "report-problem",
+      title: t("fleetManagerActions.reportProblemTitle"),
+      description: t("fleetManagerActions.reportProblemDesc"),
+      icon: "exclamation-triangle",
+      accent: "#DC2626",
+      accentLight: "#FEF2F2",
+      formType: "problem" as ReportType,
+    },
+    {
+      id: "request-repair",
+      title: t("fleetManagerActions.requestRepairTitle"),
+      description: t("fleetManagerActions.requestRepairDesc"),
+      icon: "wrench",
+      accent: "#2563EB",
+      accentLight: "#EFF6FF",
+      formType: "repair" as ReportType,
+    },
+    {
+      id: "report-accident",
+      title: t("fleetManagerActions.reportAccidentTitle"),
+      description: t("fleetManagerActions.reportAccidentDesc"),
+      icon: "car-crash",
+      accent: "#EA580C",
+      accentLight: "#FFF7ED",
+      formType: "accident" as ReportType,
+    },
+    {
+      id: "my-report-history",
+      title: t("fleetManagerActions.myReportHistoryTitle"),
+      description: t("fleetManagerActions.myReportHistoryDesc"),
+      icon: "history",
+      accent: "#374151",
+      accentLight: "#F3F4F6",
+      formType: "problem" as ReportType,
+    },
+  ];
+}
 
 export default function FleetManagerScreen() {
   const router = useRouter();
+  const { t } = useI18n();
+  const ACTIONS = useMemo(() => buildActions(t), [t]);
 
   const handlePress = (action: (typeof ACTIONS)[0]) => {
     if (action.id === "my-report-history") {
@@ -61,7 +67,7 @@ export default function FleetManagerScreen() {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.sectionLabel}>SELECT AN ACTION</Text>
+      <Text style={styles.sectionLabel}>{t("fleetManagerActions.selectAnAction")}</Text>
 
       {ACTIONS.map((action) => (
         <Pressable

@@ -1,4 +1,5 @@
 import { StyleSheet, Text, View, ViewStyle } from "react-native";
+import { useI18n } from "../i18n/i18n-ctx";
 
 export type StatusType =
   // Report types
@@ -102,34 +103,31 @@ const STATUS_STYLES: Record<
   },
 };
 
-const formatLabel = (value: string) => {
-  switch (value) {
-    case "inStock":
-      return "In Stock";
-    case "lowStock":
-      return "Low Stock";
-    case "pending":
-      return "Pending Review";
-    case "open":
-      return "Open";
-    case "closed":
-      return "Closed";
-    case "approved":
-      return "Approved";
-    case "declined":
-      return "Declined";
-    default:
-      return value.charAt(0).toUpperCase() + value.slice(1);
-  }
+const STATUS_LABEL_KEYS: Record<StatusType, string> = {
+  repair: "statusBadge.repair",
+  problem: "statusBadge.problem",
+  accident: "statusBadge.accident",
+  low: "statusBadge.low",
+  medium: "statusBadge.medium",
+  high: "statusBadge.high",
+  critical: "statusBadge.critical",
+  inStock: "statusBadge.inStock",
+  lowStock: "statusBadge.lowStock",
+  pending: "statusBadge.pending",
+  open: "statusBadge.open",
+  closed: "statusBadge.closed",
+  approved: "statusBadge.approved",
+  declined: "statusBadge.declined",
 };
 
 export default function StatusBadge({ label, type }: StatusBadgeProps) {
+  const { t } = useI18n();
   const style = STATUS_STYLES[type];
 
   return (
     <View style={[styles.badge, style.container]}>
       <Text style={[styles.text, style.text]}>
-        {label ?? formatLabel(type)}
+        {label ?? t(STATUS_LABEL_KEYS[type])}
       </Text>
     </View>
   );

@@ -13,6 +13,7 @@ import {
 
 import type { JobMedia, ReportMedia } from "../api/client";
 import { api } from "../api/client";
+import { useI18n } from "../i18n/i18n-ctx";
 import BusDetailsModal from "./BusDetailsModal";
 import ImageViewerOverlay from "./ImageViewerOverlay";
 import JobTaskCard from "./JobTaskCard";
@@ -144,6 +145,7 @@ export default function JobDetailsView({
   jobId: number;
   headerHint?: string;
 }) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [jobSummary, setJobSummary] = useState<JobListItem | null>(null);
   const [report, setReport] = useState<ReportDto | null>(null);
@@ -242,7 +244,7 @@ export default function JobDetailsView({
       setAfterPhotoUrls([]);
       loadAfterPhotos(jobId);
     } catch (e: any) {
-      Alert.alert("Failed to load job", e?.message ?? "Unknown error");
+      Alert.alert(t("jobDetail.failedToLoadJob"), e?.message ?? t("common.unknownError"));
     } finally {
       setLoading(false);
     }
@@ -273,7 +275,7 @@ export default function JobDetailsView({
         icon: "file-alt",
         color: "#2563EB",
         colorLight: "#EFF6FF",
-        title: "Report submitted",
+        title: t("jobDetail.eventReportSubmitted"),
         by: report.reporter_name,
         at: report.report_uploaded_at,
       });
@@ -285,7 +287,7 @@ export default function JobDetailsView({
         icon: "briefcase",
         color: "#7C3AED",
         colorLight: "#F5F3FF",
-        title: "Job created",
+        title: t("jobDetail.eventJobCreated"),
         by: report?.report_review_by,
         at: jobSummary.job_created_at,
       });
@@ -297,7 +299,7 @@ export default function JobDetailsView({
         icon: "hand-paper",
         color: "#EA580C",
         colorLight: "#FFF7ED",
-        title: "Job accepted",
+        title: t("jobDetail.eventJobAccepted"),
         by: formatAssignee(jobSummary),
         at: jobSummary.job_accepted_at,
       });
@@ -310,7 +312,7 @@ export default function JobDetailsView({
         icon: "tachometer-alt",
         color: "#0EA5E9",
         colorLight: "#F0F9FF",
-        title: "Initial odometer recorded",
+        title: t("jobDetail.eventOdometerRecorded"),
         subtitle:
           jobSummary?.job_odometer != null
             ? `${jobSummary.job_odometer.toLocaleString()} km`
@@ -341,14 +343,14 @@ export default function JobDetailsView({
         icon: "flag-checkered",
         color: "#111827",
         colorLight: "#F3F4F6",
-        title: "Job completed",
+        title: t("jobDetail.eventJobCompleted"),
         by: jobSummary.technician_name,
         at: jobSummary.job_completed_at,
       });
     }
 
     return events;
-  }, [report, jobSummary, tasks, visibleTasks]);
+  }, [report, jobSummary, tasks, visibleTasks, t]);
 
   const assigneeLabel = useMemo(() => formatAssignee(jobSummary), [jobSummary]);
 
@@ -428,10 +430,10 @@ export default function JobDetailsView({
         </View>
 
         {/* ── Job Info ── */}
-        <SectionCard title="Job Info" icon="briefcase">
-          <Field label="Status" value={jobSummary?.job_status} />
+        <SectionCard title={t("jobDetail.sectionJobInfo")} icon="briefcase">
+          <Field label={t("jobDetail.fieldStatus")} value={jobSummary?.job_status} />
           <Field
-            label="Initial Odometer"
+            label={t("jobDetail.fieldInitialOdometer")}
             value={
               jobSummary?.job_odometer != null
                 ? `${jobSummary.job_odometer.toLocaleString()} km`
@@ -439,33 +441,33 @@ export default function JobDetailsView({
             }
           />
           {!!jobSummary?.job_desc && (
-            <Field label="Notes" value={jobSummary.job_desc} />
+            <Field label={t("jobDetail.fieldNotes")} value={jobSummary.job_desc} />
           )}
         </SectionCard>
 
         {/* ── Initial Report ── */}
-        <SectionCard title="Initial Report" icon="file-alt">
+        <SectionCard title={t("jobDetail.sectionInitialReport")} icon="file-alt">
           <Field
-            label="Report ID"
+            label={t("jobDetail.fieldReportId")}
             value={jobSummary?.report_id != null ? `#${jobSummary.report_id}` : null}
           />
           <Field
-            label="Reported By"
+            label={t("jobDetail.fieldReportedBy")}
             value={jobSummary?.reporter_name ?? report?.reporter_name}
           />
           <Field
-            label="Priority"
+            label={t("jobDetail.fieldPriority")}
             value={jobSummary?.report_priority ?? report?.report_priority}
           />
           <Field
-            label="Description"
+            label={t("jobDetail.fieldDescription")}
             value={report?.report_desc ?? jobSummary?.job_desc}
           />
 
           {/* Photos */}
           <View style={s.photoSection}>
             <View style={s.photoHeaderRow}>
-              <Text style={s.photoTitle}>PHOTOS</Text>
+              <Text style={s.photoTitle}>{t("jobDetail.photos")}</Text>
               <View style={s.countPill}>
                 <Text style={s.countPillText}>
                   {reportPhotoUrls.length} photo{reportPhotoUrls.length === 1 ? "" : "s"}
@@ -474,9 +476,9 @@ export default function JobDetailsView({
             </View>
 
             {loadingReportPhotos ? (
-              <Text style={s.mutedText}>Loading photos…</Text>
+              <Text style={s.mutedText}>{t("jobDetail.loadingPhotos")}</Text>
             ) : reportPhotoUrls.length === 0 ? (
-              <Text style={s.mutedText}>No photos attached.</Text>
+              <Text style={s.mutedText}>{t("jobDetail.noPhotosAttached")}</Text>
             ) : (
               <ScrollView
                 horizontal
@@ -501,9 +503,9 @@ export default function JobDetailsView({
         </SectionCard>
 
         {/* ── Tasks ── */}
-        <SectionCard title="Tasks" icon="tasks">
+        <SectionCard title={t("jobDetail.sectionTasks")} icon="tasks">
           {visibleTasks.length === 0 ? (
-            <Text style={s.mutedText}>No tasks added yet.</Text>
+            <Text style={s.mutedText}>{t("jobDetail.noTasksAddedYet")}</Text>
           ) : (
             visibleTasks.map((t) => (
               <JobTaskCard
@@ -517,15 +519,15 @@ export default function JobDetailsView({
         </SectionCard>
 
         {/* ── Job Progress Timeline ── */}
-        <SectionCard title="Job Progress" icon="stream">
+        <SectionCard title={t("jobDetail.sectionJobProgress")} icon="stream">
           <JobTimeline events={timelineEvents} />
         </SectionCard>
 
         {/* ── After Photos ── */}
-        <SectionCard title="After Photos" icon="camera">
+        <SectionCard title={t("jobDetail.sectionAfterPhotos")} icon="camera">
           <View style={s.photoSection}>
             <View style={s.photoHeaderRow}>
-              <Text style={s.photoTitle}>UPLOADED</Text>
+              <Text style={s.photoTitle}>{t("jobDetail.uploaded")}</Text>
               <View style={s.countPill}>
                 <Text style={s.countPillText}>
                   {afterPhotoUrls.length} photo{afterPhotoUrls.length === 1 ? "" : "s"}
@@ -534,9 +536,9 @@ export default function JobDetailsView({
             </View>
 
             {loadingAfterPhotos ? (
-              <Text style={s.mutedText}>Loading photos…</Text>
+              <Text style={s.mutedText}>{t("jobDetail.loadingPhotos")}</Text>
             ) : afterPhotoUrls.length === 0 ? (
-              <Text style={s.mutedText}>No after photos uploaded yet.</Text>
+              <Text style={s.mutedText}>{t("jobDetail.noAfterPhotosYet")}</Text>
             ) : (
               <ScrollView
                 horizontal

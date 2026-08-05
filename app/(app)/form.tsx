@@ -24,62 +24,68 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { api } from "../api/client";
 import ImagePickerField, { LocalMedia } from "../components/ImagePicker";
 import MapSelector, { LocationValue } from "../components/map";
+import { useI18n } from "../i18n/i18n-ctx";
 import { useProject } from "../project-ctx";
 
 type Priority = "low" | "medium" | "high" | "critical";
 
-const PRIORITY_OPTIONS: {
+type PriorityOption = {
   value: Priority;
   label: string;
   description: string;
   color: string;
   Icon: typeof ShieldCheck;
-}[] = [
-  {
-    value: "low",
-    label: "Low",
-    description:
-      "Minor issue that does not affect vehicle safety or operation. Bus can continue service and repair can be scheduled later.",
-    color: "#16A34A",
-    Icon: ShieldCheck,
-  },
-  {
-    value: "medium",
-    label: "Medium",
-    description:
-      "Issue affects comfort or performance but the bus can still operate safely. Repair required within a reasonable time.",
-    color: "#EAB308",
-    Icon: Wrench,
-  },
-  {
-    value: "high",
-    label: "High",
-    description:
-      "Major fault affecting vehicle operation or reliability, vehicle has entered limp mode or turtle mode. Bus should be withdrawn from service as soon as possible and repaired urgently.",
-    color: "#EA580C",
-    Icon: Cog,
-  },
-  {
-    value: "critical",
-    label: "Critical",
-    description:
-      "Serious safety issue or complete breakdown causing the bus to be immobile or unsafe to operate. Immediate action and emergency response required.",
-    color: "#DC2626",
-    Icon: TriangleAlert,
-  },
-];
+};
+
+// Built from translations rather than a static array, since the label and
+// (long) description both need to switch with the selected language.
+function buildPriorityOptions(t: (key: string) => string): PriorityOption[] {
+  return [
+    {
+      value: "low",
+      label: t("reportForm.priorityLowLabel"),
+      description: t("reportForm.priorityLowDesc"),
+      color: "#16A34A",
+      Icon: ShieldCheck,
+    },
+    {
+      value: "medium",
+      label: t("reportForm.priorityMediumLabel"),
+      description: t("reportForm.priorityMediumDesc"),
+      color: "#EAB308",
+      Icon: Wrench,
+    },
+    {
+      value: "high",
+      label: t("reportForm.priorityHighLabel"),
+      description: t("reportForm.priorityHighDesc"),
+      color: "#EA580C",
+      Icon: Cog,
+    },
+    {
+      value: "critical",
+      label: t("reportForm.priorityCriticalLabel"),
+      description: t("reportForm.priorityCriticalDesc"),
+      color: "#DC2626",
+      Icon: TriangleAlert,
+    },
+  ];
+}
 
 function PriorityPickerModal({
   visible,
   value,
+  options,
   onSelect,
   onClose,
 }: {
   visible: boolean;
   value: Priority;
+  options: PriorityOption[];
   onSelect: (v: Priority) => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <Modal
       visible={visible}
@@ -94,18 +100,18 @@ function PriorityPickerModal({
               <ChevronLeft size={24} color="#fff" />
             </TouchableOpacity>
             <Text style={priorityModalStyles.headerTitle}>
-              Priority Selection
+              {t("reportForm.priorityModalTitle")}
             </Text>
             <View style={{ width: 24 }} />
           </View>
 
           <ScrollView contentContainerStyle={priorityModalStyles.body}>
             <Text style={priorityModalStyles.sectionLabel}>
-              Select Priority Level{" "}
+              {t("reportForm.selectPriorityLevel")}{" "}
               <Text style={priorityModalStyles.required}>*</Text>
             </Text>
 
-            {PRIORITY_OPTIONS.map((opt) => {
+            {options.map((opt) => {
               const selected = value === opt.value;
               const Icon = opt.Icon;
               return (
@@ -158,7 +164,7 @@ function PriorityPickerModal({
             style={priorityModalStyles.doneButton}
             onPress={onClose}
           >
-            <Text style={priorityModalStyles.doneText}>Done</Text>
+            <Text style={priorityModalStyles.doneText}>{t("reportForm.done")}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -175,10 +181,10 @@ function normaliseReportType(value: unknown): ReportType {
   return "problem";
 }
 
-function reportTypeLabel(t: ReportType) {
-  if (t === "problem") return "Problem Report";
-  if (t === "repair") return "Repair Request";
-  return "Accident Report";
+function reportTypeLabel(type: ReportType, translate: (key: string) => string) {
+  if (type === "problem") return translate("reportForm.typeProblem");
+  if (type === "repair") return translate("reportForm.typeRepair");
+  return translate("reportForm.typeAccident");
 }
 
 type BusItem = { label: string; value: string };
@@ -197,10 +203,13 @@ async function uriToBlob(uri: string): Promise<Blob> {
 export default function ReportFormScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
+  const { t } = useI18n();
   const reportType = useMemo(
     () => normaliseReportType(params.type),
     [params.type],
   );
+
+  const priorityOptions = useMemo(() => buildPriorityOptions(t), [t]);
 
   const { projectId, loading: projectLoading } = useProject();
 
@@ -348,11 +357,11 @@ export default function ReportFormScreen() {
   };
 
   const validateForm = (): string | null => {
-    if (projectLoading) return "Loading project selection...";
-    if (!projectId) return "Project is not selected";
-    if (!vehicle) return "Vehicle is required";
-    if (!description.trim()) return "Description is required";
-    if (photos.length === 0) return "At least one photo is required";
+    if (projectLoading) return t("reportForm.validationLoadingProject");
+    if (!projectId) return t("reportForm.validationProjectNotSelected");
+    if (!vehicle) return t("reportForm.validationVehicleRequired");
+    if (!description.trim()) return t("reportForm.validationDescriptionRequired");
+    if (photos.length === 0) return t("reportForm.validationPhotoRequired");
     return null;
   };
 
@@ -373,10 +382,10 @@ export default function ReportFormScreen() {
       }
 
       setUploadingIndex(null);
-      Alert.alert("Success", "Report submitted successfully");
+      Alert.alert(t("common.success"), t("reportForm.reportSubmittedSuccess"));
       router.back();
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Failed to submit report");
+      Alert.alert(t("common.error"), e?.message ?? t("reportForm.failedToSubmitReport"));
     } finally {
       setSubmitting(false);
       setUploadingIndex(null);
@@ -386,37 +395,37 @@ export default function ReportFormScreen() {
   const onSubmit = () => {
     const error = validateForm();
     if (error) {
-      Alert.alert("Error", error);
+      Alert.alert(t("common.error"), error);
       return;
     }
 
     Alert.alert(
-      "Submit Report",
-      "Are you sure you want to submit this report? You won't be able to edit it afterwards.",
+      t("reportForm.submitReport"),
+      t("reportForm.submitReportConfirmMessage"),
       [
-        { text: "Cancel", style: "cancel" },
-        { text: "Submit", onPress: doSubmit },
+        { text: t("common.cancel"), style: "cancel" },
+        { text: t("common.submit"), onPress: doSubmit },
       ],
     );
   };
 
   const submitLabel =
     submitting && uploadingIndex !== null
-      ? `Uploading ${uploadingIndex + 1}/${photos.length}...`
+      ? t("reportForm.uploading", { current: uploadingIndex + 1, total: photos.length })
       : submitting
-        ? "Submitting..."
-        : "Submit Report";
+        ? t("reportForm.submitting")
+        : t("reportForm.submitReport");
 
   const vehiclePlaceholder = projectLoading
-    ? "Loading project..."
+    ? t("reportForm.vehiclePlaceholderLoadingProject")
     : !projectId
-      ? "Select a project first"
+      ? t("reportForm.vehiclePlaceholderSelectProjectFirst")
       : vehicles.length
-        ? "Select vehicle"
-        : "Loading vehicles...";
+        ? t("reportForm.vehiclePlaceholderSelectVehicle")
+        : t("reportForm.vehiclePlaceholderLoadingVehicles");
 
   const selectedPriorityOption =
-    PRIORITY_OPTIONS.find((o) => o.value === priority) ?? PRIORITY_OPTIONS[1];
+    priorityOptions.find((o) => o.value === priority) ?? priorityOptions[1];
 
   return (
     <KeyboardAwareScrollView
@@ -426,20 +435,20 @@ export default function ReportFormScreen() {
       keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       bottomOffset={24}
     >
-      <Text style={styles.title}>Report Details</Text>
+      <Text style={styles.title}>{t("reportForm.title")}</Text>
 
       <View style={styles.typePill}>
-        <Text style={styles.typePillText}>{reportTypeLabel(reportType)}</Text>
+        <Text style={styles.typePillText}>{reportTypeLabel(reportType, t)}</Text>
       </View>
 
       <View style={styles.projectPill}>
         <Text style={styles.projectPillText}>
-          Project:{" "}
-          {projectLoading ? "Loading..." : (projectId ?? "Not selected")}
+          {t("reportForm.projectPrefix")}{" "}
+          {projectLoading ? t("reportForm.loadingEllipsis") : (projectId ?? t("reportForm.notSelected"))}
         </Text>
       </View>
 
-      <Text style={styles.label}>Vehicle *</Text>
+      <Text style={styles.label}>{t("reportForm.vehicleLabel")}</Text>
       <View style={{ zIndex: 3000 }}>
         <DropDownPicker
           listMode="SCROLLVIEW"
@@ -450,7 +459,7 @@ export default function ReportFormScreen() {
           setValue={setVehicle}
           setItems={setVehicles}
           searchable
-          searchPlaceholder="Search vehicles…"
+          searchPlaceholder={t("reportForm.searchVehiclesPlaceholder")}
           placeholder={vehiclePlaceholder}
           style={styles.dropdown}
           dropDownContainerStyle={styles.dropdownContainer}
@@ -460,16 +469,16 @@ export default function ReportFormScreen() {
       </View>
 
       <MapSelector
-        label="Current Location"
+        label={t("reportForm.currentLocationLabel")}
         required
         value={mapLocation}
         onChange={handleMapLocationChange}
       />
 
-      <Text style={styles.label}>Location Description</Text>
+      <Text style={styles.label}>{t("reportForm.locationDescLabel")}</Text>
       <TextInput
         style={styles.input}
-        placeholder="e.g. Stop 12 near the mall entrance"
+        placeholder={t("reportForm.locationDescPlaceholder")}
         placeholderTextColor="#9CA3AF"
         value={locationDesc}
         onChangeText={(text) => {
@@ -479,16 +488,16 @@ export default function ReportFormScreen() {
         editable={!submitting}
       />
 
-      <Text style={styles.label}>Photos *</Text>
+      <Text style={styles.label}>{t("reportForm.photosLabel")}</Text>
       <ImagePickerField
-        title="Photos"
+        title={t("reportForm.photosTitle")}
         required
         value={photos}
         onChange={setPhotos}
         disabled={submitting}
       />
 
-      <Text style={styles.label}>Priority</Text>
+      <Text style={styles.label}>{t("reportForm.priorityLabel")}</Text>
       <TouchableOpacity
         style={styles.priorityField}
         onPress={() => setPriorityModalVisible(true)}
@@ -510,14 +519,15 @@ export default function ReportFormScreen() {
       <PriorityPickerModal
         visible={priorityModalVisible}
         value={priority}
+        options={priorityOptions}
         onSelect={setPriority}
         onClose={() => setPriorityModalVisible(false)}
       />
 
-      <Text style={styles.label}>Description *</Text>
+      <Text style={styles.label}>{t("reportForm.descriptionLabel")}</Text>
       <TextInput
         style={styles.textArea}
-        placeholder="Describe the issue..."
+        placeholder={t("reportForm.descriptionPlaceholder")}
         placeholderTextColor="#9CA3AF"
         multiline
         value={description}
@@ -531,7 +541,7 @@ export default function ReportFormScreen() {
           onPress={() => router.back()}
           disabled={submitting}
         >
-          <Text style={styles.cancelText}>Cancel</Text>
+          <Text style={styles.cancelText}>{t("common.cancel")}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity

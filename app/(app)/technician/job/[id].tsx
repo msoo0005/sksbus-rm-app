@@ -25,6 +25,7 @@ import JobTaskCard from "../../../components/JobTaskCard";
 import JobTimeline, { TimelineEvent } from "../../../components/JobTimeline";
 import type { StatusType } from "../../../components/StatusBadge";
 import StatusBadge from "../../../components/StatusBadge";
+import { useI18n } from "../../../i18n/i18n-ctx";
 import { openDirections } from "../../../utils/directions";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
@@ -36,14 +37,18 @@ type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 const ODOMETER_TASK_NAME = "Recorded odometer reading";
 
 // Completing a job requires exactly one after-photo per side of the bus —
-// these are the 4 fixed slots shown in the "After Photos" section.
+// these are the 4 fixed slots shown in the "After Photos" section. Built
+// from translations (like buildPriorityOptions in form.tsx) since the
+// labels need to switch with the selected language.
 type AfterPhotoSlot = "front" | "back" | "left" | "right";
-const AFTER_PHOTO_SLOTS: { key: AfterPhotoSlot; label: string }[] = [
-  { key: "front", label: "Front" },
-  { key: "back", label: "Back" },
-  { key: "left", label: "Left Side" },
-  { key: "right", label: "Right Side" },
-];
+function buildAfterPhotoSlots(t: (key: string) => string): { key: AfterPhotoSlot; label: string }[] {
+  return [
+    { key: "front", label: t("jobDetail.photoSlotFront") },
+    { key: "back", label: t("jobDetail.photoSlotBack") },
+    { key: "left", label: t("jobDetail.photoSlotLeft") },
+    { key: "right", label: t("jobDetail.photoSlotRight") },
+  ];
+}
 
 type JobListItem = {
   job_id: number;
@@ -166,6 +171,8 @@ export default function TechnicianJobDetailsScreen() {
   }>();
   const canEdit = mode !== "view";
   const jobId = useMemo(() => Number(id), [id]);
+  const { t } = useI18n();
+  const afterPhotoSlotDefs = useMemo(() => buildAfterPhotoSlots(t), [t]);
 
   const scrollRef = useRef<ScrollView>(null);
   const odometerInputRef = useRef<TextInput>(null);
@@ -234,13 +241,13 @@ export default function TechnicianJobDetailsScreen() {
 
   const handleOdometerRequired = () => {
     Alert.alert(
-      "Odometer required",
-      "Please enter the initial odometer reading before adding completed tasks, uploading after photos, or completing the job.",
+      t("jobDetail.odometerRequiredTitle"),
+      t("jobDetail.odometerRequiredFullMessage"),
     );
     scrollToOdometerAndFocus();
   };
 
-  const handleApiError = (e: unknown, fallbackTitle = "Error") => {
+  const handleApiError = (e: unknown, fallbackTitle = t("common.error")) => {
     const err = e as { code?: string; message?: string };
     if (err?.code === "ODOMETER_REQUIRED") {
       handleOdometerRequired();
@@ -248,12 +255,12 @@ export default function TechnicianJobDetailsScreen() {
     }
     if (err?.code === "JOB_NOT_ACCEPTED") {
       Alert.alert(
-        "Job not accepted",
-        "Please accept/claim the job before updating it.",
+        t("jobDetail.jobNotAcceptedTitle"),
+        t("jobDetail.jobNotAcceptedMessage"),
       );
       return;
     }
-    Alert.alert(fallbackTitle, err?.message ?? "Unknown error");
+    Alert.alert(fallbackTitle, err?.message ?? t("common.unknownError"));
   };
 
   const openViewer = (index: number) => {
@@ -310,7 +317,7 @@ export default function TechnicianJobDetailsScreen() {
       const rows = (await api.parts({ limit: 200 })) as PartRow[];
       setParts(Array.isArray(rows) ? rows : []);
     } catch (e: unknown) {
-      handleApiError(e, "Failed to load parts");
+      handleApiError(e, t("jobDetail.failedToLoadParts"));
       setParts([]);
     } finally {
       setLoadingParts(false);
@@ -344,7 +351,7 @@ export default function TechnicianJobDetailsScreen() {
       setAfterPhotoUrls([]);
       loadAfterPhotos(jobId);
     } catch (e: unknown) {
-      handleApiError(e, "Failed to load job");
+      handleApiError(e, t("jobDetail.failedToLoadJob"));
     } finally {
       setLoading(false);
     }
@@ -364,9 +371,9 @@ export default function TechnicianJobDetailsScreen() {
       // rather than just patching jobSummary locally, so that task shows up
       // immediately instead of only after leaving and re-entering the page.
       await fetchAll();
-      Alert.alert("Saved", "Initial odometer reading has been saved.");
+      Alert.alert(t("common.saved"), t("jobDetail.odometerSavedMessage"));
     } catch (e: unknown) {
-      handleApiError(e, "Failed to save odometer");
+      handleApiError(e, t("jobDetail.failedToSaveOdometer"));
     } finally {
       setSavingOdometer(false);
     }
@@ -377,8 +384,8 @@ export default function TechnicianJobDetailsScreen() {
     const raw = odometerInput.trim();
     if (!raw) {
       Alert.alert(
-        "Odometer required",
-        "Please enter the initial odometer reading.",
+        t("jobDetail.odometerRequiredTitle"),
+        t("jobDetail.odometerRequiredMessage"),
       );
       scrollToOdometerAndFocus();
       return;
@@ -387,8 +394,8 @@ export default function TechnicianJobDetailsScreen() {
     // and negative signs that `Number()` would otherwise happily parse.
     if (!/^\d+$/.test(raw)) {
       Alert.alert(
-        "Invalid odometer",
-        "Please enter numbers only, with no letters, symbols, or decimal points (e.g., 123456).",
+        t("jobDetail.invalidOdometerTitle"),
+        t("jobDetail.invalidOdometerDigitsMessage"),
       );
       scrollToOdometerAndFocus();
       return;
@@ -396,18 +403,18 @@ export default function TechnicianJobDetailsScreen() {
     const n = Number(raw);
     if (!Number.isFinite(n) || !Number.isInteger(n) || n > MAX_ODOMETER) {
       Alert.alert(
-        "Invalid odometer",
-        `Please enter a realistic reading (up to ${MAX_ODOMETER.toLocaleString()}).`,
+        t("jobDetail.invalidOdometerTitle"),
+        t("jobDetail.invalidOdometerRangeMessage", { max: MAX_ODOMETER.toLocaleString() }),
       );
       scrollToOdometerAndFocus();
       return;
     }
     Alert.alert(
-      "Save Odometer",
-      `Are you sure you want to save ${n.toLocaleString()} as the initial odometer reading? This cannot be changed later.`,
+      t("jobDetail.saveOdometer"),
+      t("jobDetail.saveOdometerConfirmMessage", { value: n.toLocaleString() }),
       [
-        { text: "Cancel", style: "cancel" },
-        { text: "Save", style: "default", onPress: () => doSaveOdometer(n) },
+        { text: t("common.cancel"), style: "cancel" },
+        { text: t("common.save"), style: "default", onPress: () => doSaveOdometer(n) },
       ],
     );
   };
@@ -494,7 +501,7 @@ export default function TechnicianJobDetailsScreen() {
         } catch (e: unknown) {
           // The task itself was created fine — a photo upload hiccup
           // shouldn't look like the whole action failed.
-          handleApiError(e, "Task added, but failed to attach photos");
+          handleApiError(e, t("jobDetail.taskAddedButPhotosFailed"));
           await fetchAll();
           return;
         }
@@ -508,7 +515,7 @@ export default function TechnicianJobDetailsScreen() {
       setNewTaskPhotos([]);
       await fetchAll();
     } catch (e: unknown) {
-      handleApiError(e, "Failed to add task");
+      handleApiError(e, t("jobDetail.failedToAddTask"));
     } finally {
       setSavingTask(false);
     }
@@ -523,21 +530,21 @@ export default function TechnicianJobDetailsScreen() {
     const issueText = issue.trim();
     if (!issueText) {
       Alert.alert(
-        "Task issue required",
-        "Please enter the task issue/problem.",
+        t("jobDetail.taskIssueRequiredTitle"),
+        t("jobDetail.taskIssueRequiredMessage"),
       );
       return;
     }
     const photoNote = newTaskPhotos.length
-      ? ` with ${newTaskPhotos.length} photo${newTaskPhotos.length === 1 ? "" : "s"}`
+      ? t("jobDetail.photoNote", { count: newTaskPhotos.length })
       : "";
     Alert.alert(
-      "Add Task",
-      `Add "${issueText}" as a completed task${photoNote}? Once added, it cannot be edited.`,
+      t("jobDetail.addTaskButton"),
+      t("jobDetail.addTaskConfirmMessage", { issue: issueText, photoNote }),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("common.cancel"), style: "cancel" },
         {
-          text: "Add Task",
+          text: t("jobDetail.addTaskButton"),
           style: "default",
           onPress: doCreateTask,
         },
@@ -567,13 +574,13 @@ export default function TechnicianJobDetailsScreen() {
   );
 
   const afterMedia = useMemo(
-    () => AFTER_PHOTO_SLOTS.flatMap((s) => afterPhotoSlots[s.key]),
-    [afterPhotoSlots],
+    () => afterPhotoSlotDefs.flatMap((s) => afterPhotoSlots[s.key]),
+    [afterPhotoSlotDefs, afterPhotoSlots],
   );
 
   const missingAfterPhotoSlots = useMemo(
-    () => AFTER_PHOTO_SLOTS.filter((s) => afterPhotoSlots[s.key].length === 0),
-    [afterPhotoSlots],
+    () => afterPhotoSlotDefs.filter((s) => afterPhotoSlots[s.key].length === 0),
+    [afterPhotoSlotDefs, afterPhotoSlots],
   );
 
   const timelineEvents = useMemo<TimelineEvent[]>(() => {
@@ -585,7 +592,7 @@ export default function TechnicianJobDetailsScreen() {
         icon: "file-alt",
         color: "#2563EB",
         colorLight: "#EFF6FF",
-        title: "Report submitted",
+        title: t("jobDetail.eventReportSubmitted"),
         by: report.reporter_name,
         at: report.report_uploaded_at,
       });
@@ -597,7 +604,7 @@ export default function TechnicianJobDetailsScreen() {
         icon: "briefcase",
         color: "#7C3AED",
         colorLight: "#F5F3FF",
-        title: "Job created",
+        title: t("jobDetail.eventJobCreated"),
         by: report?.report_review_by,
         at: jobSummary.job_created_at,
       });
@@ -609,7 +616,7 @@ export default function TechnicianJobDetailsScreen() {
         icon: "hand-paper",
         color: "#EA580C",
         colorLight: "#FFF7ED",
-        title: "Job accepted",
+        title: t("jobDetail.eventJobAccepted"),
         by: jobSummary.technician_name,
         at: jobSummary.job_accepted_at,
       });
@@ -622,7 +629,7 @@ export default function TechnicianJobDetailsScreen() {
         icon: "tachometer-alt",
         color: "#0EA5E9",
         colorLight: "#F0F9FF",
-        title: "Initial odometer recorded",
+        title: t("jobDetail.eventOdometerRecorded"),
         subtitle: hasOdometer
           ? `${jobSummary?.job_odometer?.toLocaleString()} km`
           : undefined,
@@ -652,14 +659,14 @@ export default function TechnicianJobDetailsScreen() {
         icon: "flag-checkered",
         color: "#111827",
         colorLight: "#F3F4F6",
-        title: "Job completed",
+        title: t("jobDetail.eventJobCompleted"),
         by: jobSummary.technician_name,
         at: jobSummary.job_completed_at,
       });
     }
 
     return events;
-  }, [report, jobSummary, tasks, visibleTasks, hasOdometer]);
+  }, [report, jobSummary, tasks, visibleTasks, hasOdometer, t]);
 
   const uploadAfterPhotos = async (
     jId: number,
@@ -695,14 +702,14 @@ export default function TechnicianJobDetailsScreen() {
       try {
         await uploadAfterPhotos(jobId, afterMedia);
       } catch (e: unknown) {
-        handleApiError(e, "Failed to upload after photos");
+        handleApiError(e, t("jobDetail.failedToUploadAfterPhotos"));
         return;
       }
 
       try {
         await api.updateJobStatus(jobId, { to_status: "closed" });
       } catch (e: unknown) {
-        handleApiError(e, "Failed to close job");
+        handleApiError(e, t("jobDetail.failedToCloseJob"));
         return;
       }
 
@@ -745,31 +752,33 @@ export default function TechnicianJobDetailsScreen() {
     }
     if (completedTasks.length === 0) {
       Alert.alert(
-        "Add a completed task first",
-        "Please add at least 1 completed task before completing the job.",
+        t("jobDetail.completedTaskFirstTitle"),
+        t("jobDetail.completedTaskFirstMessage"),
       );
       return;
     }
     if (pendingTasks.length > 0) {
       Alert.alert(
-        "Tasks still pending",
-        `${pendingTasks.length} task${pendingTasks.length === 1 ? " is" : "s are"} not marked done yet. Finish or remove ${pendingTasks.length === 1 ? "it" : "them"} before completing the job.`,
+        t("jobDetail.tasksPendingTitle"),
+        t("jobDetail.tasksPendingMessage", { count: pendingTasks.length }),
       );
       return;
     }
     if (missingAfterPhotoSlots.length > 0) {
       Alert.alert(
-        "After photos required",
-        `Please add a photo of the ${missingAfterPhotoSlots.map((slot) => slot.label).join(", ")} before completing the job.`,
+        t("jobDetail.afterPhotosRequiredTitle"),
+        t("jobDetail.afterPhotosRequiredMessage", {
+          list: missingAfterPhotoSlots.map((slot) => slot.label).join(", "),
+        }),
       );
       return;
     }
     Alert.alert(
-      "Complete Job",
-      "Are you sure you want to mark this job as complete? This cannot be undone.",
+      t("jobDetail.completeJob"),
+      t("jobDetail.completeJobConfirmMessage"),
       [
-        { text: "Cancel", style: "cancel" },
-        { text: "Complete Job", style: "default", onPress: doCompleteJob },
+        { text: t("common.cancel"), style: "cancel" },
+        { text: t("jobDetail.completeJob"), style: "default", onPress: doCompleteJob },
       ],
     );
   };
@@ -900,14 +909,14 @@ export default function TechnicianJobDetailsScreen() {
                   />
                 </View>
                 <Text style={[s.cardTitle, jobLocked && { color: "#DC2626" }]}>
-                  Initial Odometer
+                  {t("jobDetail.odometerTitle")}
                 </Text>
               </View>
               <View style={s.cardDivider} />
 
               {hasOdometer ? (
                 <Field
-                  label="Recorded Reading"
+                  label={t("jobDetail.odometerRecordedReading")}
                   value={
                     jobSummary?.job_odometer != null
                       ? `${jobSummary.job_odometer.toLocaleString()} km`
@@ -917,15 +926,14 @@ export default function TechnicianJobDetailsScreen() {
               ) : (
                 <>
                   <Text style={s.mutedText}>
-                    Upon arrival, please enter the current odometer reading of
-                    bus to unlock job updates.
+                    {t("jobDetail.odometerInstructions")}
                   </Text>
                   <View style={[s.inputWrap, { marginTop: 12 }]}>
                     <TextInput
                       ref={odometerInputRef}
                       value={odometerInput}
                       onChangeText={setOdometerInput}
-                      placeholder="e.g. 123,456 km"
+                      placeholder={t("jobDetail.odometerPlaceholder")}
                       placeholderTextColor="#9CA3AF"
                       style={s.input}
                       keyboardType="number-pad"
@@ -944,7 +952,7 @@ export default function TechnicianJobDetailsScreen() {
                     disabled={savingOdometer}
                   >
                     <Text style={s.btnText}>
-                      {savingOdometer ? "Saving…" : "Save Odometer"}
+                      {savingOdometer ? t("jobDetail.savingOdometer") : t("jobDetail.saveOdometer")}
                     </Text>
                   </Pressable>
                 </>
@@ -953,9 +961,9 @@ export default function TechnicianJobDetailsScreen() {
           )}
 
           {/* ── Initial Report ── */}
-          <SectionCard title="Initial Report" icon="file-alt">
+          <SectionCard title={t("jobDetail.sectionInitialReport")} icon="file-alt">
             <Field
-              label="Report ID"
+              label={t("jobDetail.fieldReportId")}
               value={
                 jobSummary?.report_id != null
                   ? `#${jobSummary.report_id}`
@@ -963,22 +971,22 @@ export default function TechnicianJobDetailsScreen() {
               }
             />
             <Field
-              label="Reported By"
+              label={t("jobDetail.fieldReportedBy")}
               value={jobSummary?.reporter_name ?? report?.reporter_name}
             />
             <Field
-              label="Priority"
+              label={t("jobDetail.fieldPriority")}
               value={jobSummary?.report_priority ?? report?.report_priority}
             />
             <Field
-              label="Description"
+              label={t("jobDetail.fieldDescription")}
               value={report?.report_desc ?? jobSummary?.job_desc}
             />
 
             {/* Report photos */}
             <View style={s.photoSection}>
               <View style={s.photoHeaderRow}>
-                <Text style={s.photoSectionLabel}>PHOTOS</Text>
+                <Text style={s.photoSectionLabel}>{t("jobDetail.photos")}</Text>
                 <View style={s.countPill}>
                   <Text style={s.countPillText}>
                     {reportPhotoMedia.length} photo
@@ -987,9 +995,9 @@ export default function TechnicianJobDetailsScreen() {
                 </View>
               </View>
               {loadingReportPhotos ? (
-                <Text style={s.mutedText}>Loading photos…</Text>
+                <Text style={s.mutedText}>{t("jobDetail.loadingPhotos")}</Text>
               ) : reportPhotoUrls.length === 0 ? (
-                <Text style={s.mutedText}>No photos attached.</Text>
+                <Text style={s.mutedText}>{t("jobDetail.noPhotosAttached")}</Text>
               ) : (
                 <ScrollView
                   horizontal
@@ -1018,9 +1026,9 @@ export default function TechnicianJobDetailsScreen() {
           </SectionCard>
 
           {/* ── Tasks ── */}
-          <SectionCard title="Tasks" icon="tasks">
+          <SectionCard title={t("jobDetail.sectionTasks")} icon="tasks">
             {visibleTasks.length === 0 ? (
-              <Text style={s.mutedText}>No tasks added yet.</Text>
+              <Text style={s.mutedText}>{t("jobDetail.noTasksAddedYet")}</Text>
             ) : (
               visibleTasks.map((t) => (
                 <JobTaskCard
@@ -1036,17 +1044,17 @@ export default function TechnicianJobDetailsScreen() {
 
           {/* ── Add Task ── */}
           {canEdit && (
-            <SectionCard title="Add Task" icon="plus-circle">
+            <SectionCard title={t("jobDetail.sectionAddTask")} icon="plus-circle">
               <Text style={s.helperText}>
-                Tasks are added as complete and cannot be edited afterwards — make sure the issue and solution are correct before submitting.
+                {t("jobDetail.addTaskLockedHelper")}
               </Text>
 
-              <Text style={s.inputLabel}>Task Issue</Text>
+              <Text style={s.inputLabel}>{t("jobDetail.taskIssue")}</Text>
               <View style={s.inputWrap}>
                 <TextInput
                   value={issue}
                   onChangeText={setIssue}
-                  placeholder="e.g. Aircon not cooling"
+                  placeholder={t("jobDetail.taskIssuePlaceholder")}
                   placeholderTextColor="#9CA3AF"
                   style={s.input}
                   editable={!jobLocked}
@@ -1055,13 +1063,13 @@ export default function TechnicianJobDetailsScreen() {
               </View>
 
               <Text style={[s.inputLabel, { marginTop: 12 }]}>
-                Task Solution
+                {t("jobDetail.taskSolution")}
               </Text>
               <View style={s.inputWrap}>
                 <TextInput
                   value={solution}
                   onChangeText={setSolution}
-                  placeholder="What did you do? (optional)"
+                  placeholder={t("jobDetail.taskSolutionPlaceholder")}
                   placeholderTextColor="#9CA3AF"
                   style={s.textarea}
                   multiline
@@ -1258,27 +1266,27 @@ export default function TechnicianJobDetailsScreen() {
                 disabled={jobLocked || savingTask}
               >
                 <Text style={s.btnText}>
-                  {savingTask ? "Saving…" : "Add Task"}
+                  {savingTask ? t("common.saving") : t("jobDetail.addTaskButton")}
                 </Text>
               </Pressable>
 
               {jobLocked && (
                 <Text style={s.helperText}>
-                  Save the initial odometer reading to unlock job updates.
+                  {t("jobDetail.odometerLockedHelper")}
                 </Text>
               )}
             </SectionCard>
           )}
 
           {/* ── Job Progress Timeline ── */}
-          <SectionCard title="Job Progress" icon="stream">
+          <SectionCard title={t("jobDetail.sectionJobProgress")} icon="stream">
             <JobTimeline events={timelineEvents} />
           </SectionCard>
 
           {/* ── After Photos (already uploaded) ── */}
-          <SectionCard title="After Photos" icon="camera">
+          <SectionCard title={t("jobDetail.sectionAfterPhotos")} icon="camera">
             <View style={s.photoHeaderRow}>
-              <Text style={s.photoSectionLabel}>UPLOADED</Text>
+              <Text style={s.photoSectionLabel}>{t("jobDetail.uploaded")}</Text>
               <View style={s.countPill}>
                 <Text style={s.countPillText}>
                   {afterPhotoUrls.length} photo
@@ -1287,9 +1295,9 @@ export default function TechnicianJobDetailsScreen() {
               </View>
             </View>
             {loadingAfterPhotos ? (
-              <Text style={s.mutedText}>Loading photos…</Text>
+              <Text style={s.mutedText}>{t("jobDetail.loadingPhotos")}</Text>
             ) : afterPhotoUrls.length === 0 ? (
-              <Text style={s.mutedText}>No after photos uploaded yet.</Text>
+              <Text style={s.mutedText}>{t("jobDetail.noAfterPhotosYet")}</Text>
             ) : (
               <ScrollView
                 horizontal
@@ -1317,23 +1325,23 @@ export default function TechnicianJobDetailsScreen() {
             (jobLocked ? (
               <Pressable onPress={handleOdometerRequired}>
                 <AfterPhotoSlots
-                  slots={AFTER_PHOTO_SLOTS}
+                  slots={afterPhotoSlotDefs}
                   value={afterPhotoSlots}
                   onChange={(key, next) => onAfterPhotoSlotChange(key as AfterPhotoSlot, next)}
                   readOnly
                   onPressReadOnly={handleOdometerRequired}
                 />
                 <Text style={[s.helperText, { marginTop: 8 }]}>
-                  Save the initial odometer reading to upload after photos.
+                  {t("jobDetail.odometerRequiredForPhotos")}
                 </Text>
               </Pressable>
             ) : (
               <>
                 <Text style={[s.helperText, { marginBottom: 4 }]}>
-                  Add one photo of each side of the bus to complete the job.
+                  {t("jobDetail.addPhotosHint")}
                 </Text>
                 <AfterPhotoSlots
-                  slots={AFTER_PHOTO_SLOTS}
+                  slots={afterPhotoSlotDefs}
                   value={afterPhotoSlots}
                   onChange={(key, next) => onAfterPhotoSlotChange(key as AfterPhotoSlot, next)}
                 />
@@ -1369,25 +1377,26 @@ export default function TechnicianJobDetailsScreen() {
                   style={{ marginRight: 8 }}
                 />
                 <Text style={s.btnText}>
-                  {completing ? "Completing…" : "Complete Job"}
+                  {completing ? t("jobDetail.completingJob") : t("jobDetail.completeJob")}
                 </Text>
               </Pressable>
               {jobLocked ? (
                 <Text style={s.helperText}>
-                  Save the initial odometer reading to complete the job.
+                  {t("jobDetail.odometerLockedHelper")}
                 </Text>
               ) : completedTasks.length === 0 ? (
                 <Text style={s.helperText}>
-                  Add at least 1 completed task to complete the job.
+                  {t("jobDetail.completedTaskFirstMessage")}
                 </Text>
               ) : pendingTasks.length > 0 ? (
                 <Text style={s.helperText}>
-                  {pendingTasks.length} task{pendingTasks.length === 1 ? "" : "s"} still not done — finish or remove{" "}
-                  {pendingTasks.length === 1 ? "it" : "them"} to complete the job.
+                  {t("jobDetail.tasksPendingMessage", { count: pendingTasks.length })}
                 </Text>
               ) : missingAfterPhotoSlots.length > 0 ? (
                 <Text style={s.helperText}>
-                  Add a photo of the {missingAfterPhotoSlots.map((slot) => slot.label).join(", ")} to complete the job.
+                  {t("jobDetail.missingAfterPhotoHelper", {
+                    list: missingAfterPhotoSlots.map((slot) => slot.label).join(", "),
+                  })}
                 </Text>
               ) : null}
             </View>

@@ -1,12 +1,13 @@
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { useSession } from "../ctx";
+import { useI18n } from "../i18n/i18n-ctx";
 
-function getGreeting() {
+function getGreetingKey() {
   const hour = new Date().getHours();
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  return "Good evening";
+  if (hour < 12) return "greeting.morning";
+  if (hour < 17) return "greeting.afternoon";
+  return "greeting.evening";
 }
 
 function getFirstName(name: string) {
@@ -21,11 +22,12 @@ type Props = {
 
 export default function HomeHeader({ roleLabel, roleColor, roleColorLight }: Props) {
   const { dbUser } = useSession();
+  const { t } = useI18n();
   const firstName = getFirstName(dbUser?.user_name ?? "");
 
   return (
     <View style={styles.header}>
-      <Text style={styles.greeting}>{getGreeting()},</Text>
+      <Text style={styles.greeting}>{t(getGreetingKey())},</Text>
       <Text style={styles.name}>{firstName}</Text>
 
       <View style={[styles.rolePill, { backgroundColor: roleColorLight }]}>

@@ -11,6 +11,7 @@ import JobDetailsModal from "../components/JobDetailsModal";
 import ReportCard from "../components/ReportCard";
 import SegmentedTabs from "../components/SegmentedTabs";
 import { useSession } from "../ctx";
+import { useI18n } from "../i18n/i18n-ctx";
 import { useProject } from "../project-ctx";
 import { Report } from "../types/report";
 
@@ -74,7 +75,7 @@ function findJobForReport(jobs: JobSummary[], reportId: number) {
   return jobs.find((j) => Number(j?.report_id) === Number(reportId)) ?? null;
 }
 
-function mapApiRowToReport(r: any, job?: JobSummary | null): Report {
+function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: string) => string): Report {
   const id = Number(r?.report_id ?? job?.report_id);
   const safeId = Number.isFinite(id) ? id : 0;
 
@@ -83,7 +84,7 @@ function mapApiRowToReport(r: any, job?: JobSummary | null): Report {
 
   const reportedBy =
     reporterName || reporterEmail
-      ? `${reporterName ?? "Unknown"} (${reporterEmail ?? "—"})`
+      ? `${reporterName ?? t("common.unknown")} (${reporterEmail ?? "—"})`
       : undefined;
 
   const audit = r?.report_review_action
@@ -155,7 +156,33 @@ function getBadgeVariant(value: string): BadgeVariant {
   return "outline";
 }
 
+const STATUS_LABEL_KEYS: Record<string, string> = {
+  problem: "statusBadge.problem",
+  repair: "statusBadge.repair",
+  accident: "statusBadge.accident",
+  low: "statusBadge.low",
+  medium: "statusBadge.medium",
+  high: "statusBadge.high",
+  critical: "statusBadge.critical",
+  pending: "statusBadge.pending",
+  open: "statusBadge.open",
+  closed: "statusBadge.closed",
+  approved: "statusBadge.approved",
+  declined: "statusBadge.declined",
+  assigned: "statusBadge.assigned",
+  in_progress: "statusBadge.inProgress",
+  "in progress": "statusBadge.inProgress",
+  completed: "statusBadge.completed",
+  done: "statusBadge.done",
+};
+
+function statusLabel(value: string, t: (key: string) => string): string {
+  const key = STATUS_LABEL_KEYS[toLower(value)];
+  return key ? t(key) : value.replace(/_/g, " ");
+}
+
 function Badge({ label, neutral }: { label: string; neutral?: boolean }) {
+  const { t } = useI18n();
   const variant = neutral ? "outline" : getBadgeVariant(label);
   const bg =
     variant === "filled-red" ? "#EF4444"
@@ -167,20 +194,31 @@ function Badge({ label, neutral }: { label: string; neutral?: boolean }) {
 
   return (
     <View style={[tblStyles.badge, { backgroundColor: bg, borderColor: border }]}>
-      <Text style={[tblStyles.badgeText, { color: textCol }]}>{label.replace(/_/g, " ")}</Text>
+      <Text style={[tblStyles.badgeText, { color: textCol }]}>{statusLabel(label, t)}</Text>
     </View>
   );
 }
 
 function JobsTable({ jobs }: { jobs: JobSummary[] }) {
-  const cols = ["Job ID", "Vehicle", "Category", "Priority", "Status", "Submitted", "Completion", "Technician", "Reporter"];
+  const { t } = useI18n();
+  const cols = [
+    t("reports.colJobId"),
+    t("reports.colVehicle"),
+    t("reports.colCategory"),
+    t("reports.colPriority"),
+    t("reports.colStatus"),
+    t("reports.colSubmitted"),
+    t("reports.colCompletion"),
+    t("reports.colTechnician"),
+    t("reports.colReporter"),
+  ];
   const colWidths = [64, 80, 100, 90, 120, 100, 100, 130, 130];
 
   return (
     <View style={kpiStyles.section}>
-      <Text style={kpiStyles.sectionTitle}>All Jobs</Text>
+      <Text style={kpiStyles.sectionTitle}>{t("reports.allJobs")}</Text>
       {jobs.length === 0 ? (
-        <Text style={kpiStyles.empty}>No jobs yet.</Text>
+        <Text style={kpiStyles.empty}>{t("reports.noJobsYet")}</Text>
       ) : (
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View>
@@ -262,6 +300,7 @@ function KpiTab({
   reports: Report[];
   jobs: JobSummary[];
 }) {
+  const { t } = useI18n();
   const totalJobs = jobs.length;
   const pendingCount = reports.filter((r) => r.status === "pending").length;
   const inProgressCount = jobs.filter((j) =>
@@ -293,20 +332,20 @@ function KpiTab({
     <View style={kpiStyles.page}>
       {/* ── Row 1: stat cards ── */}
       <View style={kpiStyles.cardRow}>
-        <KpiCard icon="chart-bar" label="Total Jobs" value={String(totalJobs)} sub="All time" />
-        <KpiCard icon="clock" label="Pending Approval" value={String(pendingCount)} sub="Requires review" color="#D97706" />
+        <KpiCard icon="chart-bar" label={t("reports.totalJobs")} value={String(totalJobs)} sub={t("reports.allTime")} />
+        <KpiCard icon="clock" label={t("reports.pendingApproval")} value={String(pendingCount)} sub={t("reports.requiresReview")} color="#D97706" />
       </View>
       <View style={kpiStyles.cardRow}>
-        <KpiCard icon="chart-line" label="In Progress" value={String(inProgressCount)} sub="Active jobs" color="#2563EB" />
-        <KpiCard icon="calendar-check" label="Avg. Completion" value={avgLabel} sub="Per job" color="#059669" />
+        <KpiCard icon="chart-line" label={t("reports.inProgress")} value={String(inProgressCount)} sub={t("reports.inProgressActiveJobs")} color="#2563EB" />
+        <KpiCard icon="calendar-check" label={t("reports.avgCompletion")} value={avgLabel} sub={t("reports.perJob")} color="#059669" />
       </View>
 
       {/* ── Completion Rate ── */}
       <View style={kpiStyles.section}>
-        <Text style={kpiStyles.sectionTitle}>Completion Rate</Text>
+        <Text style={kpiStyles.sectionTitle}>{t("reports.completionRate")}</Text>
 
         <View style={kpiStyles.progressRow}>
-          <Text style={kpiStyles.progressLabel}>Overall Progress</Text>
+          <Text style={kpiStyles.progressLabel}>{t("reports.overallProgress")}</Text>
           <Text style={kpiStyles.progressPct}>{completionPct}</Text>
         </View>
         <View style={kpiStyles.progressTrack}>
@@ -316,15 +355,15 @@ function KpiTab({
 
         <View style={kpiStyles.summaryRow}>
           <View style={kpiStyles.summaryCard}>
-            <Text style={kpiStyles.summaryLabel}>Completed</Text>
+            <Text style={kpiStyles.summaryLabel}>{t("reports.completed")}</Text>
             <Text style={kpiStyles.summaryValue}>{completedCount}</Text>
           </View>
           <View style={kpiStyles.summaryCard}>
-            <Text style={kpiStyles.summaryLabel}>In Progress</Text>
+            <Text style={kpiStyles.summaryLabel}>{t("reports.inProgress")}</Text>
             <Text style={kpiStyles.summaryValue}>{inProgressCount}</Text>
           </View>
           <View style={kpiStyles.summaryCard}>
-            <Text style={kpiStyles.summaryLabel}>Open Cases</Text>
+            <Text style={kpiStyles.summaryLabel}>{t("reports.openCases")}</Text>
             <Text style={kpiStyles.summaryValue}>{openCasesCount}</Text>
           </View>
         </View>
@@ -332,9 +371,9 @@ function KpiTab({
 
       {/* ── Report Breakdown ── */}
       <View style={kpiStyles.section}>
-        <Text style={kpiStyles.sectionTitle}>Reports by Type</Text>
+        <Text style={kpiStyles.sectionTitle}>{t("reports.reportsByType")}</Text>
         {totalReports === 0 ? (
-          <Text style={kpiStyles.empty}>No reports yet.</Text>
+          <Text style={kpiStyles.empty}>{t("reports.noReportsYet")}</Text>
         ) : (
           Object.entries(byType).map(([type, count]) => {
             const pct = count / totalReports;
@@ -342,7 +381,7 @@ function KpiTab({
               <View key={type} style={{ marginBottom: 14 }}>
                 <View style={kpiStyles.barLabelRow}>
                   <Text style={kpiStyles.barLabel}>
-                    {type.charAt(0).toUpperCase() + type.slice(1)}
+                    {statusLabel(type, t)}
                   </Text>
                   <Text style={kpiStyles.barCount}>{count}</Text>
                 </View>
@@ -358,11 +397,11 @@ function KpiTab({
 
       {/* ── Report Status Overview ── */}
       <View style={kpiStyles.section}>
-        <Text style={kpiStyles.sectionTitle}>Report Status Overview</Text>
+        <Text style={kpiStyles.sectionTitle}>{t("reports.reportStatusOverview")}</Text>
         {[
-          { label: "Pending Approval", count: pendingCount, color: "#F59E0B" },
-          { label: "Open / In Progress", count: openCasesCount, color: "#3B82F6" },
-          { label: "Closed", count: reports.filter((r) => r.status === "closed").length, color: "#10B981" },
+          { label: t("reports.pendingApproval"), count: pendingCount, color: "#F59E0B" },
+          { label: t("reports.openInProgress"), count: openCasesCount, color: "#3B82F6" },
+          { label: t("statusBadge.closed"), count: reports.filter((r) => r.status === "closed").length, color: "#10B981" },
         ].map(({ label, count, color }) => (
           <View key={label} style={kpiStyles.statusRow}>
             <View style={[kpiStyles.dot, { backgroundColor: color }]} />
@@ -384,8 +423,9 @@ export default function RMManagerScreen() {
   const router = useRouter();
   const { dbUser } = useSession() as any;
   const { projectId } = useProject();
+  const { t } = useI18n();
 
-  const MANAGER_NAME = dbUser?.user_name ?? "RM Manager";
+  const MANAGER_NAME = dbUser?.user_name ?? t("adminHome.rmManagerTitle");
 
   const [tab, setTab] = useState<Tab>("pending");
   const [allReports, setAllReports] = useState<Report[]>([]);
@@ -424,20 +464,20 @@ export default function RMManagerScreen() {
         ? reportRows.map((r: any) => {
             const reportId = Number(r?.report_id);
             const job = findJobForReport(jobs, reportId);
-            return mapApiRowToReport(r, job);
+            return mapApiRowToReport(r, job, t);
           })
         : [];
 
       setAllReports(mapped.filter((r) => r.id > 0));
     } catch (e: any) {
       console.log(e);
-      Alert.alert("Couldn't load reports", e?.message ?? "Unknown error");
+      Alert.alert(t("reports.couldntLoadReports"), e?.message ?? t("common.unknownError"));
       setAllReports([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [projectId]);
+  }, [projectId, t]);
 
   useFocusEffect(
     useCallback(() => {
@@ -517,7 +557,7 @@ export default function RMManagerScreen() {
     const reportId = approveTarget.id;
 
     if (!Number.isFinite(reportId) || reportId <= 0) {
-      Alert.alert("Approve failed", "Invalid report id");
+      Alert.alert(t("reports.approveFailedTitle"), t("reports.invalidReportId"));
       setApproveVisible(false);
       setApproveTarget(null);
       return;
@@ -551,7 +591,7 @@ export default function RMManagerScreen() {
 
       await loadAllReports({ refreshing: true });
     } catch (e: any) {
-      Alert.alert("Approve failed", e?.message ?? "Unknown error");
+      Alert.alert(t("reports.approveFailedTitle"), e?.message ?? t("common.unknownError"));
       await loadAllReports({ refreshing: true });
     }
   };
@@ -567,7 +607,7 @@ export default function RMManagerScreen() {
     const reportId = declineTarget.id;
 
     if (!Number.isFinite(reportId) || reportId <= 0) {
-      Alert.alert("Decline failed", "Invalid report id");
+      Alert.alert(t("reports.declineFailedTitle"), t("reports.invalidReportId"));
       setDeclineVisible(false);
       setDeclineTarget(null);
       return;
@@ -604,7 +644,7 @@ export default function RMManagerScreen() {
 
       await loadAllReports({ refreshing: true });
     } catch (e: any) {
-      Alert.alert("Decline failed", e?.message ?? "Unknown error");
+      Alert.alert(t("reports.declineFailedTitle"), e?.message ?? t("common.unknownError"));
       await loadAllReports({ refreshing: true });
     }
   };
@@ -623,7 +663,7 @@ export default function RMManagerScreen() {
         >
           <FontAwesome5 name="folder" size={12} color="#374151" />
           <Text style={styles.projectFilterChipText}>
-            {projectId ? `Project: ${projectId}` : "All Projects"}
+            {projectId ? `${t("reports.project")}: ${projectId}` : t("reports.allProjects")}
           </Text>
           <FontAwesome5 name="chevron-down" size={10} color="#9CA3AF" />
         </Pressable>
@@ -632,10 +672,10 @@ export default function RMManagerScreen() {
           value={tab}
           onChange={setTab}
           tabs={[
-            { key: "pending", label: `Pending (${counts.pending})` },
-            { key: "open", label: `Open (${counts.open})` },
-            { key: "closed", label: `Closed (${counts.closed})` },
-            { key: "kpi", label: "KPIs", icon: "chart-bar" },
+            { key: "pending", label: `${t("reports.tabPending")} (${counts.pending})` },
+            { key: "open", label: `${t("reports.tabOpen")} (${counts.open})` },
+            { key: "closed", label: `${t("reports.tabClosed")} (${counts.closed})` },
+            { key: "kpi", label: t("reports.tabKpi"), icon: "chart-bar" },
           ]}
         />
 
@@ -643,11 +683,11 @@ export default function RMManagerScreen() {
           <KpiTab reports={allReports} jobs={rawJobs} />
         ) : loading ? (
           <View style={{ padding: 16 }}>
-            <Text style={{ color: "#666" }}>Loading reports…</Text>
+            <Text style={{ color: "#666" }}>{t("reports.loading")}</Text>
           </View>
         ) : reports.length === 0 ? (
           <View style={{ padding: 16 }}>
-            <Text style={{ color: "#666" }}>No reports in this tab.</Text>
+            <Text style={{ color: "#666" }}>{t("reports.empty")}</Text>
           </View>
         ) : (
           reports.map((report) => (
@@ -664,9 +704,9 @@ export default function RMManagerScreen() {
 
       <ConfirmActionModal
         visible={approveVisible}
-        title="Approve Job"
-        message="Are you sure you want to approve this job?"
-        confirmLabel="Approve Job"
+        title={t("reports.approveTitle")}
+        message={t("reports.approveMessage")}
+        confirmLabel={t("reports.approveConfirm")}
         confirmColor="#4CAF50"
         onCancel={() => setApproveVisible(false)}
         onConfirm={confirmApprove}

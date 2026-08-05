@@ -18,6 +18,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "../api/client";
 import { Card, CardContent } from "../components/card";
+import { useI18n } from "../i18n/i18n-ctx";
 
 type Bus = {
   bus_id: string | number;
@@ -47,6 +48,7 @@ function busToForm(b: Bus): BusForm {
 }
 
 export default function BusesScreen() {
+  const { t } = useI18n();
   const [buses, setBuses] = useState<Bus[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -70,12 +72,12 @@ export default function BusesScreen() {
       const data = await api.buses();
       setBuses(Array.isArray(data) ? data : []);
     } catch (e: any) {
-      setError(e?.message ?? "Failed to load buses.");
+      setError(e?.message ?? t("buses.failedToLoadBuses"));
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     setLoading(true);
@@ -133,7 +135,7 @@ export default function BusesScreen() {
 
   const handleSubmit = async () => {
     if (!form.bus_id.trim()) {
-      Alert.alert("Validation", "Bus ID is required.");
+      Alert.alert(t("common.validation"), t("buses.busIdRequired"));
       return;
     }
 
@@ -158,7 +160,10 @@ export default function BusesScreen() {
       setLoading(true);
       load();
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? (editingBus ? "Failed to update bus." : "Failed to add bus."));
+      Alert.alert(
+        t("common.error"),
+        e?.message ?? (editingBus ? t("buses.failedToUpdateBus") : t("buses.failedToAddBus")),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -176,12 +181,12 @@ export default function BusesScreen() {
           <Text style={styles.busRego}>{item.bus_id}</Text>
           <Text style={styles.busMeta}>
             {[
-              item.bus_route && `Route: ${item.bus_route}`,
-              item.bus_model && `Model: ${item.bus_model}`,
-              item.project_id && `Project: ${item.project_id}`,
+              item.bus_route && `${t("buses.route")}: ${item.bus_route}`,
+              item.bus_model && `${t("buses.model")}: ${item.bus_model}`,
+              item.project_id && `${t("common.project")}: ${item.project_id}`,
             ]
               .filter(Boolean)
-              .join("  •  ") || "No additional details"}
+              .join("  •  ") || t("buses.noAdditionalDetails")}
           </Text>
         </View>
         <View style={styles.busRight}>
@@ -207,7 +212,7 @@ export default function BusesScreen() {
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search buses..."
+            placeholder={t("buses.searchPlaceholder")}
             placeholderTextColor="#9CA3AF"
             style={styles.searchInput}
             autoCorrect={false}
@@ -216,7 +221,7 @@ export default function BusesScreen() {
         </View>
         <Pressable style={styles.addButton} onPress={openAddModal}>
           <FontAwesome5 name="plus" size={14} color="#fff" />
-          <Text style={styles.addButtonText}>Add Bus</Text>
+          <Text style={styles.addButtonText}>{t("buses.addBus")}</Text>
         </Pressable>
       </View>
 
@@ -231,7 +236,7 @@ export default function BusesScreen() {
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator />
-          <Text style={styles.loadingText}>Loading buses...</Text>
+          <Text style={styles.loadingText}>{t("buses.loading")}</Text>
         </View>
       ) : (
         <FlatList
@@ -242,9 +247,9 @@ export default function BusesScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           ListEmptyComponent={
             <View style={styles.center}>
-              <Text style={styles.emptyTitle}>No buses found</Text>
+              <Text style={styles.emptyTitle}>{t("buses.emptyTitle")}</Text>
               <Text style={styles.emptySub}>
-                {buses.length === 0 ? "No buses in the database yet." : "Try clearing your search."}
+                {buses.length === 0 ? t("buses.emptyNoneYet") : t("buses.emptyTrySearch")}
               </Text>
             </View>
           }
@@ -266,7 +271,7 @@ export default function BusesScreen() {
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
-                {isEditMode ? `Edit Bus #${editingBus!.bus_id}` : "Add New Bus"}
+                {isEditMode ? `${t("buses.editBus")} #${editingBus!.bus_id}` : t("buses.addNewBus")}
               </Text>
               <Pressable onPress={closeModal} style={styles.modalClose}>
                 <FontAwesome5 name="times" size={16} color="#6B7280" />
@@ -276,13 +281,13 @@ export default function BusesScreen() {
             <ScrollView style={{ flexShrink: 1 }} keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}>
             <View style={styles.fieldGroup}>
               <Text style={styles.label}>
-                Registration <Text style={styles.required}>*</Text>
+                {t("buses.registration")} <Text style={styles.required}>*</Text>
               </Text>
               <TextInput
                 style={[styles.input, isEditMode && styles.inputReadOnly]}
                 value={form.bus_id}
                 onChangeText={(v) => setForm((f) => ({ ...f, bus_id: v }))}
-                placeholder="e.g. ABC 1234"
+                placeholder={t("buses.registrationPlaceholder")}
                 placeholderTextColor="#9CA3AF"
                 autoCapitalize="characters"
                 editable={!submitting && !isEditMode}
@@ -290,31 +295,31 @@ export default function BusesScreen() {
             </View>
 
             <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Route</Text>
+              <Text style={styles.label}>{t("buses.route")}</Text>
               <TextInput
                 style={styles.input}
                 value={form.bus_route}
                 onChangeText={(v) => setForm((f) => ({ ...f, bus_route: v }))}
-                placeholder="e.g. Route 12"
+                placeholder={t("buses.routePlaceholder")}
                 placeholderTextColor="#9CA3AF"
                 editable={!submitting}
               />
             </View>
 
             <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Model</Text>
+              <Text style={styles.label}>{t("buses.model")}</Text>
               <TextInput
                 style={styles.input}
                 value={form.bus_model}
                 onChangeText={(v) => setForm((f) => ({ ...f, bus_model: v }))}
-                placeholder="e.g. Volvo B8RLE"
+                placeholder={t("buses.modelPlaceholder")}
                 placeholderTextColor="#9CA3AF"
                 editable={!submitting}
               />
             </View>
 
             <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Project</Text>
+              <Text style={styles.label}>{t("common.project")}</Text>
               <Pressable
                 style={[styles.input, styles.pickerButton, submitting && { opacity: 0.55 }]}
                 onPress={() => !submitting && setProjectPickerVisible((v) => !v)}
@@ -322,7 +327,7 @@ export default function BusesScreen() {
                 <Text style={form.project_id ? styles.pickerText : styles.pickerPlaceholder}>
                   {selectedProject
                     ? `${selectedProject.project_name} (${selectedProject.project_id})`
-                    : "Select a project..."}
+                    : t("buses.selectProjectPlaceholder")}
                 </Text>
                 <FontAwesome5
                   name={projectPickerVisible ? "chevron-up" : "chevron-down"}
@@ -339,7 +344,7 @@ export default function BusesScreen() {
                     </View>
                   ) : projects.length === 0 ? (
                     <View style={styles.pickerCenter}>
-                      <Text style={styles.emptySub}>No projects found.</Text>
+                      <Text style={styles.emptySub}>{t("buses.noProjectsFound")}</Text>
                     </View>
                   ) : (
                     <ScrollView nestedScrollEnabled style={{ maxHeight: 200 }}>
@@ -351,7 +356,7 @@ export default function BusesScreen() {
                         }}
                       >
                         <Text style={[styles.projectName, !form.project_id && styles.projectNameSelected]}>
-                          None
+                          {t("common.none")}
                         </Text>
                       </Pressable>
                       {projects.map((p) => {
@@ -390,7 +395,7 @@ export default function BusesScreen() {
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
                 <Text style={styles.submitButtonText}>
-                  {isEditMode ? "Save Changes" : "Add Bus"}
+                  {isEditMode ? t("buses.saveChanges") : t("buses.addBus")}
                 </Text>
               )}
             </Pressable>

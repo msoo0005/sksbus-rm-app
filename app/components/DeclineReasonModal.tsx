@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useI18n } from '../i18n/i18n-ctx';
 
 type Props = {
   visible: boolean;
@@ -8,6 +9,7 @@ type Props = {
 };
 
 export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Props) {
+  const { t } = useI18n();
   const [reason, setReason] = useState('');
   const [touched, setTouched] = useState(false);
 
@@ -36,10 +38,10 @@ export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Prop
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.modal}>
-          <Text style={styles.title}>Decline Report</Text>
+          <Text style={styles.title}>{t('declineModal.title')}</Text>
 
           <TextInput
-            placeholder="Enter reason for declining"
+            placeholder={t('declineModal.placeholder')}
             placeholderTextColor="#9CA3AF"
             value={reason}
             onChangeText={(v) => {
@@ -50,18 +52,18 @@ export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Prop
             multiline
           />
           {touched && !isValid && (
-            <Text style={styles.errorText}>A reason is required to decline this report.</Text>
+            <Text style={styles.errorText}>{t('declineModal.requiredError')}</Text>
           )}
 
           <View style={styles.actions}>
             <Pressable style={styles.cancel} onPress={handleCancel}>
-              <Text>Cancel</Text>
+              <Text>{t('common.cancel')}</Text>
             </Pressable>
             <Pressable
               style={[styles.confirm, !isValid && styles.confirmDisabled]}
               onPress={handleSubmit}
             >
-              <Text style={{ color: '#fff' }}>Submit</Text>
+              <Text style={{ color: '#fff' }}>{t('declineModal.submit')}</Text>
             </Pressable>
           </View>
         </View>

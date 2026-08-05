@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import HomeHeader from "../components/HomeHeader";
 import { useSession } from "../ctx";
+import { useI18n } from "../i18n/i18n-ctx";
 
 type RoleKey =
   | "admin"
@@ -31,51 +32,51 @@ const ROLE_REDIRECT: Partial<Record<RoleKey, string>> = {
 const ADMIN_ACCENT = "#4338CA";
 const ADMIN_ACCENT_LIGHT = "#EEF2FF";
 
-const MODULES = [
+const MODULE_DEFS = [
   {
     id: "fleet-manager",
-    title: "Fleet Manager",
-    description: "Report problems, repairs & accidents",
+    titleKey: "adminHome.fleetManagerTitle",
+    descKey: "adminHome.fleetManagerDesc",
     icon: "truck",
     accent: "#2563EB",
     accentLight: "#EFF6FF",
   },
   {
     id: "rm-manager",
-    title: "R&M Manager",
-    description: "Approve & manage work orders",
+    titleKey: "adminHome.rmManagerTitle",
+    descKey: "adminHome.rmManagerDesc",
     icon: "clipboard-check",
     accent: "#16A34A",
     accentLight: "#F0FDF4",
   },
   {
     id: "technician",
-    title: "Technician",
-    description: "Complete repairs & maintenance",
+    titleKey: "adminHome.technicianTitle",
+    descKey: "adminHome.technicianDesc",
     icon: "wrench",
     accent: "#EA580C",
     accentLight: "#FFF7ED",
   },
   {
     id: "inventory",
-    title: "Inventory",
-    description: "Manage parts & supplies",
+    titleKey: "adminHome.inventoryTitle",
+    descKey: "adminHome.inventoryDesc",
     icon: "boxes",
     accent: "#7C3AED",
     accentLight: "#F5F3FF",
   },
   {
     id: "buses",
-    title: "Bus Fleet",
-    description: "View & manage buses",
+    titleKey: "adminHome.busesTitle",
+    descKey: "adminHome.busesDesc",
     icon: "bus",
     accent: "#0284C7",
     accentLight: "#F0F9FF",
   },
   {
     id: "rm-manager/tyres",
-    title: "Tyre Management",
-    description: "Fleet tyre inventory, swaps & overdue inspections",
+    titleKey: "adminHome.tyresTitle",
+    descKey: "adminHome.tyresDesc",
     icon: "dot-circle",
     accent: "#16A34A",
     accentLight: "#F0FDF4",
@@ -90,6 +91,13 @@ export default function HomeScreen() {
   const { dbUser } = useSession();
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
+  const { t } = useI18n();
+
+  const modules = MODULE_DEFS.map((mod) => ({
+    ...mod,
+    title: t(mod.titleKey),
+    description: t(mod.descKey),
+  }));
 
   const role = (dbUser?.user_role ?? "driver") as RoleKey;
   const redirect = ROLE_REDIRECT[role];
@@ -125,15 +133,15 @@ export default function HomeScreen() {
       showsVerticalScrollIndicator={false}
     >
       <HomeHeader
-        roleLabel="Administrator"
+        roleLabel={t("roles.admin")}
         roleColor={ADMIN_ACCENT}
         roleColorLight={ADMIN_ACCENT_LIGHT}
       />
 
-      <Text style={styles.sectionLabel}>QUICK ACCESS</Text>
+      <Text style={styles.sectionLabel}>{t("adminHome.quickAccess")}</Text>
 
       <View style={styles.grid}>
-        {MODULES.map((mod) => (
+        {modules.map((mod) => (
           <Pressable
             key={mod.id}
             style={{ width: cardWidth }}
@@ -167,7 +175,7 @@ export default function HomeScreen() {
 
                 <View style={styles.cardFooter}>
                   <Text style={[styles.openText, { color: mod.accent }]}>
-                    Open
+                    {t("adminHome.open")}
                   </Text>
                   <FontAwesome5
                     name="arrow-right"

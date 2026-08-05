@@ -2,6 +2,7 @@ import { FontAwesome5 } from "@expo/vector-icons";
 import React from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import HomeHeader from "./HomeHeader";
+import { useI18n } from "../i18n/i18n-ctx";
 
 type Highlight = {
   icon: string;
@@ -40,6 +41,8 @@ export default function RoleHomeScreen({
   highlights = [],
   secondaryAction,
 }: Props) {
+  const { t } = useI18n();
+
   return (
     <ScrollView
       style={styles.page}
@@ -48,7 +51,7 @@ export default function RoleHomeScreen({
     >
       <HomeHeader roleLabel={roleLabel} roleColor={accent} roleColorLight={accentLight} />
 
-      <Text style={styles.sectionLabel}>GET STARTED</Text>
+      <Text style={styles.sectionLabel}>{t("roleHome.getStarted")}</Text>
 
       <View
         style={[

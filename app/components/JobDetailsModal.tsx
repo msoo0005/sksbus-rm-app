@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useI18n } from "../i18n/i18n-ctx";
 import { openDirections } from "../utils/directions";
 import { Report } from "../types/report";
 import ImageViewerOverlay from "./ImageViewerOverlay";
@@ -48,17 +49,17 @@ function mediaToUrl(m: any) {
   return `https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(key).replace(/%2F/g, "/")}`;
 }
 
-const TYPE_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  problem:  { label: "Problem",  color: "#DC2626", bg: "#FEF2F2" },
-  repair:   { label: "Repair",   color: "#2563EB", bg: "#EFF6FF" },
-  accident: { label: "Accident", color: "#EA580C", bg: "#FFF7ED" },
+const TYPE_CONFIG: Record<string, { labelKey: string; color: string; bg: string }> = {
+  problem:  { labelKey: "statusBadge.problem",  color: "#DC2626", bg: "#FEF2F2" },
+  repair:   { labelKey: "statusBadge.repair",   color: "#2563EB", bg: "#EFF6FF" },
+  accident: { labelKey: "statusBadge.accident", color: "#EA580C", bg: "#FFF7ED" },
 };
 
-const SEVERITY_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-  low:      { label: "Low",      color: "#16A34A", bg: "#F0FDF4" },
-  medium:   { label: "Medium",   color: "#CA8A04", bg: "#FEFCE8" },
-  high:     { label: "High",     color: "#EA580C", bg: "#FFF7ED" },
-  critical: { label: "Critical", color: "#DC2626", bg: "#FEF2F2" },
+const SEVERITY_CONFIG: Record<string, { labelKey: string; color: string; bg: string }> = {
+  low:      { labelKey: "statusBadge.low",      color: "#16A34A", bg: "#F0FDF4" },
+  medium:   { labelKey: "statusBadge.medium",   color: "#CA8A04", bg: "#FEFCE8" },
+  high:     { labelKey: "statusBadge.high",     color: "#EA580C", bg: "#FFF7ED" },
+  critical: { labelKey: "statusBadge.critical", color: "#DC2626", bg: "#FEF2F2" },
 };
 
 function Chip({ label, color, bg }: { label: string; color: string; bg: string }) {
@@ -105,6 +106,7 @@ export default function JobDetailsModal({
   loadingMedia = false,
   onClose,
 }: Props) {
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const [viewerVisible, setViewerVisible] = React.useState(false);
   const [viewerIndex, setViewerIndex] = React.useState(0);
@@ -149,12 +151,12 @@ export default function JobDetailsModal({
         {/* ── Header ── */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <Text style={s.headerEyebrow}>REPORT</Text>
+            <Text style={s.headerEyebrow}>{t("jobDetailsModal.reportEyebrow")}</Text>
             <Text style={s.headerTitle}>#{report.id}</Text>
           </View>
           <View style={s.headerRight}>
-            <Chip label={typeConf.label} color={typeConf.color} bg={typeConf.bg} />
-            <Chip label={sevConf.label} color={sevConf.color} bg={sevConf.bg} />
+            <Chip label={t(typeConf.labelKey)} color={typeConf.color} bg={typeConf.bg} />
+            <Chip label={t(sevConf.labelKey)} color={sevConf.color} bg={sevConf.bg} />
             <Pressable
               onPress={onClose}
               style={s.closeBtn}
@@ -179,11 +181,11 @@ export default function JobDetailsModal({
               <View style={s.cardIcon}>
                 <FontAwesome5 name="file-alt" size={13} color="#6B7280" />
               </View>
-              <Text style={s.cardTitle}>Report Details</Text>
+              <Text style={s.cardTitle}>{t("jobDetailsModal.reportDetailsTitle")}</Text>
             </View>
             <View style={s.cardDivider} />
 
-            <Field label="Vehicle" value={report.vehicle} />
+            <Field label={t("jobDetailsModal.vehicle")} value={report.vehicle} />
 
             {/* Location — tappable when coordinates are available */}
             {report.lat != null && report.lng != null ? (
@@ -191,20 +193,20 @@ export default function JobDetailsModal({
                 style={({ pressed }) => [fS.wrap, pressed && { opacity: 0.6 }]}
                 onPress={() => openDirections(report.lat!, report.lng!)}
               >
-                <Text style={fS.label}>LOCATION</Text>
+                <Text style={fS.label}>{t("jobDetailsModal.location")}</Text>
                 <View style={s.locationRow}>
                   <Text style={[fS.value, s.locationLink]}>{report.location}</Text>
                   <FontAwesome5 name="directions" size={14} color="#2563EB" />
                 </View>
               </Pressable>
             ) : (
-              <Field label="Location" value={report.location} />
+              <Field label={t("jobDetailsModal.location")} value={report.location} />
             )}
 
-            {report.reportedBy && <Field label="Reported By" value={report.reportedBy} />}
-            {report.assigned && <Field label="Assigned To" value={report.assigned} />}
-            <Field label="Submitted" value={report.date} />
-            <Field label="Description" value={report.description} />
+            {report.reportedBy && <Field label={t("jobDetailsModal.reportedBy")} value={report.reportedBy} />}
+            {report.assigned && <Field label={t("jobDetailsModal.assignedTo")} value={report.assigned} />}
+            <Field label={t("jobDetailsModal.submitted")} value={report.date} />
+            <Field label={t("jobDetailsModal.description")} value={report.description} />
           </View>
 
           {/* Photos card */}
@@ -213,11 +215,11 @@ export default function JobDetailsModal({
               <View style={s.cardIcon}>
                 <FontAwesome5 name="images" size={13} color="#6B7280" />
               </View>
-              <Text style={s.cardTitle}>Photos</Text>
+              <Text style={s.cardTitle}>{t("jobDetailsModal.photosTitle")}</Text>
               {!loadingMedia && (
                 <View style={s.countPill}>
                   <Text style={s.countText}>
-                    {photoUrls.length} photo{photoUrls.length === 1 ? "" : "s"}
+                    {t("jobDetailsModal.photoCount", { count: photoUrls.length })}
                   </Text>
                 </View>
               )}
@@ -227,10 +229,10 @@ export default function JobDetailsModal({
             {loadingMedia ? (
               <View style={s.loadingRow}>
                 <ActivityIndicator size="small" color="#9CA3AF" />
-                <Text style={s.mutedText}>Loading photos…</Text>
+                <Text style={s.mutedText}>{t("jobDetailsModal.loadingPhotos")}</Text>
               </View>
             ) : photoUrls.length === 0 ? (
-              <Text style={s.mutedText}>No photos attached.</Text>
+              <Text style={s.mutedText}>{t("jobDetailsModal.noPhotosAttached")}</Text>
             ) : (
               <ScrollView
                 horizontal
@@ -263,15 +265,15 @@ export default function JobDetailsModal({
                   color={approved ? "#16A34A" : "#DC2626"}
                 />
                 <Text style={[s.auditTitle, { color: approved ? "#16A34A" : "#DC2626" }]}>
-                  {approved ? "Approved" : "Declined"}
+                  {approved ? t("statusBadge.approved") : t("statusBadge.declined")}
                 </Text>
               </View>
 
               <View style={s.auditFields}>
-                <Field label="Reviewed By" value={report.audit?.by} />
-                <Field label="At" value={formatAuditTime(report.audit?.at)} />
+                <Field label={t("jobDetailsModal.reviewedBy")} value={report.audit?.by} />
+                <Field label={t("jobDetailsModal.at")} value={formatAuditTime(report.audit?.at)} />
                 {declined && report.audit?.reason?.trim() && (
-                  <Field label="Reason" value={report.audit.reason} />
+                  <Field label={t("jobDetailsModal.reason")} value={report.audit.reason} />
                 )}
               </View>
             </View>

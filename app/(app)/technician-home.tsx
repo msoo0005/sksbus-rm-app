@@ -1,26 +1,28 @@
 import { useRouter } from "expo-router";
 import RoleHomeScreen from "../components/RoleHomeScreen";
+import { useI18n } from "../i18n/i18n-ctx";
 
 export default function TechnicianHomeScreen() {
   const router = useRouter();
+  const { t } = useI18n();
 
   return (
     <RoleHomeScreen
-      roleLabel="Technician"
-      actionTitle="Open Technician"
-      actionDescription="Complete repairs & maintenance"
+      roleLabel={t("roles.technician")}
+      actionTitle={t("technicianHome.actionTitle")}
+      actionDescription={t("technicianHome.actionDescription")}
       actionIcon="wrench"
       accent="#EA580C"
       accentLight="#FFF7ED"
       onPress={() => router.push("./technician")}
       highlights={[
-        { icon: "hand-paper", label: "Accept available jobs" },
-        { icon: "camera", label: "Log before & after photos" },
-        { icon: "check-double", label: "Mark jobs complete" },
+        { icon: "hand-paper", label: t("technicianHome.highlight1") },
+        { icon: "camera", label: t("technicianHome.highlight2") },
+        { icon: "check-double", label: t("technicianHome.highlight3") },
       ]}
       secondaryAction={{
-        title: "Tyre Inspections",
-        description: "Submit a periodic tyre inspection for a bus",
+        title: t("technicianHome.secondaryTitle"),
+        description: t("technicianHome.secondaryDescription"),
         icon: "dot-circle",
         accent: "#EA580C",
         accentLight: "#FFF7ED",

@@ -1,4 +1,5 @@
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useI18n } from '../i18n/i18n-ctx';
 
 type ConfirmActionModalProps = {
   visible: boolean;
@@ -15,12 +16,16 @@ export default function ConfirmActionModal({
   visible,
   title,
   message,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   confirmColor = '#4CAF50',
   onConfirm,
   onCancel,
 }: ConfirmActionModalProps) {
+  const { t } = useI18n();
+  const resolvedConfirmLabel = confirmLabel ?? t('confirmModal.defaultConfirm');
+  const resolvedCancelLabel = cancelLabel ?? t('confirmModal.defaultCancel');
+
   return (
     <Modal transparent animationType="fade" visible={visible}>
       <View style={styles.overlay}>
@@ -30,14 +35,14 @@ export default function ConfirmActionModal({
 
           <View style={styles.buttons}>
             <Pressable style={styles.cancelBtn} onPress={onCancel}>
-              <Text style={styles.cancelText}>{cancelLabel}</Text>
+              <Text style={styles.cancelText}>{resolvedCancelLabel}</Text>
             </Pressable>
 
             <Pressable
               style={[styles.confirmBtn, { backgroundColor: confirmColor }]}
               onPress={onConfirm}
             >
-              <Text style={styles.confirmText}>{confirmLabel}</Text>
+              <Text style={styles.confirmText}>{resolvedConfirmLabel}</Text>
             </Pressable>
           </View>
         </View>

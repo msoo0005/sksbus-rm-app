@@ -12,6 +12,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "../api/client";
 import { useSession } from "../ctx";
+import { useI18n } from "../i18n/i18n-ctx";
+import { LANGUAGE_LABELS, Language } from "../i18n/translations";
 
 // Native stack header height when no large title is used.
 const HEADER_HEIGHT = Platform.OS === "ios" ? 44 : 56;
@@ -101,7 +103,13 @@ function RouteGuard() {
 // UIBarButtonItem, and the OS unconditionally draws its own "Liquid Glass"
 // pill background behind it with no opt-out. Floating outside the native
 // header sidesteps that entirely.
-function FloatingHeaderButtons({ onAvatarPress }: { onAvatarPress: () => void }) {
+function FloatingHeaderButtons({
+  onAvatarPress,
+  onLanguagePress,
+}: {
+  onAvatarPress: () => void;
+  onLanguagePress: () => void;
+}) {
   const { dbUser } = useSession();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -138,6 +146,13 @@ function FloatingHeaderButtons({ onAvatarPress }: { onAvatarPress: () => void })
         { top: insets.top + (HEADER_HEIGHT - 34) / 2 },
       ]}
     >
+      <Pressable
+        onPress={onLanguagePress}
+        style={({ pressed }) => [styles.bellBtn, pressed && { opacity: 0.75 }]}
+      >
+        <Ionicons name="globe-outline" size={19} color="#374151" />
+      </Pressable>
+
       {canSeeNotifications && (
         <Pressable
           onPress={() => router.push("/notifications")}
@@ -180,6 +195,8 @@ function ProfileModal({
   const { dbUser, signOut } = useSession();
   const insets = useSafeAreaInsets();
 
+  const { t } = useI18n();
+
   const handleSignOut = async () => {
     onClose();
     await signOut();
@@ -189,7 +206,9 @@ function ProfileModal({
   if (!dbUser) return null;
 
   const initials = getInitials(dbUser.user_name || dbUser.user_email);
-  const roleLabel = ROLE_LABEL[dbUser.user_role] ?? dbUser.user_role;
+  const roleLabel = ROLE_LABEL[dbUser.user_role]
+    ? t(`roles.${dbUser.user_role}`)
+    : dbUser.user_role;
   const color = ROLE_COLORS[dbUser.user_role] ?? DEFAULT_ROLE_COLOR;
 
   return (
@@ -230,7 +249,7 @@ function ProfileModal({
             onPress={handleSignOut}
           >
             <Ionicons name="log-out-outline" size={17} color="#DC2626" />
-            <Text style={styles.signOutText}>Sign Out</Text>
+            <Text style={styles.signOutText}>{t("chrome.signOut")}</Text>
           </Pressable>
         </Pressable>
       </Pressable>
@@ -238,8 +257,79 @@ function ProfileModal({
   );
 }
 
+const LANGUAGE_OPTIONS: Language[] = ["en", "ms"];
+
+// Modal lives at layout root level, outside the Stack header tree — same
+// pattern as ProfileModal. Persisted language selection takes effect
+// immediately across the whole app since every t() call reads from context.
+function LanguagePickerModal({
+  visible,
+  onClose,
+}: {
+  visible: boolean;
+  onClose: () => void;
+}) {
+  const { language, setLanguage, t } = useI18n();
+  const insets = useSafeAreaInsets();
+
+  const handleSelect = async (lang: Language) => {
+    await setLanguage(lang);
+    onClose();
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable
+        style={[styles.backdrop, { paddingTop: insets.top + HEADER_HEIGHT + 6 }]}
+        onPress={onClose}
+      >
+        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.languageHeaderRow}>
+            <Ionicons name="globe-outline" size={18} color="#374151" />
+            <Text style={styles.languageTitle}>{t("common.selectLanguage")}</Text>
+          </View>
+
+          {LANGUAGE_OPTIONS.map((lang) => {
+            const selected = lang === language;
+            return (
+              <Pressable
+                key={lang}
+                style={({ pressed }) => [
+                  styles.languageRow,
+                  selected && styles.languageRowSelected,
+                  pressed && { opacity: 0.8 },
+                ]}
+                onPress={() => handleSelect(lang)}
+              >
+                <Text
+                  style={[
+                    styles.languageRowText,
+                    selected && styles.languageRowTextSelected,
+                  ]}
+                >
+                  {LANGUAGE_LABELS[lang]}
+                </Text>
+                {selected && (
+                  <Ionicons name="checkmark-circle" size={18} color="#4338CA" />
+                )}
+              </Pressable>
+            );
+          })}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 export default function RootLayout() {
+  const { t } = useI18n();
   const [profileVisible, setProfileVisible] = React.useState(false);
+  const [languageVisible, setLanguageVisible] = React.useState(false);
 
   return (
     <View style={styles.root}>
@@ -248,13 +338,17 @@ export default function RootLayout() {
         visible={profileVisible}
         onClose={() => setProfileVisible(false)}
       />
+      <LanguagePickerModal
+        visible={languageVisible}
+        onClose={() => setLanguageVisible(false)}
+      />
       <Stack>
         <Stack.Screen name="index" options={{ title: "Home" }} />
         <Stack.Screen name="fleet-manager-home" options={{ title: "Home" }} />
-        <Stack.Screen name="fleet-manager" options={{ title: "Fleet Manager" }} />
+        <Stack.Screen name="fleet-manager" options={{ title: t("adminHome.fleetManagerTitle") }} />
         <Stack.Screen
           name="project-selector"
-          options={{ title: "Select Your Project" }}
+          options={{ title: t("projectSelector.title") }}
         />
         <Stack.Screen
           name="fleet-manager-history"
@@ -277,12 +371,15 @@ export default function RootLayout() {
           name="technician/tyre-inspection/[busId]"
           options={{ title: "Tyre Inspection" }}
         />
-        <Stack.Screen name="inventory" options={{ title: "Inventory Manager" }} />
-        <Stack.Screen name="form" options={{ title: "Report Form" }} />
-        <Stack.Screen name="buses" options={{ title: "Bus Fleet" }} />
-        <Stack.Screen name="notifications" options={{ title: "Notifications" }} />
+        <Stack.Screen name="inventory" options={{ title: t("inventory.navTitle") }} />
+        <Stack.Screen name="form" options={{ title: t("reportForm.title") }} />
+        <Stack.Screen name="buses" options={{ title: t("buses.navTitle") }} />
+        <Stack.Screen name="notifications" options={{ title: t("notifications.navTitle") }} />
       </Stack>
-      <FloatingHeaderButtons onAvatarPress={() => setProfileVisible(true)} />
+      <FloatingHeaderButtons
+        onAvatarPress={() => setProfileVisible(true)}
+        onLanguagePress={() => setLanguageVisible(true)}
+      />
     </View>
   );
 }
@@ -449,4 +546,24 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#DC2626",
   },
+
+  languageHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 14,
+  },
+  languageTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  languageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderTopWidth: 1,
+    borderTopColor: "#F3F4F6",
+  },
+  languageRowSelected: {},
+  languageRowText: { fontSize: 15, fontWeight: "600", color: "#374151" },
+  languageRowTextSelected: { color: "#4338CA", fontWeight: "800" },
 });

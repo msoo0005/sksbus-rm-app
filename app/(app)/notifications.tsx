@@ -13,6 +13,7 @@ import {
 import type { AppNotification, NotificationType } from "../api/client";
 import { api } from "../api/client";
 import { useSession } from "../ctx";
+import { useI18n } from "../i18n/i18n-ctx";
 
 const TYPE_CONFIG: Record<
   NotificationType,
@@ -32,6 +33,7 @@ function formatWhen(iso: string) {
 export default function NotificationsScreen() {
   const router = useRouter();
   const { dbUser } = useSession();
+  const { t } = useI18n();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -113,11 +115,11 @@ export default function NotificationsScreen() {
       {notifications.length > 0 && (
         <View style={styles.headerRow}>
           <Text style={styles.headerCount}>
-            {unreadCount > 0 ? `${unreadCount} unread` : "All caught up"}
+            {unreadCount > 0 ? `${unreadCount} ${t("notifications.unread")}` : t("notifications.allCaughtUp")}
           </Text>
           {unreadCount > 0 && (
             <Pressable onPress={markAllRead} hitSlop={8}>
-              <Text style={styles.markAllText}>Mark all read</Text>
+              <Text style={styles.markAllText}>{t("notifications.markAllRead")}</Text>
             </Pressable>
           )}
         </View>
@@ -126,14 +128,14 @@ export default function NotificationsScreen() {
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator />
-          <Text style={styles.mutedText}>Loading notifications…</Text>
+          <Text style={styles.mutedText}>{t("notifications.loading")}</Text>
         </View>
       ) : notifications.length === 0 ? (
         <View style={styles.center}>
           <FontAwesome5 name="bell-slash" size={28} color="#D1D5DB" />
-          <Text style={styles.emptyTitle}>No notifications yet</Text>
+          <Text style={styles.emptyTitle}>{t("notifications.emptyTitle")}</Text>
           <Text style={styles.mutedText}>
-            You&apos;ll see updates here as reports and jobs come in.
+            {t("notifications.emptyBody")}
           </Text>
         </View>
       ) : (

@@ -1,5 +1,6 @@
 import { Eye } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useI18n } from "../i18n/i18n-ctx";
 import { Report } from "../types/report";
 import StatusBadge from "./StatusBadge";
 
@@ -20,6 +21,7 @@ export default function ReportCard({
   onDecline,
   currentTech,
 }: ReportCardProps) {
+  const { t } = useI18n();
   const isDeclined = report.audit?.action === "declined";
 
   const showAccept = !!(
@@ -41,28 +43,29 @@ export default function ReportCard({
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.title}>Report #{report.id}</Text>
+          <Text style={styles.title}>{t("reportCard.reportPrefix", { id: report.id })}</Text>
           <Text style={styles.date}>{report.date}</Text>
           <View style={styles.badges}>
             <StatusBadge type={report.type} />
             <StatusBadge type={report.severity} />
-            {isDeclined && <StatusBadge type="critical" label="Declined" />}
+            {isDeclined && <StatusBadge type="critical" label={t("statusBadge.declined")} />}
           </View>
         </View>
       </View>
 
       {/* Meta */}
-      <Text style={styles.meta}>Vehicle: {report.vehicle}</Text>
-      <Text style={styles.meta}>Location: {report.location}</Text>
+      <Text style={styles.meta}>{t("reportCard.vehicle", { value: report.vehicle })}</Text>
+      <Text style={styles.meta}>{t("reportCard.location", { value: report.location })}</Text>
 
       {!!report.reportedBy && (
-        <Text style={styles.meta}>Reported by: {report.reportedBy}</Text>
+        <Text style={styles.meta}>{t("reportCard.reportedBy", { value: report.reportedBy })}</Text>
       )}
 
       {!!report.assigned && (
         <Text style={styles.meta}>
-          Assigned to:{" "}
-          {report.assigned === currentTech ? "You" : report.assigned}
+          {t("reportCard.assignedTo", {
+            value: report.assigned === currentTech ? t("reportCard.you") : report.assigned,
+          })}
         </Text>
       )}
 
@@ -70,9 +73,9 @@ export default function ReportCard({
 
       {isDeclined && (
         <View style={styles.declineBox}>
-          <Text style={styles.declineTitle}>Decline Reason</Text>
+          <Text style={styles.declineTitle}>{t("reportCard.declineReasonTitle")}</Text>
           <Text style={styles.declineText}>
-            {declineReason ? declineReason : "No reason provided."}
+            {declineReason ? declineReason : t("reportCard.noReasonProvided")}
           </Text>
         </View>
       )}
@@ -84,7 +87,7 @@ export default function ReportCard({
           onPress={() => onViewDetails?.(report)}
         >
           <Eye size={16} color="#111827" />
-          <Text style={styles.buttonText}>View Details</Text>
+          <Text style={styles.buttonText}>{t("reportCard.viewDetails")}</Text>
         </Pressable>
 
         {showAccept && (
@@ -92,7 +95,7 @@ export default function ReportCard({
             style={[styles.button, styles.acceptButton]}
             onPress={() => onAccept?.(report)}
           >
-            <Text style={styles.whiteText}>Accept Job</Text>
+            <Text style={styles.whiteText}>{t("reportCard.acceptJob")}</Text>
           </Pressable>
         )}
       </View>
@@ -103,14 +106,14 @@ export default function ReportCard({
             style={[styles.button, styles.approveButton]}
             onPress={() => onApprove?.(report)}
           >
-            <Text style={styles.whiteText}>Approve</Text>
+            <Text style={styles.whiteText}>{t("reportCard.approve")}</Text>
           </Pressable>
 
           <Pressable
             style={[styles.button, styles.declineButton]}
             onPress={() => onDecline?.(report)}
           >
-            <Text style={styles.whiteText}>Decline</Text>
+            <Text style={styles.whiteText}>{t("reportCard.decline")}</Text>
           </Pressable>
         </View>
       )}
