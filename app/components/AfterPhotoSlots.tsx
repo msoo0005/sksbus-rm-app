@@ -5,7 +5,16 @@ import type { LocalMedia } from "./ImagePicker";
 import { pickImage } from "./ImagePicker";
 import ImageViewerOverlay from "./ImageViewerOverlay";
 
-export type PhotoSlot = { key: string; label: string };
+export type PhotoSlot = {
+  key: string;
+  label: string;
+  // FontAwesome5 glyph name, used for the plain directional slots.
+  icon?: string;
+  // Custom icon element (e.g. a lucide/SVG icon), takes priority over `icon`
+  // when a slot needs something FontAwesome5 doesn't have, like the
+  // instrument-cluster glyph.
+  iconElement?: React.ReactNode;
+};
 
 type Props = {
   title?: string;
@@ -59,6 +68,52 @@ export default function AfterPhotoSlots({
   const previewSlot = slots.find((s) => s.key === previewKey);
   const previewItem = previewSlot ? value[previewSlot.key]?.[0] : null;
 
+  // An odd slot count can't tile evenly into pairs — pull the first slot out
+  // as a full-width "featured" tile so the remainder always forms a clean
+  // symmetric grid (e.g. 5 slots → 1 featured + a 2x2 grid, instead of
+  // 2 + 2 + 1 with a lone tile dangling on the last row).
+  const isOdd = slots.length % 2 !== 0;
+  const featuredSlot = isOdd ? slots[0] : null;
+  const gridSlots = isOdd ? slots.slice(1) : slots;
+
+  const renderTile = (slot: PhotoSlot, featured: boolean) => {
+    const media = value[slot.key]?.[0];
+    return (
+      <View key={slot.key} style={featured ? styles.featuredTileWrap : styles.tileWrap}>
+        <Text style={styles.tileLabel} numberOfLines={1}>
+          {slot.label}
+        </Text>
+        <Pressable
+          style={[
+            styles.tile,
+            featured && styles.tileFeatured,
+            media ? styles.tileFilled : styles.tileEmpty,
+          ]}
+          onPress={() => (media ? setPreviewKey(slot.key) : openActionSheet(slot))}
+        >
+          {media ? (
+            <>
+              <Image source={{ uri: media.localUri }} style={styles.tileImage} />
+              {!readOnly && !disabled && (
+                <Pressable
+                  style={styles.tileEditBtn}
+                  onPress={() => openActionSheet(slot)}
+                  hitSlop={8}
+                >
+                  <FontAwesome5 name="pen" size={9} color="#fff" />
+                </Pressable>
+              )}
+            </>
+          ) : slot.iconElement ? (
+            slot.iconElement
+          ) : (
+            <FontAwesome5 name={(slot.icon ?? "camera") as any} size={18} color="#9CA3AF" />
+          )}
+        </Pressable>
+      </View>
+    );
+  };
+
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
@@ -70,38 +125,10 @@ export default function AfterPhotoSlots({
         </View>
       </View>
 
+      {featuredSlot && <View style={styles.featuredRow}>{renderTile(featuredSlot, true)}</View>}
+
       <View style={styles.grid}>
-        {slots.map((slot) => {
-          const media = value[slot.key]?.[0];
-          return (
-            <View key={slot.key} style={styles.tileWrap}>
-              <Text style={styles.tileLabel} numberOfLines={1}>
-                {slot.label}
-              </Text>
-              <Pressable
-                style={[styles.tile, media ? styles.tileFilled : styles.tileEmpty]}
-                onPress={() => (media ? setPreviewKey(slot.key) : openActionSheet(slot))}
-              >
-                {media ? (
-                  <>
-                    <Image source={{ uri: media.localUri }} style={styles.tileImage} />
-                    {!readOnly && !disabled && (
-                      <Pressable
-                        style={styles.tileEditBtn}
-                        onPress={() => openActionSheet(slot)}
-                        hitSlop={8}
-                      >
-                        <FontAwesome5 name="pen" size={9} color="#fff" />
-                      </Pressable>
-                    )}
-                  </>
-                ) : (
-                  <FontAwesome5 name="camera" size={18} color="#9CA3AF" />
-                )}
-              </Pressable>
-            </View>
-          );
-        })}
+        {gridSlots.map((slot) => renderTile(slot, false))}
       </View>
 
       <ImageViewerOverlay
@@ -141,6 +168,13 @@ const styles = StyleSheet.create({
   pillText: { fontSize: 12, fontWeight: "700", color: "#6B7280" },
   pillTextComplete: { color: "#16A34A" },
 
+  featuredRow: {
+    marginBottom: 10,
+  },
+  featuredTileWrap: {
+    width: "100%",
+    alignItems: "center",
+  },
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -157,6 +191,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
+  },
+  tileFeatured: {
+    aspectRatio: 2.4,
   },
   tileEmpty: {
     borderWidth: 1.5,

@@ -10,11 +10,12 @@ export default function RmManagerHomeScreen() {
     <RoleHomeScreen
       roleLabel={t("roles.rm_manager")}
       actionTitle={t("rmManagerHome.actionTitle")}
+      ctaLabel={t("rmManagerHome.ctaLabel")}
       actionDescription={t("rmManagerHome.actionDescription")}
       actionIcon="clipboard-check"
       accent="#16A34A"
       accentLight="#F0FDF4"
-      onPress={() => router.push("./rm-manager")}
+      onPress={() => router.push("/project-selector?returnTo=/rm-manager&allowClear=1" as any)}
       highlights={[
         { icon: "check-circle", label: t("rmManagerHome.highlight1") },
         { icon: "tasks", label: t("rmManagerHome.highlight2") },

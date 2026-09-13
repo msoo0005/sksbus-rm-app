@@ -100,6 +100,8 @@ function mapApiRowToReport(r: any): FleetReport {
     lng: r?.report_lng ?? null,
     description: String(r?.report_desc ?? "—"),
     date: formatDate(r?.report_uploaded_at),
+    dateIso: r?.report_uploaded_at ?? null,
+    closedAt: r?.report_review_at ?? null,
     status: normaliseStatusToUi(r?.report_status),
     reportedBy,
     audit,

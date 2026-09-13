@@ -2,6 +2,8 @@ import { Eye } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useI18n } from "../i18n/i18n-ctx";
 import { Report } from "../types/report";
+import { reportTypeTitleLabel } from "../utils/reportType";
+import ElapsedTimer from "./ElapsedTimer";
 import StatusBadge from "./StatusBadge";
 
 type ReportCardProps = {
@@ -43,14 +45,20 @@ export default function ReportCard({
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.title}>{t("reportCard.reportPrefix", { id: report.id })}</Text>
+          <Text style={styles.title}>
+            {reportTypeTitleLabel(report.type, t)} #{report.id}
+          </Text>
           <Text style={styles.date}>{report.date}</Text>
           <View style={styles.badges}>
-            <StatusBadge type={report.type} />
             <StatusBadge type={report.severity} />
             {isDeclined && <StatusBadge type="critical" label={t("statusBadge.declined")} />}
           </View>
         </View>
+
+        <ElapsedTimer
+          since={report.dateIso}
+          until={report.status === "closed" ? report.closedAt : null}
+        />
       </View>
 
       {/* Meta */}

@@ -19,10 +19,13 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { api } from "../api/client";
 import { Card, CardContent } from "../components/card";
 import { useI18n } from "../i18n/i18n-ctx";
+import { getRouteColourHex, routeColourNeedsBorder } from "../utils/routeColours";
 
 type Bus = {
   bus_id: string | number;
   bus_route?: string | null;
+  bus_route_colour?: string | null;
+  bus_route_number?: string | null;
   bus_model?: string | null;
   project_id?: string | null;
 };
@@ -30,18 +33,29 @@ type Bus = {
 type BusForm = {
   bus_id: string;
   bus_route: string;
+  bus_route_colour: string;
+  bus_route_number: string;
   bus_model: string;
   project_id: string;
 };
 
 type Project = { project_id: string; project_name: string };
 
-const EMPTY_FORM: BusForm = { bus_id: "", bus_route: "", bus_model: "", project_id: "" };
+const EMPTY_FORM: BusForm = {
+  bus_id: "",
+  bus_route: "",
+  bus_route_colour: "",
+  bus_route_number: "",
+  bus_model: "",
+  project_id: "",
+};
 
 function busToForm(b: Bus): BusForm {
   return {
     bus_id: String(b.bus_id ?? ""),
     bus_route: b.bus_route ?? "",
+    bus_route_colour: b.bus_route_colour ?? "",
+    bus_route_number: b.bus_route_number ?? "",
     bus_model: b.bus_model ?? "",
     project_id: b.project_id ?? "",
   };
@@ -60,6 +74,7 @@ export default function BusesScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [form, setForm] = useState<BusForm>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [confirmVisible, setConfirmVisible] = useState(false);
 
   // project picker
   const [projects, setProjects] = useState<Project[]>([]);
@@ -129,22 +144,37 @@ export default function BusesScreen() {
   const closeModal = () => {
     if (submitting) return;
     setModalVisible(false);
+    setConfirmVisible(false);
     setEditingBus(null);
     setForm(EMPTY_FORM);
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!form.bus_id.trim()) {
       Alert.alert(t("common.validation"), t("buses.busIdRequired"));
       return;
     }
 
+    // Editing an existing bus's details is confirmed first; adding a brand
+    // new bus record isn't "changing" anything yet, so it submits directly.
+    if (editingBus) {
+      setConfirmVisible(true);
+      return;
+    }
+
+    doSubmit();
+  };
+
+  const doSubmit = async () => {
+    setConfirmVisible(false);
     try {
       setSubmitting(true);
       if (editingBus) {
         await api.updateBus(editingBus.bus_id, {
           bus_id: form.bus_id.trim(),
           bus_route: form.bus_route.trim() || undefined,
+          bus_route_colour: form.bus_route_colour.trim() || undefined,
+          bus_route_number: form.bus_route_number.trim() || undefined,
           bus_model: form.bus_model.trim() || undefined,
           project_id: form.project_id.trim() || undefined,
         });
@@ -152,6 +182,8 @@ export default function BusesScreen() {
         await api.createBus({
           bus_id: form.bus_id.trim(),
           bus_route: form.bus_route.trim() || undefined,
+          bus_route_colour: form.bus_route_colour.trim() || undefined,
+          bus_route_number: form.bus_route_number.trim() || undefined,
           bus_model: form.bus_model.trim() || undefined,
           project_id: form.project_id.trim() || undefined,
         });
@@ -179,6 +211,27 @@ export default function BusesScreen() {
         </View>
         <View style={styles.busTextCol}>
           <Text style={styles.busRego}>{item.bus_id}</Text>
+
+          {(item.bus_route_colour || item.bus_route_number) && (
+            <View style={styles.routeBadgeRow}>
+              <View
+                style={[
+                  styles.routeColourDot,
+                  { backgroundColor: getRouteColourHex(item.bus_route_colour) },
+                  routeColourNeedsBorder(item.bus_route_colour) && styles.routeColourDotBordered,
+                ]}
+              />
+              <Text style={styles.routeBadgeText}>
+                {[
+                  item.bus_route_number && `${t("buses.routeNumber")} ${item.bus_route_number}`,
+                  item.bus_route_colour,
+                ]
+                  .filter(Boolean)
+                  .join(" • ")}
+              </Text>
+            </View>
+          )}
+
           <Text style={styles.busMeta}>
             {[
               item.bus_route && `${t("buses.route")}: ${item.bus_route}`,
@@ -306,6 +359,42 @@ export default function BusesScreen() {
               />
             </View>
 
+            <View style={styles.fieldRow}>
+              <View style={[styles.fieldGroup, styles.fieldHalf]}>
+                <Text style={styles.label}>{t("buses.routeNumberField")}</Text>
+                <TextInput
+                  style={styles.input}
+                  value={form.bus_route_number}
+                  onChangeText={(v) => setForm((f) => ({ ...f, bus_route_number: v }))}
+                  placeholder={t("buses.routeNumberPlaceholder")}
+                  placeholderTextColor="#9CA3AF"
+                  editable={!submitting}
+                />
+              </View>
+
+              <View style={[styles.fieldGroup, styles.fieldHalf]}>
+                <Text style={styles.label}>{t("buses.routeColourField")}</Text>
+                <View style={styles.colourInputWrapper}>
+                  <TextInput
+                    value={form.bus_route_colour}
+                    onChangeText={(v) => setForm((f) => ({ ...f, bus_route_colour: v }))}
+                    placeholder={t("buses.routeColourPlaceholder")}
+                    placeholderTextColor="#9CA3AF"
+                    editable={!submitting}
+                    style={styles.routeColourInputText}
+                    autoCapitalize="characters"
+                  />
+                  <View
+                    style={[
+                      styles.routeColourPreviewDot,
+                      { backgroundColor: getRouteColourHex(form.bus_route_colour) },
+                      routeColourNeedsBorder(form.bus_route_colour) && styles.routeColourDotBordered,
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+
             <View style={styles.fieldGroup}>
               <Text style={styles.label}>{t("buses.model")}</Text>
               <TextInput
@@ -400,11 +489,35 @@ export default function BusesScreen() {
               )}
             </Pressable>
             </ScrollView>
+
+            {/* Rendered inside this same Modal (not as a second <Modal>) —
+                two native Modals presented at once don't reliably stack on
+                iOS, so the confirm step has to live inside the edit sheet. */}
+            {confirmVisible && (
+              <View style={styles.confirmOverlay}>
+                <View style={styles.confirmCard}>
+                  <Text style={styles.confirmTitle}>{t("buses.confirmChangesTitle")}</Text>
+                  <Text style={styles.confirmMessage}>
+                    {t("buses.confirmChangesMessage", { busId: editingBus?.bus_id ?? "" })}
+                  </Text>
+                  <View style={styles.confirmButtons}>
+                    <Pressable
+                      style={styles.confirmCancelBtn}
+                      onPress={() => setConfirmVisible(false)}
+                    >
+                      <Text style={styles.confirmCancelText}>{t("confirmModal.defaultCancel")}</Text>
+                    </Pressable>
+                    <Pressable style={styles.confirmSaveBtn} onPress={doSubmit}>
+                      <Text style={styles.confirmSaveText}>{t("confirmModal.defaultConfirm")}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            )}
           </View>
         </View>
         </KeyboardAvoidingView>
       </Modal>
-
     </SafeAreaView>
   );
 }
@@ -489,6 +602,22 @@ const styles = StyleSheet.create({
   },
   busTextCol: { flex: 1 },
   busRego: { fontSize: 15, fontWeight: "800", color: "#111827" },
+  routeBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+  },
+  routeColourDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  routeColourDotBordered: {
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+  },
+  routeBadgeText: { fontSize: 12, fontWeight: "800", color: "#111827" },
   busMeta: { marginTop: 3, fontSize: 12, fontWeight: "600", color: "#6B7280" },
 
   busRight: { alignItems: "flex-end", gap: 6 },
@@ -517,6 +646,40 @@ const styles = StyleSheet.create({
     paddingBottom: 36,
     gap: 4,
   },
+  confirmOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(17,24,39,0.55)",
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  confirmCard: {
+    width: "100%",
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 20,
+  },
+  confirmTitle: { fontSize: 18, fontWeight: "800", color: "#111827", marginBottom: 8 },
+  confirmMessage: { fontSize: 14, color: "#555", marginBottom: 20 },
+  confirmButtons: { flexDirection: "row", gap: 12 },
+  confirmCancelBtn: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    alignItems: "center",
+  },
+  confirmSaveBtn: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    backgroundColor: "#111827",
+  },
+  confirmCancelText: { fontWeight: "600", color: "#333" },
+  confirmSaveText: { fontWeight: "600", color: "#fff" },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -527,6 +690,8 @@ const styles = StyleSheet.create({
   modalClose: { padding: 4 },
 
   fieldGroup: { marginBottom: 12 },
+  fieldRow: { flexDirection: "row", gap: 10 },
+  fieldHalf: { flex: 1 },
   label: { fontSize: 13, fontWeight: "700", color: "#374151", marginBottom: 6 },
   required: { color: "#EF4444" },
   input: {
@@ -538,6 +703,28 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#111827",
     backgroundColor: "#F9FAFB",
+  },
+  colourInputWrapper: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    backgroundColor: "#F9FAFB",
+  },
+  routeColourInputText: {
+    flex: 1,
+    fontSize: 14,
+    color: "#111827",
+    padding: 0,
+  },
+  routeColourPreviewDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
   },
   pickerButton: {
     flexDirection: "row",

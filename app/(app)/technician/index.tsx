@@ -219,6 +219,8 @@ export default function TechnicianScreen() {
               location: job.report_location ?? "—",
               description: job.report_desc ?? job.job_desc ?? "",
               date: formatDate(job.report_uploaded_at ?? job.job_created_at),
+              dateIso: job.report_uploaded_at ?? job.job_created_at ?? null,
+              closedAt: job.job_completed_at ?? null,
               status: job.job_status === "closed" ? "closed" : "open",
               reportedBy: job.reporter_name ?? "—",
               assigned: job.technician_name ?? undefined,

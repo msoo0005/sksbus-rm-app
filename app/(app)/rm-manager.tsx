@@ -2,7 +2,7 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
-import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { api } from "../api/client";
 import ConfirmActionModal from "../components/ConfirmActionModal";
@@ -106,6 +106,8 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
     lng: r?.report_lng ?? null,
     description: String(r?.report_desc ?? job?.report_desc ?? job?.job_desc ?? ""),
     date: formatDate(r?.report_uploaded_at ?? job?.report_uploaded_at ?? job?.job_created_at),
+    dateIso: r?.report_uploaded_at ?? job?.report_uploaded_at ?? job?.job_created_at ?? null,
+    closedAt: r?.report_review_at ?? job?.job_completed_at ?? null,
     status: normaliseStatusToUi(r?.report_status ?? job?.job_status),
     reportedBy,
     assigned: job?.technician_name ?? undefined,
@@ -657,17 +659,6 @@ export default function RMManagerScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
       >
-        <Pressable
-          style={styles.projectFilterChip}
-          onPress={() => router.push("/project-selector?returnTo=/rm-manager&allowClear=1" as any)}
-        >
-          <FontAwesome5 name="folder" size={12} color="#374151" />
-          <Text style={styles.projectFilterChipText}>
-            {projectId ? `${t("reports.project")}: ${projectId}` : t("reports.allProjects")}
-          </Text>
-          <FontAwesome5 name="chevron-down" size={10} color="#9CA3AF" />
-        </Pressable>
-
         <SegmentedTabs<Tab>
           value={tab}
           onChange={setTab}
@@ -730,24 +721,6 @@ export default function RMManagerScreen() {
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-
-const styles = StyleSheet.create({
-  projectFilterChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    gap: 8,
-    marginHorizontal: 16,
-    marginTop: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#fff",
-  },
-  projectFilterChipText: { fontSize: 13, fontWeight: "700", color: "#374151" },
-});
 
 const kpiStyles = StyleSheet.create({
   page: { padding: 16, gap: 16, paddingBottom: 40 },

@@ -1,15 +1,21 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
+  Bus,
+  Camera,
+  Check,
   ChevronDown,
   ChevronLeft,
   Cog,
+  Search,
   ShieldCheck,
   TriangleAlert,
   Wrench,
+  X,
 } from "lucide-react-native";
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  FlatList,
   Modal,
   Platform,
   ScrollView,
@@ -19,13 +25,16 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import DropDownPicker from "react-native-dropdown-picker";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { api } from "../api/client";
 import ImagePickerField, { LocalMedia } from "../components/ImagePicker";
+import InstrumentClusterIcon from "../components/icons/InstrumentClusterIcon";
 import MapSelector, { LocationValue } from "../components/map";
+import VerificationModal from "../components/VerificationModal";
 import { useI18n } from "../i18n/i18n-ctx";
 import { useProject } from "../project-ctx";
+import { reportTypeTitleLabel } from "../utils/reportType";
+import { getRouteColourHex, routeColourNeedsBorder } from "../utils/routeColours";
 
 type Priority = "low" | "medium" | "high" | "critical";
 
@@ -181,13 +190,138 @@ function normaliseReportType(value: unknown): ReportType {
   return "problem";
 }
 
-function reportTypeLabel(type: ReportType, translate: (key: string) => string) {
-  if (type === "problem") return translate("reportForm.typeProblem");
-  if (type === "repair") return translate("reportForm.typeRepair");
-  return translate("reportForm.typeAccident");
+type BusItem = { label: string; value: string; routeColour?: string | null };
+
+// Splits the combined "busId • route • model" label built in the vehicles
+// fetch below back into a title (bus id) and subtitle (route/model), so the
+// picker can show them as two lines instead of one long run-on string.
+function splitVehicleLabel(label: string): { title: string; subtitle: string } {
+  const [title, ...rest] = label.split(" • ");
+  return { title, subtitle: rest.join(" • ") };
 }
 
-type BusItem = { label: string; value: string };
+function VehiclePickerModal({
+  visible,
+  items,
+  value,
+  onSelect,
+  onClose,
+}: {
+  visible: boolean;
+  items: BusItem[];
+  value: string | null;
+  onSelect: (v: string) => void;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((item) => item.label.toLowerCase().includes(q));
+  }, [items, query]);
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={vehicleModalStyles.backdrop}>
+        <View style={vehicleModalStyles.sheet}>
+          <View style={vehicleModalStyles.header}>
+            <TouchableOpacity onPress={onClose} hitSlop={12}>
+              <ChevronLeft size={24} color="#fff" />
+            </TouchableOpacity>
+            <Text style={vehicleModalStyles.headerTitle}>
+              {t("reportForm.selectVehicleModalTitle")}
+            </Text>
+            <View style={{ width: 24 }} />
+          </View>
+
+          <View style={vehicleModalStyles.searchBox}>
+            <Search size={16} color="#9CA3AF" />
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder={t("reportForm.searchVehiclesPlaceholder")}
+              placeholderTextColor="#9CA3AF"
+              style={vehicleModalStyles.searchInput}
+              autoCorrect={false}
+              autoCapitalize="none"
+            />
+            {query.length > 0 && (
+              <TouchableOpacity onPress={() => setQuery("")} hitSlop={10}>
+                <X size={16} color="#9CA3AF" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <FlatList
+            data={filtered}
+            keyExtractor={(item) => item.value}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={vehicleModalStyles.listContent}
+            ItemSeparatorComponent={() => <View style={vehicleModalStyles.separator} />}
+            renderItem={({ item }) => {
+              const selected = item.value === value;
+              const { title, subtitle } = splitVehicleLabel(item.label);
+              return (
+                <TouchableOpacity
+                  style={vehicleModalStyles.row}
+                  onPress={() => {
+                    onSelect(item.value);
+                    onClose();
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View
+                    style={[
+                      vehicleModalStyles.busIcon,
+                      selected && vehicleModalStyles.busIconSelected,
+                    ]}
+                  >
+                    <Bus size={16} color={selected ? "#fff" : "#6B7280"} />
+                  </View>
+                  <View style={vehicleModalStyles.rowText}>
+                    <Text style={vehicleModalStyles.rowTitle}>{title}</Text>
+                    {!!subtitle && (
+                      <View style={vehicleModalStyles.subtitleRow}>
+                        {!!item.routeColour && (
+                          <View
+                            style={[
+                              vehicleModalStyles.routeDot,
+                              { backgroundColor: getRouteColourHex(item.routeColour) },
+                              routeColourNeedsBorder(item.routeColour) &&
+                                vehicleModalStyles.routeDotBordered,
+                            ]}
+                          />
+                        )}
+                        <Text style={vehicleModalStyles.rowSubtitle} numberOfLines={1}>
+                          {subtitle}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  {selected && <Check size={18} color="#111827" />}
+                </TouchableOpacity>
+              );
+            }}
+            ListEmptyComponent={
+              <View style={vehicleModalStyles.empty}>
+                <Text style={vehicleModalStyles.emptyText}>
+                  {t("reportForm.noVehiclesFound")}
+                </Text>
+              </View>
+            }
+          />
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 type PresignResponse = {
   uploadUrl: string;
@@ -217,18 +351,21 @@ export default function ReportFormScreen() {
   const [locationDesc, setLocationDesc] = useState("");
   const [locationEditedManually, setLocationEditedManually] = useState(false);
 
-  const [vehicleOpen, setVehicleOpen] = useState(false);
+  const [vehicleModalVisible, setVehicleModalVisible] = useState(false);
   const [vehicle, setVehicle] = useState<string | null>(null);
   const [vehicles, setVehicles] = useState<BusItem[]>([]);
 
   const [priorityModalVisible, setPriorityModalVisible] = useState(false);
   const [priority, setPriority] = useState<Priority>("medium");
 
-  const [photos, setPhotos] = useState<LocalMedia[]>([]);
+  const [dashboardPhoto, setDashboardPhoto] = useState<LocalMedia[]>([]);
+  const [exteriorPhoto, setExteriorPhoto] = useState<LocalMedia[]>([]);
+  const [issuePhotos, setIssuePhotos] = useState<LocalMedia[]>([]);
   const [description, setDescription] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
+  const [verifyVisible, setVerifyVisible] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -258,13 +395,16 @@ export default function ReportFormScreen() {
             if (!id) return null;
 
             const route = b?.bus_route ?? b?.route ?? b?.busRoute;
-            const model = b?.bus_model ?? b?.model ?? b?.busModel;
+            const routeColour = b?.bus_route_colour ?? b?.routeColour;
+            const routeNumber = b?.bus_route_number ?? b?.routeNumber;
 
             return {
-              label: `${String(id)}${route ? ` • ${route}` : ""}${
-                model ? ` • ${model}` : ""
-              }`,
+              // Route number, then route colour, then the route's name/path.
+              label: `${String(id)}${routeNumber ? ` • ${routeNumber}` : ""}${
+                routeColour ? ` • ${routeColour}` : ""
+              }${route ? ` • ${route}` : ""}`,
               value: String(id),
+              routeColour: routeColour ?? null,
             };
           })
           .filter(Boolean) as BusItem[];
@@ -361,16 +501,40 @@ export default function ReportFormScreen() {
     if (!projectId) return t("reportForm.validationProjectNotSelected");
     if (!vehicle) return t("reportForm.validationVehicleRequired");
     if (!description.trim()) return t("reportForm.validationDescriptionRequired");
-    if (photos.length === 0) return t("reportForm.validationPhotoRequired");
+    if (dashboardPhoto.length === 0) return t("reportForm.validationDashboardPhotoRequired");
+    if (exteriorPhoto.length === 0) return t("reportForm.validationExteriorPhotoRequired");
+    if (issuePhotos.length === 0) return t("reportForm.validationIssuePhotoRequired");
     return null;
   };
 
-  const doSubmit = async () => {
+  const doSubmit = async (selfie: LocalMedia, verifiedName: string) => {
     try {
       setSubmitting(true);
       setUploadingIndex(null);
 
       const reportId = await createReport();
+
+      // Identity-verification selfie — a dedicated presign/confirm pair that
+      // writes straight onto the REPORT row, separate from the report-photo
+      // gallery uploaded below.
+      const selfiePresign = await api.request<PresignResponse>(
+        `/reports/${reportId}/selfie/presign?mime=${encodeURIComponent(selfie.mime_type)}`,
+      );
+      const selfieBlob = await uriToBlob(selfie.localUri);
+      const selfiePut = await fetch(selfiePresign.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": selfie.mime_type },
+        body: selfieBlob,
+      });
+      if (!selfiePut.ok) throw new Error(`Selfie upload failed (${selfiePut.status})`);
+      await api.confirmReportSelfie(reportId, {
+        s3_key: selfiePresign.s3_key,
+        mime_type: selfie.mime_type,
+        size_bytes: selfieBlob.size,
+        verified_name: verifiedName,
+      });
+
+      const photos = [...dashboardPhoto, ...exteriorPhoto, ...issuePhotos];
 
       for (let i = 0; i < photos.length; i++) {
         setUploadingIndex(i);
@@ -382,6 +546,7 @@ export default function ReportFormScreen() {
       }
 
       setUploadingIndex(null);
+      setVerifyVisible(false);
       Alert.alert(t("common.success"), t("reportForm.reportSubmittedSuccess"));
       router.back();
     } catch (e: any) {
@@ -399,19 +564,14 @@ export default function ReportFormScreen() {
       return;
     }
 
-    Alert.alert(
-      t("reportForm.submitReport"),
-      t("reportForm.submitReportConfirmMessage"),
-      [
-        { text: t("common.cancel"), style: "cancel" },
-        { text: t("common.submit"), onPress: doSubmit },
-      ],
-    );
+    setVerifyVisible(true);
   };
+
+  const totalPhotoCount = dashboardPhoto.length + exteriorPhoto.length + issuePhotos.length;
 
   const submitLabel =
     submitting && uploadingIndex !== null
-      ? t("reportForm.uploading", { current: uploadingIndex + 1, total: photos.length })
+      ? t("reportForm.uploading", { current: uploadingIndex + 1, total: totalPhotoCount })
       : submitting
         ? t("reportForm.submitting")
         : t("reportForm.submitReport");
@@ -435,11 +595,7 @@ export default function ReportFormScreen() {
       keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       bottomOffset={24}
     >
-      <Text style={styles.title}>{t("reportForm.title")}</Text>
-
-      <View style={styles.typePill}>
-        <Text style={styles.typePillText}>{reportTypeLabel(reportType, t)}</Text>
-      </View>
+      <Text style={styles.title}>{reportTypeTitleLabel(reportType, t)}</Text>
 
       <View style={styles.projectPill}>
         <Text style={styles.projectPillText}>
@@ -449,24 +605,31 @@ export default function ReportFormScreen() {
       </View>
 
       <Text style={styles.label}>{t("reportForm.vehicleLabel")}</Text>
-      <View style={{ zIndex: 3000 }}>
-        <DropDownPicker
-          listMode="SCROLLVIEW"
-          open={vehicleOpen}
-          value={vehicle}
-          items={vehicles}
-          setOpen={setVehicleOpen}
-          setValue={setVehicle}
-          setItems={setVehicles}
-          searchable
-          searchPlaceholder={t("reportForm.searchVehiclesPlaceholder")}
-          placeholder={vehiclePlaceholder}
-          style={styles.dropdown}
-          dropDownContainerStyle={styles.dropdownContainer}
-          zIndex={3000}
-          disabled={submitting || projectLoading || !projectId}
-        />
-      </View>
+      <TouchableOpacity
+        style={styles.vehicleField}
+        onPress={() => setVehicleModalVisible(true)}
+        disabled={submitting || projectLoading || !projectId}
+        activeOpacity={0.7}
+      >
+        <Bus size={16} color="#6B7280" />
+        <Text
+          style={[styles.vehicleFieldText, !vehicle && styles.vehicleFieldPlaceholder]}
+          numberOfLines={1}
+        >
+          {vehicle
+            ? vehicles.find((v) => v.value === vehicle)?.label ?? vehicle
+            : vehiclePlaceholder}
+        </Text>
+        <ChevronDown size={18} color="#6B7280" />
+      </TouchableOpacity>
+
+      <VehiclePickerModal
+        visible={vehicleModalVisible}
+        items={vehicles}
+        value={vehicle}
+        onSelect={setVehicle}
+        onClose={() => setVehicleModalVisible(false)}
+      />
 
       <MapSelector
         label={t("reportForm.currentLocationLabel")}
@@ -488,12 +651,40 @@ export default function ReportFormScreen() {
         editable={!submitting}
       />
 
-      <Text style={styles.label}>{t("reportForm.photosLabel")}</Text>
+      <Text style={styles.label}>{t("reportForm.photosSectionLabel")}</Text>
+
+      <Text style={styles.photoHint}>{t("reportForm.dashboardPhotoHint")}</Text>
       <ImagePickerField
-        title={t("reportForm.photosTitle")}
+        title={t("reportForm.dashboardPhotoTitle")}
+        icon={<InstrumentClusterIcon size={18} color="#2563EB" />}
+        iconAccentLight="#EFF6FF"
         required
-        value={photos}
-        onChange={setPhotos}
+        maxItems={1}
+        value={dashboardPhoto}
+        onChange={setDashboardPhoto}
+        disabled={submitting}
+      />
+
+      <Text style={[styles.photoHint, styles.photoHintSpaced]}>{t("reportForm.exteriorPhotoHint")}</Text>
+      <ImagePickerField
+        title={t("reportForm.exteriorPhotoTitle")}
+        icon={<Bus size={18} color="#16A34A" />}
+        iconAccentLight="#F0FDF4"
+        required
+        maxItems={1}
+        value={exteriorPhoto}
+        onChange={setExteriorPhoto}
+        disabled={submitting}
+      />
+
+      <Text style={[styles.photoHint, styles.photoHintSpaced]}>{t("reportForm.issuePhotosHint")}</Text>
+      <ImagePickerField
+        title={t("reportForm.issuePhotosTitle")}
+        icon={<Camera size={18} color="#7C3AED" />}
+        iconAccentLight="#F5F3FF"
+        required
+        value={issuePhotos}
+        onChange={setIssuePhotos}
         disabled={submitting}
       />
 
@@ -555,6 +746,15 @@ export default function ReportFormScreen() {
           <Text style={styles.submitText}>{submitLabel}</Text>
         </TouchableOpacity>
       </View>
+
+      <VerificationModal
+        visible={verifyVisible}
+        title={t("verification.submitReportTitle")}
+        message={t("verification.submitReportMessage")}
+        submitting={submitting}
+        onCancel={() => setVerifyVisible(false)}
+        onConfirm={({ selfie, name }) => doSubmit(selfie, name)}
+      />
     </KeyboardAwareScrollView>
   );
 }
@@ -574,19 +774,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "600",
     marginBottom: 12,
-    color: "#111827",
-  },
-  typePill: {
-    alignSelf: "flex-start",
-    backgroundColor: "#F3F4F6",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginBottom: 12,
-  },
-  typePillText: {
-    fontSize: 13,
-    fontWeight: "600",
     color: "#111827",
   },
   projectPill: {
@@ -609,6 +796,14 @@ const styles = StyleSheet.create({
     marginTop: 16,
     color: "#111827",
   },
+  photoHint: {
+    fontSize: 13,
+    color: "#6B7280",
+    marginBottom: 8,
+  },
+  photoHintSpaced: {
+    marginTop: 16,
+  },
   input: {
     backgroundColor: "#F9FAFB",
     borderWidth: 1,
@@ -619,15 +814,26 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#111827",
   },
-  dropdown: {
+  vehicleField: {
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: "#F9FAFB",
+    borderWidth: 1,
     borderColor: "#E5E7EB",
     borderRadius: 12,
     minHeight: 48,
+    paddingHorizontal: 14,
+    gap: 10,
   },
-  dropdownContainer: {
-    borderColor: "#E5E7EB",
-    borderRadius: 12,
+  vehicleFieldText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  vehicleFieldPlaceholder: {
+    color: "#9CA3AF",
+    fontWeight: "500",
   },
   priorityField: {
     flexDirection: "row",
@@ -789,5 +995,110 @@ const priorityModalStyles = StyleSheet.create({
     color: "#FFFFFF",
     fontWeight: "700",
     fontSize: 16,
+  },
+});
+
+const vehicleModalStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    height: "85%",
+    overflow: "hidden",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#111827",
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  searchBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    margin: 16,
+    marginBottom: 8,
+    backgroundColor: "#F3F4F6",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    height: 46,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: "#111827",
+  },
+  listContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  separator: {
+    height: 1,
+    backgroundColor: "#F3F4F6",
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+  },
+  busIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  busIconSelected: {
+    backgroundColor: "#111827",
+  },
+  rowText: {
+    flex: 1,
+  },
+  rowTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  subtitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  routeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  routeDotBordered: {
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+  },
+  rowSubtitle: {
+    fontSize: 13,
+    color: "#6B7280",
+  },
+  empty: {
+    paddingTop: 40,
+    alignItems: "center",
+  },
+  emptyText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#9CA3AF",
   },
 });

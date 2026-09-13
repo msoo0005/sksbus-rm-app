@@ -155,6 +155,16 @@ export const handler = async (event) => {
       return await withConn((c) => confirmReportMedia(c, auth, reportId, mustJson(event)));
     }
 
+    if (method === "GET" && isReportsSelfiePresignPath(path)) {
+      const reportId = getIdFromParamsOrPath(params.report_id, path, /^\/reports\/(\d+)\/selfie\/presign$/);
+      return await withConn((c) => presignReportSelfie(c, auth, reportId, qs));
+    }
+
+    if (method === "POST" && isReportsSelfieConfirmPath(path)) {
+      const reportId = getIdFromParamsOrPath(params.report_id, path, /^\/reports\/(\d+)\/selfie\/confirm$/);
+      return await withConn((c) => confirmReportSelfie(c, auth, reportId, mustJson(event)));
+    }
+
     // ===== JOBS =====
 
     if (method === "PATCH" && isJobIdPath(path)) {
@@ -214,6 +224,16 @@ export const handler = async (event) => {
     if (method === "POST" && isJobsMediaConfirmPath(path)) {
       const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/media\/confirm$/);
       return await withConn((c) => confirmJobMedia(c, auth, jobId, mustJson(event)));
+    }
+
+    if (method === "GET" && isJobsSelfiePresignPath(path)) {
+      const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/selfie\/presign$/);
+      return await withConn((c) => presignJobSelfie(c, auth, jobId, qs));
+    }
+
+    if (method === "POST" && isJobsSelfieConfirmPath(path)) {
+      const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/selfie\/confirm$/);
+      return await withConn((c) => confirmJobSelfie(c, auth, jobId, mustJson(event)));
     }
 
     // ===== JOB TASKS =====
@@ -424,6 +444,8 @@ const isReportsStatusPath = (p) => /^\/reports\/\d+\/status$/.test(p);
 const isReportsMediaListPath = (p) => /^\/reports\/\d+\/media$/.test(p);
 const isReportsMediaPresignPath = (p) => /^\/reports\/\d+\/media\/presign$/.test(p);
 const isReportsMediaConfirmPath = (p) => /^\/reports\/\d+\/media\/confirm$/.test(p);
+const isReportsSelfiePresignPath = (p) => /^\/reports\/\d+\/selfie\/presign$/.test(p);
+const isReportsSelfieConfirmPath = (p) => /^\/reports\/\d+\/selfie\/confirm$/.test(p);
 
 const isJobIdPath = (p) => /^\/jobs\/\d+$/.test(p);
 const isJobsAssignPath = (p) => /^\/jobs\/\d+\/assign$/.test(p);
@@ -433,6 +455,8 @@ const isJobsHistoryPath = (p) => /^\/jobs\/\d+\/history$/.test(p);
 const isJobsMediaListPath = (p) => /^\/jobs\/\d+\/media$/.test(p);
 const isJobsMediaPresignPath = (p) => /^\/jobs\/\d+\/media\/presign$/.test(p);
 const isJobsMediaConfirmPath = (p) => /^\/jobs\/\d+\/media\/confirm$/.test(p);
+const isJobsSelfiePresignPath = (p) => /^\/jobs\/\d+\/selfie\/presign$/.test(p);
+const isJobsSelfieConfirmPath = (p) => /^\/jobs\/\d+\/selfie\/confirm$/.test(p);
 
 const isPartIdPath = (p) => /^\/parts\/\d+$/.test(p);
 
@@ -720,6 +744,17 @@ async function getMe(conn, auth) {
 
 // ===================== PROJECTS =====================
 
+// Per-project pending/open report counts, for the project picker's badge.
+// "Pending" mirrors the same normalisation listReports() uses for its own
+// pending filter (NULL/blank/submitted/pending all count as pending).
+const REPORT_COUNTS_BY_PROJECT_SQL = `
+  SELECT project_id,
+         SUM(CASE WHEN report_status IS NULL OR TRIM(report_status)='' OR LOWER(TRIM(report_status)) IN ('submitted','pending') THEN 1 ELSE 0 END) AS pending_count,
+         SUM(CASE WHEN LOWER(TRIM(report_status))='open' THEN 1 ELSE 0 END) AS open_count
+  FROM REPORT
+  GROUP BY project_id
+`;
+
 async function listMyProjects(conn, auth) {
   const deny = requireRole(auth, [
     "admin", "fleet_manager", "rm_manager", "technician", "inventory_manager", "driver",
@@ -729,9 +764,12 @@ async function listMyProjects(conn, auth) {
   const userId = await getOrCreateUserId(conn, auth);
 
   const [rows] = await conn.execute(
-    `SELECT p.project_id, p.project_name, p.project_desc
+    `SELECT p.project_id, p.project_name, p.project_desc,
+            COALESCE(rc.pending_count, 0) AS pending_count,
+            COALESCE(rc.open_count, 0) AS open_count
      FROM USER_PROJECT up
      JOIN PROJECT p ON p.project_id = up.project_id
+     LEFT JOIN (${REPORT_COUNTS_BY_PROJECT_SQL}) rc ON rc.project_id = p.project_id
      WHERE up.user_id = ?
      ORDER BY p.project_name ASC, p.project_id ASC`,
     [userId]
@@ -745,9 +783,12 @@ async function listAllProjects(conn, auth) {
   if (deny) return deny;
 
   const [rows] = await conn.execute(
-    `SELECT project_id, project_name, project_desc
-     FROM PROJECT
-     ORDER BY project_name ASC, project_id ASC`
+    `SELECT p.project_id, p.project_name, p.project_desc,
+            COALESCE(rc.pending_count, 0) AS pending_count,
+            COALESCE(rc.open_count, 0) AS open_count
+     FROM PROJECT p
+     LEFT JOIN (${REPORT_COUNTS_BY_PROJECT_SQL}) rc ON rc.project_id = p.project_id
+     ORDER BY p.project_name ASC, p.project_id ASC`
   );
 
   return json(200, rows);
@@ -775,7 +816,7 @@ async function getBuses(conn, auth, qs) {
     }
 
     const [rows] = await conn.execute(
-      `SELECT bus_id, bus_route, bus_model, project_id
+      `SELECT bus_id, bus_route, bus_route_colour, bus_route_number, bus_model, project_id
        FROM BUS WHERE project_id=? ORDER BY bus_id ASC`,
       [projectId]
     );
@@ -784,7 +825,7 @@ async function getBuses(conn, auth, qs) {
 
   if (auth.role === "admin") {
     const [rows] = await conn.execute(
-      "SELECT bus_id, bus_route, bus_model, project_id FROM BUS ORDER BY bus_id ASC"
+      "SELECT bus_id, bus_route, bus_route_colour, bus_route_number, bus_model, project_id FROM BUS ORDER BY bus_id ASC"
     );
     return json(200, rows);
   }
@@ -792,7 +833,7 @@ async function getBuses(conn, auth, qs) {
   const userId = await getOrCreateUserId(conn, auth);
 
   const [rows] = await conn.execute(
-    `SELECT b.bus_id, b.bus_route, b.bus_model, b.project_id
+    `SELECT b.bus_id, b.bus_route, b.bus_route_colour, b.bus_route_number, b.bus_model, b.project_id
      FROM BUS b
      JOIN USER_PROJECT up ON up.project_id = b.project_id
      WHERE up.user_id = ?
@@ -810,10 +851,12 @@ async function createBus(conn, auth, b) {
   if (!b.bus_id) throw new Error("bus_id is required");
 
   const [res] = await conn.execute(
-    `INSERT INTO BUS (bus_id, bus_route, bus_model, project_id) VALUES (?, ?, ?, ?)`,
+    `INSERT INTO BUS (bus_id, bus_route, bus_route_colour, bus_route_number, bus_model, project_id) VALUES (?, ?, ?, ?, ?, ?)`,
     [
       String(b.bus_id).trim(),
       b.bus_route ? String(b.bus_route).trim() : null,
+      b.bus_route_colour ? String(b.bus_route_colour).trim() : null,
+      b.bus_route_number ? String(b.bus_route_number).trim() : null,
       b.bus_model ? String(b.bus_model).trim() : null,
       b.project_id ? String(b.project_id).trim() : null,
     ]
@@ -829,10 +872,12 @@ async function updateBus(conn, auth, busId, b) {
   const updates = [];
   const vals = [];
 
-  if (b.bus_id != null)          { updates.push("bus_id=?");     vals.push(String(b.bus_id).trim()); }
-  if (b.bus_route !== undefined)  { updates.push("bus_route=?");  vals.push(b.bus_route ? String(b.bus_route).trim() : null); }
-  if (b.bus_model !== undefined)  { updates.push("bus_model=?");  vals.push(b.bus_model ? String(b.bus_model).trim() : null); }
-  if (b.project_id !== undefined) { updates.push("project_id=?"); vals.push(b.project_id ? String(b.project_id).trim() : null); }
+  if (b.bus_id != null)               { updates.push("bus_id=?");            vals.push(String(b.bus_id).trim()); }
+  if (b.bus_route !== undefined)       { updates.push("bus_route=?");         vals.push(b.bus_route ? String(b.bus_route).trim() : null); }
+  if (b.bus_route_colour !== undefined) { updates.push("bus_route_colour=?"); vals.push(b.bus_route_colour ? String(b.bus_route_colour).trim() : null); }
+  if (b.bus_route_number !== undefined) { updates.push("bus_route_number=?"); vals.push(b.bus_route_number ? String(b.bus_route_number).trim() : null); }
+  if (b.bus_model !== undefined)       { updates.push("bus_model=?");         vals.push(b.bus_model ? String(b.bus_model).trim() : null); }
+  if (b.project_id !== undefined)      { updates.push("project_id=?");        vals.push(b.project_id ? String(b.project_id).trim() : null); }
 
   if (!updates.length) return json(200, { success: true });
 
@@ -993,7 +1038,10 @@ async function getReport(conn, auth, reportId) {
     if (Number(rows[0].user_id) !== userId) return json(403, { message: "Forbidden" });
   }
 
-  return json(200, rows[0]);
+  const row = rows[0];
+  const report_selfie_view_url = await signS3Url(row.report_selfie_s3_bucket, row.report_selfie_s3_key);
+
+  return json(200, { ...row, report_selfie_view_url });
 }
 
 async function createReport(conn, auth, b) {
@@ -1283,6 +1331,7 @@ async function listJobs(conn, auth, qs) {
       j.job_id, j.job_desc, j.job_status, j.technician_user_id,
       tech.user_name AS technician_name,
       j.job_odometer, j.job_created_at, j.job_accepted_at, j.job_updated_at, j.job_completed_at,
+      j.job_verified_name, j.job_selfie_s3_bucket, j.job_selfie_s3_key,
       r.report_id, r.report_type, r.report_priority, r.report_desc,
       r.report_location, r.report_uploaded_at, r.bus_id, r.project_id,
       reporter.user_name AS reporter_name
@@ -1296,7 +1345,15 @@ async function listJobs(conn, auth, qs) {
   `;
 
   const [rows] = await conn.execute(sql, vals);
-  return json(200, rows);
+
+  const enriched = await Promise.all(
+    (rows || []).map(async (r) => ({
+      ...r,
+      job_selfie_view_url: await signS3Url(r.job_selfie_s3_bucket, r.job_selfie_s3_key),
+    }))
+  );
+
+  return json(200, enriched);
 }
 
 async function getJob(conn, auth, jobId) {
@@ -2049,6 +2106,20 @@ function extFromMime(mime) {
   return "bin";
 }
 
+// Signing is a local crypto computation (no network call), so this is cheap
+// to run per-row even across a 200-row list — same reasoning behind the
+// existing per-media-item Promise.all signing below.
+async function signS3Url(bucket, key) {
+  if (!bucket || !key) return null;
+  try {
+    const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
+    return await getSignedUrl(s3, cmd, { expiresIn: 300 });
+  } catch (e) {
+    console.error("Failed signing selfie url", key, e);
+    return null;
+  }
+}
+
 async function presignReportMedia(conn, auth, reportId, qs) {
   const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician", "inventory_manager", "driver"]);
   if (deny) return deny;
@@ -2091,6 +2162,56 @@ async function confirmReportMedia(conn, auth, reportId, b) {
   await conn.execute(
     `INSERT INTO REPORT_MEDIA (report_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, uploaded_at) VALUES (?,?,?,?,?,?,NOW())`,
     [reportId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null]
+  );
+  return json(200, { success: true });
+}
+
+// A separate presign/confirm pair (rather than reusing REPORT_MEDIA) since a
+// selfie isn't a gallery photo of the bus — it's identity-verification data
+// that lives directly on the REPORT row (one per report, not a list).
+async function presignReportSelfie(conn, auth, reportId, qs) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician", "inventory_manager", "driver"]);
+  if (deny) return deny;
+
+  const mime = (qs.mime ?? "").toString().trim();
+  if (!mime) throw new Error("mime required");
+
+  const [rows] = await conn.execute("SELECT report_id, user_id FROM REPORT WHERE report_id=?", [reportId]);
+  if (!rows?.length) throw new Error("report_id not found");
+
+  if (auth.role === "driver") {
+    const userId = await getOrCreateUserId(conn, auth);
+    if (Number(rows[0].user_id) !== userId) return json(403, { message: "Forbidden" });
+  }
+
+  const ext = extFromMime(mime);
+  const key = `reports/${reportId}/selfie/${crypto.randomUUID()}.${ext}`;
+  const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime });
+  const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
+
+  return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
+}
+
+async function confirmReportSelfie(conn, auth, reportId, b) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician", "inventory_manager", "driver"]);
+  if (deny) return deny;
+
+  if (!b.s3_key) throw new Error("s3_key required");
+  if (!b.mime_type) throw new Error("mime_type required");
+  const verifiedName = (b.verified_name ?? "").toString().trim();
+  if (!verifiedName) throw new Error("verified_name is required");
+
+  const [rows] = await conn.execute("SELECT report_id, user_id FROM REPORT WHERE report_id=?", [reportId]);
+  if (!rows?.length) throw new Error("report_id not found");
+
+  if (auth.role === "driver") {
+    const userId = await getOrCreateUserId(conn, auth);
+    if (Number(rows[0].user_id) !== userId) return json(403, { message: "Forbidden" });
+  }
+
+  await conn.execute(
+    `UPDATE REPORT SET report_verified_name=?, report_selfie_s3_bucket=?, report_selfie_s3_key=? WHERE report_id=?`,
+    [verifiedName, S3_BUCKET, b.s3_key, reportId]
   );
   return json(200, { success: true });
 }
@@ -2179,6 +2300,51 @@ async function confirmJobMedia(conn, auth, jobId, b) {
   await conn.execute(
     `INSERT INTO JOB_MEDIA (job_id, task_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, uploaded_at) VALUES (?,?,?,?,?,?,?,NOW())`,
     [jobId, taskId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null]
+  );
+  return json(200, { success: true });
+}
+
+// Same reasoning as the report selfie pair above — a dedicated presign/
+// confirm pair writing straight onto the JOB row's own columns, not another
+// JOB_MEDIA row, since there's exactly one completion selfie per job.
+async function presignJobSelfie(conn, auth, jobId, qs) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const lock = await assertTechJobUnlocked(conn, auth, jobId);
+  if (lock) return lock;
+
+  const mime = (qs.mime ?? "").toString().trim();
+  if (!mime) throw new Error("mime required");
+
+  const [j] = await conn.execute("SELECT job_id FROM JOB WHERE job_id=?", [jobId]);
+  if (!j?.length) throw new Error("job_id not found");
+
+  const ext = extFromMime(mime);
+  const key = `jobs/${jobId}/selfie/${crypto.randomUUID()}.${ext}`;
+  const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime });
+  const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
+  return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
+}
+
+async function confirmJobSelfie(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const lock = await assertTechJobUnlocked(conn, auth, jobId);
+  if (lock) return lock;
+
+  if (!b.s3_key) throw new Error("s3_key required");
+  if (!b.mime_type) throw new Error("mime_type required");
+  const verifiedName = (b.verified_name ?? "").toString().trim();
+  if (!verifiedName) throw new Error("verified_name is required");
+
+  const [j] = await conn.execute("SELECT job_id FROM JOB WHERE job_id=?", [jobId]);
+  if (!j?.length) throw new Error("job_id not found");
+
+  await conn.execute(
+    `UPDATE JOB SET job_verified_name=?, job_selfie_s3_bucket=?, job_selfie_s3_key=? WHERE job_id=?`,
+    [verifiedName, S3_BUCKET, b.s3_key, jobId]
   );
   return json(200, { success: true });
 }

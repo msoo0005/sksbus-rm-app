@@ -41,11 +41,6 @@ export default function SignIn() {
     path: "redirect",
   });
 
-  const logoutUrl =
-    `${issuer}/logout` +
-    `?client_id=${encodeURIComponent(clientId)}` +
-    `&logout_uri=${encodeURIComponent(redirectUri)}`;
-
   const [request, response, promptAsync] = AuthSession.useAuthRequest(
     {
       clientId,
@@ -67,7 +62,7 @@ export default function SignIn() {
           setError(
             (response.params?.error_description as string) ||
               (response.params?.error as string) ||
-              "Login error",
+              "Sign-in was cancelled or failed.",
           );
         }
         return;
@@ -100,7 +95,7 @@ export default function SignIn() {
           refreshToken: tokenRes.refreshToken,
         });
       } catch (e: any) {
-        setError(e?.message ?? "Sign in failed");
+        setError(e?.message ?? "We couldn't sign you in. Please try again.");
       } finally {
         setBusy(false);
       }
@@ -114,20 +109,7 @@ export default function SignIn() {
       await signOut();
       await promptAsync();
     } catch (e: any) {
-      setError(e?.message ?? "Failed to open login");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleHardResetAuth = async () => {
-    setError(null);
-    setBusy(true);
-    try {
-      await signOut();
-      await WebBrowser.openAuthSessionAsync(logoutUrl, redirectUri);
-    } catch (e: any) {
-      setError(e?.message ?? "Reset failed");
+      setError(e?.message ?? "Couldn't open the sign-in screen. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -174,16 +156,6 @@ export default function SignIn() {
           ) : (
             <Text style={styles.signInBtnText}>Sign In</Text>
           )}
-        </Pressable>
-      </View>
-
-      {/* Footer */}
-      <View style={styles.footer}>
-        <Text style={styles.footerText}>
-          Having trouble signing in?{" "}
-        </Text>
-        <Pressable onPress={handleHardResetAuth} disabled={busy}>
-          <Text style={[styles.resetLink, busy && { opacity: 0.5 }]}>Reset auth session</Text>
         </Pressable>
       </View>
     </SafeAreaView>
@@ -275,24 +247,5 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#fff",
     letterSpacing: 0.3,
-  },
-
-  footer: {
-    marginTop: 28,
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    flexWrap: "wrap",
-  },
-  footerText: {
-    fontSize: 13,
-    color: "#9CA3AF",
-    fontWeight: "500",
-  },
-  resetLink: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#6B7280",
-    textDecorationLine: "underline",
   },
 });

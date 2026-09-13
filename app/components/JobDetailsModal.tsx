@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useI18n } from "../i18n/i18n-ctx";
 import { openDirections } from "../utils/directions";
+import { reportTypeTitleLabel } from "../utils/reportType";
 import { Report } from "../types/report";
 import ImageViewerOverlay from "./ImageViewerOverlay";
 
@@ -48,12 +49,6 @@ function mediaToUrl(m: any) {
   const region = process.env.EXPO_PUBLIC_AWS_REGION || "ap-southeast-1";
   return `https://${bucket}.s3.${region}.amazonaws.com/${encodeURIComponent(key).replace(/%2F/g, "/")}`;
 }
-
-const TYPE_CONFIG: Record<string, { labelKey: string; color: string; bg: string }> = {
-  problem:  { labelKey: "statusBadge.problem",  color: "#DC2626", bg: "#FEF2F2" },
-  repair:   { labelKey: "statusBadge.repair",   color: "#2563EB", bg: "#EFF6FF" },
-  accident: { labelKey: "statusBadge.accident", color: "#EA580C", bg: "#FFF7ED" },
-};
 
 const SEVERITY_CONFIG: Record<string, { labelKey: string; color: string; bg: string }> = {
   low:      { labelKey: "statusBadge.low",      color: "#16A34A", bg: "#F0FDF4" },
@@ -134,7 +129,6 @@ export default function JobDetailsModal({
 
   if (!report) return null;
 
-  const typeConf = TYPE_CONFIG[report.type] ?? TYPE_CONFIG.repair;
   const sevConf = SEVERITY_CONFIG[report.severity] ?? SEVERITY_CONFIG.medium;
   const declined = report.audit?.action === "declined";
   const approved = report.audit?.action === "approved";
@@ -151,11 +145,11 @@ export default function JobDetailsModal({
         {/* ── Header ── */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <Text style={s.headerEyebrow}>{t("jobDetailsModal.reportEyebrow")}</Text>
-            <Text style={s.headerTitle}>#{report.id}</Text>
+            <Text style={s.headerTitle}>
+              {reportTypeTitleLabel(report.type, t)} #{report.id}
+            </Text>
           </View>
           <View style={s.headerRight}>
-            <Chip label={t(typeConf.labelKey)} color={typeConf.color} bg={typeConf.bg} />
             <Chip label={t(sevConf.labelKey)} color={sevConf.color} bg={sevConf.bg} />
             <Pressable
               onPress={onClose}
@@ -306,18 +300,11 @@ const s = StyleSheet.create({
     gap: 12,
   },
   headerLeft: { flex: 1 },
-  headerEyebrow: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#9CA3AF",
-    letterSpacing: 1.5,
-    marginBottom: 2,
-  },
   headerTitle: {
-    fontSize: 30,
+    fontSize: 22,
     fontWeight: "800",
     color: "#111827",
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
   headerRight: {
     flexDirection: "row",

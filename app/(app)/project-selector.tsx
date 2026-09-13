@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Image,
   Platform,
   Pressable,
   RefreshControl,
@@ -17,12 +18,15 @@ import { api } from "../api/client";
 import { Card, CardContent } from "../components/card";
 import { useI18n } from "../i18n/i18n-ctx";
 import { useProject } from "../project-ctx"; // ✅ NEW: persisted project selection
+import { getProjectLogo } from "../utils/projectLogos";
 
 // Match your DB/API response (adjust field names if your PROJECT table differs)
 type Project = {
   project_id: string;
   project_name: string;
   project_desc?: string | null;
+  pending_count?: number;
+  open_count?: number;
 };
 
 export default function ProjectSelectorScreen() {
@@ -95,10 +99,12 @@ export default function ProjectSelectorScreen() {
   };
 
   const renderItem = ({ item }: { item: Project }) => {
-    // Simple icon heuristic (optional)
+    // Simple icon heuristic (optional) — only used as a fallback when the
+    // project has no bundled logo.
     const iconName = item.project_id?.toUpperCase().includes("DEPOT")
       ? "warehouse"
       : "folder";
+    const logo = getProjectLogo(item.project_id);
     const selected = item.project_id === selectedProjectId;
 
     return (
@@ -119,11 +125,15 @@ export default function ProjectSelectorScreen() {
                 <View
                   style={[styles.iconWrap, selected && styles.iconWrapSelected]}
                 >
-                  <FontAwesome5
-                    name={iconName as any}
-                    size={18}
-                    color="#111827"
-                  />
+                  {logo ? (
+                    <Image source={logo} style={styles.logoImage} resizeMode="contain" />
+                  ) : (
+                    <FontAwesome5
+                      name={iconName as any}
+                      size={18}
+                      color="#111827"
+                    />
+                  )}
                 </View>
 
                 <View style={styles.textCol}>
@@ -137,6 +147,23 @@ export default function ProjectSelectorScreen() {
 
                   {selected && <Text style={styles.selectedTag}>{t("projectSelector.selected")}</Text>}
                 </View>
+              </View>
+
+              <View style={styles.countBadges}>
+                {!!item.pending_count && (
+                  <View style={[styles.countBadge, styles.countBadgePending]}>
+                    <Text style={styles.countBadgeText}>
+                      {item.pending_count} {t("projectSelector.pendingBadge")}
+                    </Text>
+                  </View>
+                )}
+                {!!item.open_count && (
+                  <View style={[styles.countBadge, styles.countBadgeOpen]}>
+                    <Text style={styles.countBadgeText}>
+                      {item.open_count} {t("projectSelector.openBadge")}
+                    </Text>
+                  </View>
+                )}
               </View>
 
               <Text style={styles.chev}>›</Text>
@@ -303,14 +330,19 @@ const styles = StyleSheet.create({
   left: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
 
   iconWrap: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "#E5E7EB",
     backgroundColor: "#F9FAFB",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  logoImage: {
+    width: "84%",
+    height: "84%",
   },
 
   textCol: { flex: 1 },
@@ -330,6 +362,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
   },
+
+  countBadges: { gap: 6, alignItems: "flex-end" },
+  countBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  countBadgePending: { backgroundColor: "#FFFBEB", borderColor: "#FDE68A" },
+  countBadgeOpen: { backgroundColor: "#EFF6FF", borderColor: "#BFDBFE" },
+  countBadgeText: { fontSize: 11, fontWeight: "800", color: "#111827" },
 
   chev: { fontSize: 22, fontWeight: "900", color: "#9CA3AF", marginLeft: 8 },
 

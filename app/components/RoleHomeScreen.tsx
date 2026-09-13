@@ -28,6 +28,9 @@ type Props = {
   onPress: () => void;
   highlights?: Highlight[];
   secondaryAction?: SecondaryAction;
+  // Defaults to actionTitle when omitted — set this when the CTA button
+  // should read differently from the card heading above it.
+  ctaLabel?: string;
 };
 
 export default function RoleHomeScreen({
@@ -40,6 +43,7 @@ export default function RoleHomeScreen({
   onPress,
   highlights = [],
   secondaryAction,
+  ctaLabel,
 }: Props) {
   const { t } = useI18n();
 
@@ -87,7 +91,7 @@ export default function RoleHomeScreen({
             pressed && styles.ctaPressed,
           ]}
         >
-          <Text style={styles.ctaText}>{actionTitle}</Text>
+          <Text style={styles.ctaText}>{ctaLabel ?? actionTitle}</Text>
           <FontAwesome5 name="arrow-right" size={13} color="#fff" />
         </Pressable>
       </View>

@@ -454,6 +454,8 @@ export const api = {
         project_id: string;
         project_name: string;
         project_desc?: string | null;
+        pending_count?: number;
+        open_count?: number;
       }[]
     >("/projects"),
 
@@ -463,6 +465,8 @@ export const api = {
         project_id: string;
         project_name: string;
         project_desc?: string | null;
+        pending_count?: number;
+        open_count?: number;
       }[]
     >("/me/projects"),
 
@@ -477,6 +481,8 @@ export const api = {
   createBus: (body: {
     bus_id: string;
     bus_route?: string;
+    bus_route_colour?: string;
+    bus_route_number?: string;
     bus_model?: string;
     project_id?: string;
   }) =>
@@ -490,6 +496,8 @@ export const api = {
     body: {
       bus_id?: string;
       bus_route?: string;
+      bus_route_colour?: string;
+      bus_route_number?: string;
       bus_model?: string;
       project_id?: string;
     },
@@ -593,6 +601,24 @@ export const api = {
       },
     ),
 
+  // Identity-verification selfie, separate from the gallery-style report
+  // media above — one per report, stored directly on the REPORT row.
+  presignReportSelfie: (reportId: number, mime: string) =>
+    requestWithIdToken<{
+      uploadUrl: string;
+      s3_bucket: string;
+      s3_key: string;
+    }>(`/reports/${reportId}/selfie/presign?mime=${encodeURIComponent(mime)}`),
+
+  confirmReportSelfie: (
+    reportId: number,
+    body: { s3_key: string; mime_type: string; size_bytes?: number; verified_name: string },
+  ) =>
+    requestWithIdToken<{ success: true }>(`/reports/${reportId}/selfie/confirm`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   // ===== JOBS =====
   listJobs: (params?: { status?: string; project_id?: string }) => {
     const qs = new URLSearchParams();
@@ -665,6 +691,24 @@ export const api = {
     body: { s3_key: string; mime_type: string; size_bytes?: number; task_id?: number },
   ) =>
     requestWithIdToken<{ success: true }>(`/jobs/${jobId}/media/confirm`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // Identity-verification selfie taken at job completion — one per job,
+  // stored directly on the JOB row (same pattern as the report selfie above).
+  presignJobSelfie: (jobId: number, mime: string) =>
+    requestWithIdToken<{
+      uploadUrl: string;
+      s3_bucket: string;
+      s3_key: string;
+    }>(`/jobs/${jobId}/selfie/presign?mime=${encodeURIComponent(mime)}`),
+
+  confirmJobSelfie: (
+    jobId: number,
+    body: { s3_key: string; mime_type: string; size_bytes?: number; verified_name: string },
+  ) =>
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/selfie/confirm`, {
       method: "POST",
       body: JSON.stringify(body),
     }),

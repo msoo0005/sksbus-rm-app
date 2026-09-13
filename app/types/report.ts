@@ -35,6 +35,14 @@ export type Report = {
 
   // From DB: report_uploaded_at (formatted for UI)
   date: string;
+  // Same value as `date`, but the raw ISO timestamp — kept alongside the
+  // formatted string so a live "time since" readout can be computed from it.
+  dateIso?: string | null;
+
+  // When the report left the "open" state (decline or job completion) —
+  // used to freeze the elapsed-time readout instead of letting it keep
+  // ticking past resolution.
+  closedAt?: string | null;
 
   // From DB: report_status
   status: "pending" | "open" | "closed";

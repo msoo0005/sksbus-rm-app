@@ -22,7 +22,13 @@ export type LocalMedia = {
 // Shared by ImagePickerField and any compact/custom photo pickers (e.g. the
 // fixed-slot after-photo grid) — permission request, capture/pick, and the
 // resize/compress step, without any of ImagePickerField's own UI or state.
-export async function pickImage(fromCamera: boolean): Promise<LocalMedia | null> {
+// `cameraType` only applies when capturing (ignored for the gallery) — used
+// by the identity-verification selfie step to open straight to the front
+// camera instead of whichever one the device last used.
+export async function pickImage(
+  fromCamera: boolean,
+  cameraType?: ImagePicker.CameraType,
+): Promise<LocalMedia | null> {
   const permission = fromCamera
     ? await ImagePicker.requestCameraPermissionsAsync()
     : await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -36,7 +42,7 @@ export async function pickImage(fromCamera: boolean): Promise<LocalMedia | null>
   }
 
   const result = fromCamera
-    ? await ImagePicker.launchCameraAsync({ quality: 0.7 })
+    ? await ImagePicker.launchCameraAsync({ quality: 0.7, cameraType })
     : await ImagePicker.launchImageLibraryAsync({
         quality: 0.7,
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -60,6 +66,12 @@ export async function pickImage(fromCamera: boolean): Promise<LocalMedia | null>
 type Props = {
   title: string;
   required?: boolean;
+
+  // Small icon shown next to the title, e.g. a dashboard/bus/camera glyph,
+  // so a stack of these cards is scannable without reading every label.
+  // The icon element carries its own color; this only tints its circle backdrop.
+  icon?: React.ReactNode;
+  iconAccentLight?: string;
 
   value?: LocalMedia[];
   onChange?: (media: LocalMedia[]) => void;
@@ -85,6 +97,8 @@ const SCREEN_HEIGHT = Dimensions.get("window").height;
 export default function ImagePickerField({
   title,
   required,
+  icon,
+  iconAccentLight = "#F3F4F6",
   value = [],
   onChange,
   readOnly = false,
@@ -142,9 +156,16 @@ export default function ImagePickerField({
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
-        <Text style={styles.title}>
-          {title} {required ? <Text style={styles.asterisk}>*</Text> : null}
-        </Text>
+        <View style={styles.titleRow}>
+          {icon && (
+            <View style={[styles.iconBox, { backgroundColor: iconAccentLight }]}>
+              {icon}
+            </View>
+          )}
+          <Text style={styles.title}>
+            {title} {required ? <Text style={styles.asterisk}>*</Text> : null}
+          </Text>
+        </View>
         <View style={styles.pill}>
           <Text style={styles.pillText}>{countText}</Text>
         </View>
@@ -298,8 +319,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 14,
+    gap: 10,
+  },
+  titleRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  iconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
   },
   title: {
+    flexShrink: 1,
     fontSize: 20,
     fontWeight: "700",
     color: "#111827",

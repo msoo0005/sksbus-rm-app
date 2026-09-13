@@ -21,12 +21,16 @@ import BusDetailsModal from "../../../components/BusDetailsModal";
 import type { LocalMedia } from "../../../components/ImagePicker";
 import ImagePickerField from "../../../components/ImagePicker";
 import ImageViewerOverlay from "../../../components/ImageViewerOverlay";
+import InstrumentClusterIcon from "../../../components/icons/InstrumentClusterIcon";
 import JobTaskCard from "../../../components/JobTaskCard";
 import JobTimeline, { TimelineEvent } from "../../../components/JobTimeline";
 import type { StatusType } from "../../../components/StatusBadge";
 import StatusBadge from "../../../components/StatusBadge";
+import VerificationModal from "../../../components/VerificationModal";
 import { useI18n } from "../../../i18n/i18n-ctx";
 import { openDirections } from "../../../utils/directions";
+import { computeJobPendingStage } from "../../../utils/jobPendingStage";
+import { reportTypeTitleLabel } from "../../../utils/reportType";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -36,17 +40,25 @@ type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 // timeline and excluded from the Tasks list.
 const ODOMETER_TASK_NAME = "Recorded odometer reading";
 
-// Completing a job requires exactly one after-photo per side of the bus —
-// these are the 4 fixed slots shown in the "After Photos" section. Built
-// from translations (like buildPriorityOptions in form.tsx) since the
-// labels need to switch with the selected language.
-type AfterPhotoSlot = "front" | "back" | "left" | "right";
-function buildAfterPhotoSlots(t: (key: string) => string): { key: AfterPhotoSlot; label: string }[] {
+// Completing a job requires exactly one after-photo per side of the bus,
+// plus one of the instrument cluster — these are the 5 fixed slots shown in
+// the "After Photos" section. Built from translations (like
+// buildPriorityOptions in form.tsx) since the labels need to switch with
+// the selected language.
+type AfterPhotoSlot = "dashboard" | "front" | "back" | "left" | "right";
+function buildAfterPhotoSlots(
+  t: (key: string) => string,
+): { key: AfterPhotoSlot; label: string; icon?: string; iconElement?: React.ReactNode }[] {
   return [
-    { key: "front", label: t("jobDetail.photoSlotFront") },
-    { key: "back", label: t("jobDetail.photoSlotBack") },
-    { key: "left", label: t("jobDetail.photoSlotLeft") },
-    { key: "right", label: t("jobDetail.photoSlotRight") },
+    {
+      key: "dashboard",
+      label: t("jobDetail.photoSlotDashboard"),
+      iconElement: <InstrumentClusterIcon size={18} color="#9CA3AF" />,
+    },
+    { key: "front", label: t("jobDetail.photoSlotFront"), icon: "arrow-up" },
+    { key: "back", label: t("jobDetail.photoSlotBack"), icon: "arrow-down" },
+    { key: "left", label: t("jobDetail.photoSlotLeft"), icon: "arrow-left" },
+    { key: "right", label: t("jobDetail.photoSlotRight"), icon: "arrow-right" },
   ];
 }
 
@@ -65,6 +77,8 @@ type JobListItem = {
   bus_id: string | null;
   reporter_name: string | null;
   technician_name?: string | null;
+  job_verified_name?: string | null;
+  job_selfie_view_url?: string | null;
 };
 
 type ReportDto = {
@@ -80,6 +94,8 @@ type ReportDto = {
   reporter_name?: string | null;
   reporter_email?: string | null;
   report_review_by?: string | null;
+  report_verified_name?: string | null;
+  report_selfie_view_url?: string | null;
 };
 
 type JobTask = {
@@ -106,11 +122,6 @@ function toLower(x: unknown) {
   return String(x ?? "")
     .trim()
     .toLowerCase();
-}
-function normaliseReportType(x: unknown): StatusType {
-  const v = toLower(x);
-  if (v === "repair" || v === "problem" || v === "accident") return v;
-  return "repair";
 }
 function normalisePriority(x: unknown): StatusType {
   const v = toLower(x);
@@ -199,6 +210,7 @@ export default function TechnicianJobDetailsScreen() {
   const [savingOdometer, setSavingOdometer] = useState(false);
 
   const [afterPhotoSlots, setAfterPhotoSlots] = useState<Record<AfterPhotoSlot, LocalMedia[]>>({
+    dashboard: [],
     front: [],
     back: [],
     left: [],
@@ -208,6 +220,7 @@ export default function TechnicianJobDetailsScreen() {
   const [loadingReportPhotos, setLoadingReportPhotos] = useState(false);
 
   const [afterPhotoUrls, setAfterPhotoUrls] = useState<string[]>([]);
+  const [afterPhotosUploadedAt, setAfterPhotosUploadedAt] = useState<string | null>(null);
   const [loadingAfterPhotos, setLoadingAfterPhotos] = useState(false);
 
   const [viewerVisible, setViewerVisible] = useState(false);
@@ -216,6 +229,7 @@ export default function TechnicianJobDetailsScreen() {
   const [afterViewerIndex, setAfterViewerIndex] = useState(0);
   const [busDetailsVisible, setBusDetailsVisible] = useState(false);
   const [completing, setCompleting] = useState(false);
+  const [verifyVisible, setVerifyVisible] = useState(false);
 
   const viewerUrls = useMemo(
     () => reportPhotoUrls.map((u) => ({ url: u })),
@@ -300,12 +314,21 @@ export default function TechnicianJobDetailsScreen() {
       const media = (await api.listJobMedia(jId, {
         untaggedOnly: true,
       })) as JobMedia[];
-      const urls = (Array.isArray(media) ? media : [])
-        .map((m) => m?.viewUrl ?? null)
-        .filter(isNonEmptyString);
+      const list = Array.isArray(media) ? media : [];
+      const urls = list.map((m) => m?.viewUrl ?? null).filter(isNonEmptyString);
       setAfterPhotoUrls(Array.from(new Set(urls)));
+
+      // Latest upload timestamp stands in for "after photos taken" in the
+      // timeline — there's no dedicated event for this on the backend.
+      const latest = list
+        .map((m) => m?.uploaded_at)
+        .filter((d): d is string => !!d)
+        .sort()
+        .pop();
+      setAfterPhotosUploadedAt(latest ?? null);
     } catch {
       setAfterPhotoUrls([]);
+      setAfterPhotosUploadedAt(null);
     } finally {
       setLoadingAfterPhotos(false);
     }
@@ -593,7 +616,8 @@ export default function TechnicianJobDetailsScreen() {
         color: "#2563EB",
         colorLight: "#EFF6FF",
         title: t("jobDetail.eventReportSubmitted"),
-        by: report.reporter_name,
+        by: report.report_verified_name ?? report.reporter_name,
+        selfieUrl: report.report_selfie_view_url,
         at: report.report_uploaded_at,
       });
     }
@@ -622,7 +646,7 @@ export default function TechnicianJobDetailsScreen() {
       });
     }
 
-    const odometerTask = tasks.find((t) => t.task_name === ODOMETER_TASK_NAME);
+    const odometerTask = tasks.find((tk) => tk.task_name === ODOMETER_TASK_NAME);
     if (odometerTask?.completed_at) {
       events.push({
         id: "odometer",
@@ -633,24 +657,35 @@ export default function TechnicianJobDetailsScreen() {
         subtitle: hasOdometer
           ? `${jobSummary?.job_odometer?.toLocaleString()} km`
           : undefined,
-        by: jobSummary?.technician_name,
         at: odometerTask.completed_at,
       });
     }
 
-    for (const t of visibleTasks) {
-      if (t.task_status === "done" && t.completed_at) {
+    let taskNumber = 0;
+    for (const task of visibleTasks) {
+      if (task.task_status === "done" && task.completed_at) {
+        taskNumber += 1;
         events.push({
-          id: `task-${t.task_id}`,
+          id: `task-${task.task_id}`,
           icon: "check-circle",
           color: "#16A34A",
           colorLight: "#F0FDF4",
-          title: t.task_name,
-          subtitle: t.task_desc ?? undefined,
-          by: jobSummary?.technician_name,
-          at: t.completed_at,
+          title: t("jobDetail.eventTaskCompleted", { number: taskNumber }),
+          subtitle: task.task_desc ? `${task.task_name} — ${task.task_desc}` : task.task_name,
+          at: task.completed_at,
         });
       }
+    }
+
+    if (afterPhotosUploadedAt) {
+      events.push({
+        id: "after-photos",
+        icon: "camera",
+        color: "#7C3AED",
+        colorLight: "#F5F3FF",
+        title: t("jobDetail.eventAfterPhotosTaken"),
+        at: afterPhotosUploadedAt,
+      });
     }
 
     if (jobSummary?.job_completed_at) {
@@ -659,14 +694,21 @@ export default function TechnicianJobDetailsScreen() {
         icon: "flag-checkered",
         color: "#111827",
         colorLight: "#F3F4F6",
-        title: t("jobDetail.eventJobCompleted"),
-        by: jobSummary.technician_name,
+        title: t("jobDetail.eventJobCompletedBy", {
+          name: jobSummary.job_verified_name ?? jobSummary.technician_name ?? t("jobDetail.eventJobCompletedByFallback"),
+        }),
+        selfieUrl: jobSummary.job_selfie_view_url,
         at: jobSummary.job_completed_at,
       });
     }
 
     return events;
-  }, [report, jobSummary, tasks, visibleTasks, hasOdometer, t]);
+  }, [report, jobSummary, tasks, visibleTasks, hasOdometer, afterPhotosUploadedAt, t]);
+
+  const pendingStage = useMemo(
+    () => computeJobPendingStage(jobSummary, visibleTasks, t),
+    [jobSummary, visibleTasks, t],
+  );
 
   const uploadAfterPhotos = async (
     jId: number,
@@ -695,10 +737,33 @@ export default function TechnicianJobDetailsScreen() {
     }
   };
 
-  const doCompleteJob = async () => {
+  const doCompleteJob = async (selfie: LocalMedia, verifiedName: string) => {
     const reportId = jobSummary?.report_id ?? null;
     setCompleting(true);
     try {
+      // Identity-verification selfie — a dedicated presign/confirm pair that
+      // writes straight onto the JOB row, separate from the after-photo
+      // gallery uploaded below.
+      try {
+        const presign = await api.presignJobSelfie(jobId, selfie.mime_type);
+        const blob = await (await fetch(selfie.localUri)).blob();
+        const put = await fetch(presign.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": selfie.mime_type },
+          body: blob,
+        });
+        if (!put.ok) throw new Error(`Selfie upload failed (${put.status})`);
+        await api.confirmJobSelfie(jobId, {
+          s3_key: presign.s3_key,
+          mime_type: selfie.mime_type,
+          size_bytes: blob.size,
+          verified_name: verifiedName,
+        });
+      } catch (e: unknown) {
+        handleApiError(e, t("verification.failedToVerify"));
+        return;
+      }
+
       try {
         await uploadAfterPhotos(jobId, afterMedia);
       } catch (e: unknown) {
@@ -734,6 +799,7 @@ export default function TechnicianJobDetailsScreen() {
         }
       }
 
+      setVerifyVisible(false);
       Alert.alert(
         "Job completed",
         reportId ? "Job and report have been closed." : "Job has been closed.",
@@ -773,14 +839,7 @@ export default function TechnicianJobDetailsScreen() {
       );
       return;
     }
-    Alert.alert(
-      t("jobDetail.completeJob"),
-      t("jobDetail.completeJobConfirmMessage"),
-      [
-        { text: t("common.cancel"), style: "cancel" },
-        { text: t("jobDetail.completeJob"), style: "default", onPress: doCompleteJob },
-      ],
-    );
+    setVerifyVisible(true);
   };
 
   const reportPhotoMedia: LocalMedia[] = useMemo(
@@ -823,13 +882,12 @@ export default function TechnicianJobDetailsScreen() {
           <View style={s.hero}>
             <View style={s.heroTop}>
               <View style={s.heroLeft}>
-                <Text style={s.heroId}>Job #{jobId}</Text>
+                <Text style={s.heroId}>
+                  {reportTypeTitleLabel(jobSummary?.report_type, t)} Job #{jobId}
+                </Text>
                 {loading && <Text style={s.loadingText}>Loading…</Text>}
               </View>
               <View style={s.badgeStack}>
-                <StatusBadge
-                  type={normaliseReportType(jobSummary?.report_type)}
-                />
                 <StatusBadge
                   type={normalisePriority(jobSummary?.report_priority)}
                 />
@@ -1280,7 +1338,7 @@ export default function TechnicianJobDetailsScreen() {
 
           {/* ── Job Progress Timeline ── */}
           <SectionCard title={t("jobDetail.sectionJobProgress")} icon="stream">
-            <JobTimeline events={timelineEvents} />
+            <JobTimeline events={timelineEvents} pendingStage={pendingStage} />
           </SectionCard>
 
           {/* ── After Photos (already uploaded) ── */}
@@ -1422,6 +1480,16 @@ export default function TechnicianJobDetailsScreen() {
         visible={busDetailsVisible}
         busId={jobSummary?.bus_id ?? null}
         onClose={() => setBusDetailsVisible(false)}
+      />
+
+      <VerificationModal
+        visible={verifyVisible}
+        title={t("verification.completeJobTitle")}
+        message={t("verification.completeJobMessage")}
+        submitting={completing}
+        confirmLabel={t("jobDetail.completeJob")}
+        onCancel={() => setVerifyVisible(false)}
+        onConfirm={({ selfie, name }) => doCompleteJob(selfie, name)}
       />
     </>
   );
