@@ -8,8 +8,9 @@
 -- GOKL 14, now GOKL 09). Confirmed as a genuine renumbering, not a
 -- data error — replacing rather than merging.
 --
--- This PDF has no route colour data, so bus_route_colour is NULL for
--- every GOKL bus after this runs (previously RED/BLUE/etc).
+-- This PDF has no route colour data, so rows are inserted with
+-- bus_route_colour NULL and then filled from route number at the end of
+-- this script (mapping from the July 2026 tyre inspection form).
 --
 -- Route/model inference: the source PDF gives battery size (kWh) per
 -- bus but not the model text. GOKL 01-14 buses are assumed ELC-10M
@@ -131,5 +132,32 @@ INSERT INTO BUS (bus_id, bus_route, bus_model, project_id, bus_ev_no, bus_route_
   ('VMQ6631', 'ALAM DAMAI / HUKM', 'ELC-6M (175 kWh)', 'GOKL', 'EV001M', NULL, 'GOKL 15'),
   ('VMQ6372', 'ALAM DAMAI / HUKM', 'ELC-6M (175 kWh)', 'GOKL', 'EV002M', NULL, 'GOKL 15'),
   ('VMQ6378', 'ALAM DAMAI / HUKM', 'ELC-6M (175 kWh)', 'GOKL', 'EV003M', NULL, 'GOKL 15');
+
+-- Route colours: the source list above has none, so fill them from route
+-- number. Same mapping as migrations/019_restore_gokl_route_colours.sql —
+-- keep the two in step. Without this, re-running this script wipes every
+-- GOKL colour again.
+UPDATE BUS
+SET bus_route_colour = CASE bus_route_number
+    WHEN 'GOKL 01' THEN 'GREEN'
+    WHEN 'GOKL 02' THEN 'PURPLE'
+    WHEN 'GOKL 03' THEN 'RED'
+    WHEN 'GOKL 04' THEN 'BLUE'
+    WHEN 'GOKL 05' THEN 'ORANGE'
+    WHEN 'GOKL 06' THEN 'TURQUOISE'
+    WHEN 'GOKL 08' THEN 'MAROON'
+    WHEN 'GOKL 09' THEN 'CHOCOLATE'
+    WHEN 'GOKL 10' THEN 'PARROT GREEN'
+    WHEN 'GOKL 11' THEN 'GREY'
+    WHEN 'GOKL 12' THEN 'CREAM'
+    WHEN 'GOKL 13' THEN 'MAGENTA'
+    WHEN 'GOKL 14' THEN 'SOFT PEACH'
+    WHEN 'GOKL 15' THEN 'WHITE'
+  END
+WHERE project_id = 'GOKL'
+  AND bus_route_colour IS NULL
+  AND bus_route_number IN ('GOKL 01','GOKL 02','GOKL 03','GOKL 04','GOKL 05',
+                           'GOKL 06','GOKL 08','GOKL 09','GOKL 10','GOKL 11',
+                           'GOKL 12','GOKL 13','GOKL 14','GOKL 15');
 
 SET FOREIGN_KEY_CHECKS = 1;

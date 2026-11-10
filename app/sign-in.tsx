@@ -1,6 +1,7 @@
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import * as React from "react";
+import { useI18n } from "@/i18n/i18n-ctx";
 import {
   ActivityIndicator,
   Image,
@@ -11,7 +12,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useSession } from "./ctx";
+import { useSession } from "@/ctx";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -32,6 +33,7 @@ const discovery = {
 };
 
 export default function SignIn() {
+  const { t } = useI18n();
   const { signInWithTokens, signOut } = useSession();
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -135,9 +137,9 @@ export default function SignIn() {
 
       {/* Card */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Welcome back</Text>
+        <Text style={styles.cardTitle}>{t("signIn.welcomeBack")}</Text>
         <Text style={styles.cardSub}>
-          Sign in with your SKSBUS account to continue.
+          {t("signIn.subtitle")}
         </Text>
 
         {!!error && (
@@ -154,7 +156,7 @@ export default function SignIn() {
           {busy ? (
             <ActivityIndicator color="#fff" size="small" />
           ) : (
-            <Text style={styles.signInBtnText}>Sign In</Text>
+            <Text style={styles.signInBtnText}>{t("signIn.signInButton")}</Text>
           )}
         </Pressable>
       </View>

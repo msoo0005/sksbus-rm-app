@@ -16,25 +16,21 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { api } from "../api/client";
-import { Card, CardContent } from "../components/card";
-import { useI18n } from "../i18n/i18n-ctx";
-import { getRouteColourHex, routeColourNeedsBorder } from "../utils/routeColours";
-
-type Bus = {
-  bus_id: string | number;
-  bus_route?: string | null;
-  bus_route_colour?: string | null;
-  bus_route_number?: string | null;
-  bus_model?: string | null;
-  project_id?: string | null;
-};
+import type { Bus } from "@/api/client";
+import { api } from "@/api/client";
+import { Card, CardContent } from "@/components/card";
+import DraftRestoreBar from "@/components/DraftRestoreBar";
+import { useFormDraft } from "@/hooks/useFormDraft";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { getRouteColourHex, routeColourNeedsBorder } from "@/utils/routeColours";
+import { useProjectFilter } from "@/hooks/useProjectFilter";
 
 type BusForm = {
   bus_id: string;
   bus_route: string;
   bus_route_colour: string;
   bus_route_number: string;
+  bus_ev_no: string;
   bus_model: string;
   project_id: string;
 };
@@ -46,6 +42,7 @@ const EMPTY_FORM: BusForm = {
   bus_route: "",
   bus_route_colour: "",
   bus_route_number: "",
+  bus_ev_no: "",
   bus_model: "",
   project_id: "",
 };
@@ -56,6 +53,7 @@ function busToForm(b: Bus): BusForm {
     bus_route: b.bus_route ?? "",
     bus_route_colour: b.bus_route_colour ?? "",
     bus_route_number: b.bus_route_number ?? "",
+    bus_ev_no: b.bus_ev_no ?? "",
     bus_model: b.bus_model ?? "",
     project_id: b.project_id ?? "",
   };
@@ -63,6 +61,7 @@ function busToForm(b: Bus): BusForm {
 
 export default function BusesScreen() {
   const { t } = useI18n();
+  const projectId = useProjectFilter();
   const [buses, setBuses] = useState<Bus[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -76,6 +75,20 @@ export default function BusesScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [confirmVisible, setConfirmVisible] = useState(false);
 
+  // Keyed by which bus is being edited, so an abandoned edit of one bus never
+  // reappears on another — and a half-typed new bus is kept separately again.
+  const draftKey = modalVisible
+    ? `bus-form:${editingBus ? editingBus.bus_id : "new"}`
+    : null;
+  const isDirty = editingBus
+    ? JSON.stringify(form) !== JSON.stringify(busToForm(editingBus))
+    : Object.values(form).some((v) => String(v).trim() !== "");
+  const draft = useFormDraft(draftKey, form, isDirty);
+  const restoreDraft = () => {
+    const v = draft.restore();
+    if (v) setForm(v);
+  };
+
   // project picker
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
@@ -84,7 +97,7 @@ export default function BusesScreen() {
   const load = useCallback(async () => {
     try {
       setError(null);
-      const data = await api.buses();
+      const data = await api.buses(projectId ? { project_id: projectId } : undefined);
       setBuses(Array.isArray(data) ? data : []);
     } catch (e: any) {
       setError(e?.message ?? t("buses.failedToLoadBuses"));
@@ -92,7 +105,7 @@ export default function BusesScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [t]);
+  }, [t, projectId]);
 
   useEffect(() => {
     setLoading(true);
@@ -121,7 +134,10 @@ export default function BusesScreen() {
     if (!q) return true;
     return (
       String(b.bus_id).toLowerCase().includes(q) ||
+      // The depot identifies buses by EV number, so it has to be searchable.
+      (b.bus_ev_no ?? "").toLowerCase().includes(q) ||
       (b.bus_route ?? "").toLowerCase().includes(q) ||
+      (b.bus_route_number ?? "").toLowerCase().includes(q) ||
       (b.bus_model ?? "").toLowerCase().includes(q) ||
       (b.project_id ?? "").toLowerCase().includes(q)
     );
@@ -169,12 +185,14 @@ export default function BusesScreen() {
     setConfirmVisible(false);
     try {
       setSubmitting(true);
+      draft.clear();
       if (editingBus) {
         await api.updateBus(editingBus.bus_id, {
           bus_id: form.bus_id.trim(),
           bus_route: form.bus_route.trim() || undefined,
           bus_route_colour: form.bus_route_colour.trim() || undefined,
           bus_route_number: form.bus_route_number.trim() || undefined,
+          bus_ev_no: form.bus_ev_no.trim() || undefined,
           bus_model: form.bus_model.trim() || undefined,
           project_id: form.project_id.trim() || undefined,
         });
@@ -184,6 +202,7 @@ export default function BusesScreen() {
           bus_route: form.bus_route.trim() || undefined,
           bus_route_colour: form.bus_route_colour.trim() || undefined,
           bus_route_number: form.bus_route_number.trim() || undefined,
+          bus_ev_no: form.bus_ev_no.trim() || undefined,
           bus_model: form.bus_model.trim() || undefined,
           project_id: form.project_id.trim() || undefined,
         });
@@ -210,7 +229,12 @@ export default function BusesScreen() {
           <FontAwesome5 name="bus" size={20} color="#111827" />
         </View>
         <View style={styles.busTextCol}>
-          <Text style={styles.busRego}>{item.bus_id}</Text>
+          <Text style={styles.busRego}>
+            {item.bus_id}
+            {item.bus_ev_no ? (
+              <Text style={styles.busEvNo}>{` (${item.bus_ev_no})`}</Text>
+            ) : null}
+          </Text>
 
           {(item.bus_route_colour || item.bus_route_number) && (
             <View style={styles.routeBadgeRow}>
@@ -332,6 +356,13 @@ export default function BusesScreen() {
             </View>
 
             <ScrollView style={{ flexShrink: 1 }} keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}>
+            {draft.pending && (
+              <DraftRestoreBar
+                savedAt={draft.savedAt}
+                onRestore={restoreDraft}
+                onDiscard={draft.discard}
+              />
+            )}
             <View style={styles.fieldGroup}>
               <Text style={styles.label}>
                 {t("buses.registration")} <Text style={styles.required}>*</Text>
@@ -360,6 +391,23 @@ export default function BusesScreen() {
             </View>
 
             <View style={styles.fieldRow}>
+              {/* Two different codes, deliberately side by side so nobody
+                  types one into the other again. The bus number identifies
+                  THIS vehicle and is unique; the route number is the service
+                  it runs and is shared by every bus on that route. */}
+              <View style={[styles.fieldGroup, styles.fieldHalf]}>
+                <Text style={styles.label}>{t("buses.evNumber")}</Text>
+                <TextInput
+                  style={styles.input}
+                  value={form.bus_ev_no}
+                  onChangeText={(v) => setForm((f) => ({ ...f, bus_ev_no: v }))}
+                  placeholder={t("buses.evNumberPlaceholder")}
+                  placeholderTextColor="#9CA3AF"
+                  autoCapitalize="characters"
+                  editable={!submitting}
+                />
+              </View>
+
               <View style={[styles.fieldGroup, styles.fieldHalf]}>
                 <Text style={styles.label}>{t("buses.routeNumberField")}</Text>
                 <TextInput
@@ -601,6 +649,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   busTextCol: { flex: 1 },
+  busEvNo: { fontWeight: "700", color: "#6B7280" },
   busRego: { fontSize: 15, fontWeight: "800", color: "#111827" },
   routeBadgeRow: {
     flexDirection: "row",

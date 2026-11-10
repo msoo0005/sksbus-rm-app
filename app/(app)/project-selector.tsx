@@ -1,26 +1,33 @@
-// app/(app)/project-selector.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
   Image,
   Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
-import { api } from "../api/client";
-import { Card, CardContent } from "../components/card";
-import { useI18n } from "../i18n/i18n-ctx";
-import { useProject } from "../project-ctx"; // ✅ NEW: persisted project selection
-import { getProjectLogo } from "../utils/projectLogos";
+import { api } from "@/api/client";
+import HomeHeader from "@/components/HomeHeader";
+import { useSession } from "@/ctx";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { ALL_PROJECTS, useProject } from "@/project-ctx";
+import { getProjectLogo } from "@/utils/projectLogos";
+import { roleColorsFor, roleHomeFor, roleLabelFor } from "@/utils/roles";
 
-// Match your DB/API response (adjust field names if your PROJECT table differs)
+// The first screen every role sees after signing in.
+//
+// It is a landing page now, not a utility screen: the gate in _layout.tsx holds
+// every role here until a project is chosen, because every screen beyond it is
+// scoped to one. So it opens with the same greeting header as the role homes and
+// leads with the projects themselves rather than a form.
+
 type Project = {
   project_id: string;
   project_name: string;
@@ -29,30 +36,63 @@ type Project = {
   open_count?: number;
 };
 
+// Matches the admin console's grid, so the two landing pages lay out alike.
+const CONTENT_MAX_WIDTH = 720;
+const CONTENT_H_PADDING = 20;
+const GRID_GAP = 12;
+
+/** Fallback mark for the projects with no bundled logo. */
+function projectInitials(project: Project) {
+  const source = (project.project_id || project.project_name || "").trim();
+  if (!source) return "?";
+  return source.slice(0, 4).toUpperCase();
+}
+
 export default function ProjectSelectorScreen() {
   const router = useRouter();
   const { t } = useI18n();
-  const params = useLocalSearchParams<{ returnTo?: string; allowClear?: string }>();
-  const returnTo = params.returnTo || "./fleet-manager";
-  const allowClear = params.allowClear === "1";
+  const { dbUser } = useSession();
+  const { width: windowWidth } = useWindowDimensions();
+  const params = useLocalSearchParams<{ returnTo?: string; from?: string }>();
+
+  const role = dbUser?.user_role ?? "driver";
+  const isAdmin = role === "admin";
+  const roleColors = roleColorsFor(role);
+
+  // Where to go once a project is chosen.
+  //
+  // The fallback is this user's role home, which is right when the selector was
+  // reached by the GATE — no project chosen yet, so send them where they belong.
+  // It is NOT right when the selector was opened deliberately to switch project:
+  // an admin's role home is the console they tapped from, so falling back there
+  // makes the button appear to do nothing. Such callers pass returnTo.
+  const resolved = params.returnTo || roleHomeFor(role);
+  // And never bounce back to the selector itself, which would leave the user
+  // staring at the screen they just finished with.
+  const returnTo = resolved.startsWith("/project-selector") ? roleHomeFor(role) : resolved;
+
   const {
     projectId: selectedProjectId,
     setProjectId,
-    clearProject,
     loading: projectLoading,
   } = useProject();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       setError(null);
-      const data = await api.myProjects();
-      setProjects(Array.isArray(data) ? data : []);
+      // Admin reads the full project list; everyone else reads their own.
+      //
+      // This is a branch, not a preference: /projects is admin-only and 403s for
+      // any other role, while /me/projects returns USER_PROJECT rows — of which
+      // an admin normally has none. Calling the wrong one for an admin used to
+      // mean an empty list on a screen they cannot leave.
+      const data = isAdmin ? await api.projects() : await api.myProjects();
+      setProjects(Array.isArray(data) ? (data as Project[]) : []);
     } catch (e: any) {
       setError(e?.message ?? t("projectSelector.failedToLoadProjects"));
       setProjects([]);
@@ -60,219 +100,188 @@ export default function ProjectSelectorScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [t]);
+  }, [t, isAdmin]);
 
   useEffect(() => {
     setLoading(true);
     load();
   }, [load]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return projects;
+  // Opened by the chip (pushed on top of a screen) rather than by the gate
+  // (which replaced whatever was there). Only the pushed case has something to
+  // go back to.
+  const pushedOnTop = params.from === "chip";
 
-    return projects.filter((p) => {
-      const id = (p.project_id ?? "").toLowerCase();
-      const name = (p.project_name ?? "").toLowerCase();
-      const desc = (p.project_desc ?? "").toLowerCase();
-      return id.includes(q) || name.includes(q) || desc.includes(q);
-    });
-  }, [projects, query]);
-
-  // ✅ NEW: persist selection, then navigate without params
-  const onSelect = useCallback(
+  const choose = useCallback(
     async (projectId: string) => {
       await setProjectId(projectId);
-      router.replace(returnTo as any);
+      // Going back re-renders the screen underneath with the new project, since
+      // every screen reads it from context — no need to navigate to it afresh,
+      // and doing so would stack it on top of itself.
+      if (pushedOnTop && router.canGoBack()) router.back();
+      else router.replace(returnTo as any);
     },
-    [router, setProjectId, returnTo],
+    [router, setProjectId, returnTo, pushedOnTop],
   );
-
-  const onClear = useCallback(async () => {
-    await clearProject();
-    router.replace(returnTo as any);
-  }, [router, clearProject, returnTo]);
 
   const onRefresh = () => {
     setRefreshing(true);
     load();
   };
 
-  const renderItem = ({ item }: { item: Project }) => {
-    // Simple icon heuristic (optional) — only used as a fallback when the
-    // project has no bundled logo.
-    const iconName = item.project_id?.toUpperCase().includes("DEPOT")
-      ? "warehouse"
-      : "folder";
-    const logo = getProjectLogo(item.project_id);
-    const selected = item.project_id === selectedProjectId;
-
-    return (
-      <Pressable
-        onPress={() => onSelect(item.project_id)}
-        disabled={projectLoading}
-      >
-        {({ pressed }) => (
-          <Card
-            style={[
-              styles.projectCard,
-              selected && styles.projectCardSelected, // ✅ highlight current selection
-              pressed && styles.projectCardPressed,
-            ]}
-          >
-            <CardContent style={styles.row}>
-              <View style={styles.left}>
-                <View
-                  style={[styles.iconWrap, selected && styles.iconWrapSelected]}
-                >
-                  {logo ? (
-                    <Image source={logo} style={styles.logoImage} resizeMode="contain" />
-                  ) : (
-                    <FontAwesome5
-                      name={iconName as any}
-                      size={18}
-                      color="#111827"
-                    />
-                  )}
-                </View>
-
-                <View style={styles.textCol}>
-                  <Text style={styles.title} numberOfLines={1}>
-                    {item.project_name || item.project_id}
-                  </Text>
-                  <Text style={styles.meta} numberOfLines={1}>
-                    {item.project_id}
-                    {item.project_desc ? ` • ${item.project_desc}` : ""}
-                  </Text>
-
-                  {selected && <Text style={styles.selectedTag}>{t("projectSelector.selected")}</Text>}
-                </View>
-              </View>
-
-              <View style={styles.countBadges}>
-                {!!item.pending_count && (
-                  <View style={[styles.countBadge, styles.countBadgePending]}>
-                    <Text style={styles.countBadgeText}>
-                      {item.pending_count} {t("projectSelector.pendingBadge")}
-                    </Text>
-                  </View>
-                )}
-                {!!item.open_count && (
-                  <View style={[styles.countBadge, styles.countBadgeOpen]}>
-                    <Text style={styles.countBadgeText}>
-                      {item.open_count} {t("projectSelector.openBadge")}
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              <Text style={styles.chev}>›</Text>
-            </CardContent>
-          </Card>
-        )}
-      </Pressable>
-    );
-  };
+  // Responsive columns, same arithmetic as the admin console's module grid.
+  const contentWidth = Math.min(windowWidth, CONTENT_MAX_WIDTH) - CONTENT_H_PADDING * 2;
+  const columns = windowWidth >= 900 ? 4 : windowWidth >= 600 ? 3 : 2;
+  const tileWidth = (contentWidth - GRID_GAP * (columns - 1)) / columns;
 
   const showLoading = loading || projectLoading;
 
   return (
-    <View style={styles.page}>
-      <View style={styles.header}>
-        <Text style={styles.h1}>{t("projectSelector.title")}</Text>
-        <Text style={styles.sub}>{t("projectSelector.subtitle")}</Text>
+    <ScrollView
+      style={s.page}
+      contentContainerStyle={s.content}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+    >
+      <HomeHeader
+        roleLabel={roleLabelFor(role)}
+        roleColor={roleColors.accent}
+        roleColorLight={roleColors.light}
+        showProject={false}
+      />
 
-        <View style={styles.searchBox}>
-          <Text style={styles.searchIcon}>🔎</Text>
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder={t("projectSelector.searchPlaceholder")}
-            placeholderTextColor="#9CA3AF"
-            style={styles.searchInput}
-            autoCorrect={false}
-            autoCapitalize="none"
-            editable={!projectLoading}
-          />
+      <Text style={s.prompt}>{t("projectSelector.title")}</Text>
+      <Text style={s.promptSub}>{t("projectSelector.subtitle")}</Text>
+
+
+      {!!error && (
+        <View style={s.errorBox}>
+          <Text style={s.errorTitle}>{t("projectSelector.couldntLoadProjects")}</Text>
+          <Text style={s.errorText}>{error}</Text>
         </View>
+      )}
 
-        {!!error && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorTitle}>{t("projectSelector.couldntLoadProjects")}</Text>
-            <Text style={styles.errorText}>{error}</Text>
+      {/* Admin only. Fleet-wide is a deliberate choice here, not the absence of
+          one — picking it satisfies the gate and applies no project filter. */}
+      {isAdmin && (
+        <Pressable
+          onPress={() => choose(ALL_PROJECTS)}
+          disabled={projectLoading}
+          style={({ pressed }) => [
+            s.allCard,
+            selectedProjectId === ALL_PROJECTS && s.allCardSelected,
+            pressed && s.pressed,
+          ]}
+        >
+          <View style={s.allIcon}>
+            <FontAwesome5 name="globe" size={16} color="#4338CA" />
           </View>
-        )}
-
-        {allowClear && (
-          <Pressable
-            style={styles.clearRow}
-            onPress={onClear}
-            disabled={projectLoading}
-          >
-            <FontAwesome5 name="globe" size={13} color="#374151" />
-            <Text style={styles.clearRowText}>{t("projectSelector.viewAllProjects")}</Text>
-          </Pressable>
-        )}
-      </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.allTitle}>{t("projectSelector.allProjectsTitle")}</Text>
+            <Text style={s.allSub}>
+              {t("projectSelector.allProjectsSubtitle", { count: String(projects.length) })}
+            </Text>
+          </View>
+          <FontAwesome5 name="chevron-right" size={13} color="#9CA3AF" />
+        </Pressable>
+      )}
 
       {showLoading ? (
-        <View style={styles.loading}>
+        <View style={s.loading}>
           <ActivityIndicator />
-          <Text style={styles.loadingText}>
-            {loading ? t("projectSelector.loadingProjects") : t("projectSelector.restoringSelection")}
+          <Text style={s.loadingText}>
+            {loading
+              ? t("projectSelector.loadingProjects")
+              : t("projectSelector.restoringSelection")}
           </Text>
         </View>
+      ) : projects.length === 0 ? (
+        <View style={s.empty}>
+          <Text style={s.emptyTitle}>{t("projectSelector.emptyTitle")}</Text>
+          <Text style={s.emptySub}>{t("projectSelector.emptyNoneAssigned")}</Text>
+        </View>
       ) : (
-        <FlatList
-          data={filtered}
-          keyExtractor={(item) => item.project_id}
-          renderItem={renderItem}
-          contentContainerStyle={styles.listContent}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-          }
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Text style={styles.emptyTitle}>{t("projectSelector.emptyTitle")}</Text>
-              <Text style={styles.emptySub}>
-                {projects.length === 0
-                  ? t("projectSelector.emptyNoneAssigned")
-                  : t("projectSelector.emptyTrySearch")}
-              </Text>
-            </View>
-          }
-        />
+        <>
+          <Text style={s.sectionLabel}>
+            {t("projectSelector.sectionLabel", { count: String(projects.length) })}
+          </Text>
+          <View style={[s.grid, { gap: GRID_GAP }]}>
+            {projects.map((item) => {
+              const logo = getProjectLogo(item.project_id);
+              const selected = item.project_id === selectedProjectId;
+              const flagged = (item.pending_count ?? 0) + (item.open_count ?? 0);
+
+              return (
+                <Pressable
+                  key={item.project_id}
+                  onPress={() => choose(item.project_id)}
+                  disabled={projectLoading}
+                  style={({ pressed }) => [
+                    s.tile,
+                    { width: tileWidth },
+                    selected && s.tileSelected,
+                    pressed && s.pressed,
+                  ]}
+                >
+                  <View style={s.logoWrap}>
+                    {logo ? (
+                      <Image source={logo} style={s.logo} resizeMode="contain" />
+                    ) : (
+                      <Text style={s.logoFallback}>{projectInitials(item)}</Text>
+                    )}
+                  </View>
+
+                  <Text style={s.tileTitle} numberOfLines={2}>
+                    {item.project_name || item.project_id}
+                  </Text>
+                  <Text style={s.tileId} numberOfLines={1}>
+                    {item.project_id}
+                  </Text>
+
+                  {/* One badge, not two stacked: at a glance the useful number is
+                      "how much is waiting on me here", and the split between
+                      pending and open is a detail for the screen behind it. */}
+                  {flagged > 0 && (
+                    <View style={s.tileBadge}>
+                      <View style={s.tileBadgeDot} />
+                      <Text style={s.tileBadgeText}>
+                        {t("projectSelector.needsAttention", { count: String(flagged) })}
+                      </Text>
+                    </View>
+                  )}
+
+                  {selected && (
+                    <View style={s.tileCheck}>
+                      <FontAwesome5 name="check" size={9} color="#fff" />
+                    </View>
+                  )}
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#fff" },
-
-  header: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 8 },
-
-  h1: { fontSize: 28, fontWeight: "800", color: "#111827" },
-  sub: { marginTop: 6, fontSize: 14, fontWeight: "600", color: "#6B7280" },
-
-  searchBox: {
-    marginTop: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#F9FAFB",
+const s = StyleSheet.create({
+  page: { flex: 1, backgroundColor: "#F9FAFB" },
+  content: {
+    width: "100%",
+    maxWidth: CONTENT_MAX_WIDTH,
+    alignSelf: "center",
+    paddingHorizontal: CONTENT_H_PADDING,
+    paddingBottom: 32,
   },
-  searchIcon: { marginRight: 8, fontSize: 14 },
-  searchInput: { flex: 1, fontSize: 14, color: "#111827" },
+
+  prompt: { fontSize: 19, fontWeight: "800", color: "#111827", letterSpacing: -0.2 },
+  promptSub: { marginTop: 4, fontSize: 13, fontWeight: "600", color: "#6B7280" },
+
 
   errorBox: {
-    marginTop: 10,
+    marginTop: 12,
     borderWidth: 1,
     borderColor: "#FECACA",
     backgroundColor: "#FFF1F2",
@@ -282,101 +291,98 @@ const styles = StyleSheet.create({
   errorTitle: { fontWeight: "800", color: "#991B1B" },
   errorText: { marginTop: 4, fontWeight: "600", color: "#7F1D1D" },
 
-  clearRow: {
-    marginTop: 12,
+  allCard: {
+    marginTop: 14,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    alignSelf: "flex-start",
+    gap: 12,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#F9FAFB",
-  },
-  clearRowText: { fontSize: 13, fontWeight: "700", color: "#374151" },
-
-  loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
-  loadingText: { fontSize: 14, fontWeight: "700", color: "#6B7280" },
-
-  listContent: { paddingHorizontal: 18, paddingBottom: 18, gap: 10 },
-
-  projectCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
-  },
-  projectCardPressed: { opacity: 0.85, transform: [{ scale: 0.995 }] },
-
-  // ✅ NEW: selected styling
-  projectCardSelected: {
-    borderColor: "#111827",
-  },
-  iconWrapSelected: {
-    borderColor: "#111827",
-  },
-
-  row: {
+    borderColor: "#E0E7FF",
+    backgroundColor: "#EEF2FF",
+    borderRadius: 16,
     paddingHorizontal: 14,
     paddingVertical: 14,
-    flexDirection: "row",
+  },
+  allCardSelected: { borderColor: "#4338CA", borderWidth: 2 },
+  allIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "#fff",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+    justifyContent: "center",
+  },
+  allTitle: { fontSize: 15, fontWeight: "800", color: "#312E81" },
+  allSub: { marginTop: 2, fontSize: 12, fontWeight: "600", color: "#4F46E5" },
+
+  sectionLabel: {
+    marginTop: 20,
+    marginBottom: 10,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    color: "#6B7280",
   },
 
-  left: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
+  grid: { flexDirection: "row", flexWrap: "wrap" },
 
-  iconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+  tile: {
     borderWidth: 1,
     borderColor: "#E5E7EB",
-    backgroundColor: "#F9FAFB",
+    backgroundColor: "#fff",
+    borderRadius: 18,
+    padding: 14,
+    minHeight: 148,
+  },
+  tileSelected: { borderColor: "#111827", borderWidth: 2 },
+  pressed: { opacity: 0.85, transform: [{ scale: 0.99 }] },
+
+  logoWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
+    marginBottom: 12,
   },
-  logoImage: {
-    width: "84%",
-    height: "84%",
-  },
+  logo: { width: "78%", height: "78%" },
+  logoFallback: { fontSize: 13, fontWeight: "900", color: "#6B7280", letterSpacing: 0.3 },
 
-  textCol: { flex: 1 },
+  tileTitle: { fontSize: 14, fontWeight: "800", color: "#111827", lineHeight: 18 },
+  tileId: { marginTop: 3, fontSize: 11, fontWeight: "700", color: "#9CA3AF" },
 
-  title: { fontSize: 16, fontWeight: "800", color: "#111827" },
-  meta: { marginTop: 3, fontSize: 12, fontWeight: "700", color: "#6B7280" },
-
-  selectedTag: {
-    marginTop: 6,
+  tileBadge: {
+    marginTop: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
     alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    backgroundColor: "#FFFBEB",
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#111827",
-    color: "#111827",
-    fontSize: 12,
-    fontWeight: "800",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  tileBadgeDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: "#B45309" },
+  tileBadgeText: { fontSize: 10, fontWeight: "800", color: "#B45309" },
+
+  tileCheck: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
   },
 
-  countBadges: { gap: 6, alignItems: "flex-end" },
-  countBadge: {
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  countBadgePending: { backgroundColor: "#FFFBEB", borderColor: "#FDE68A" },
-  countBadgeOpen: { backgroundColor: "#EFF6FF", borderColor: "#BFDBFE" },
-  countBadgeText: { fontSize: 11, fontWeight: "800", color: "#111827" },
+  loading: { paddingTop: 48, alignItems: "center", gap: 10 },
+  loadingText: { fontSize: 14, fontWeight: "700", color: "#6B7280" },
 
-  chev: { fontSize: 22, fontWeight: "900", color: "#9CA3AF", marginLeft: 8 },
-
-  empty: { paddingTop: 30, alignItems: "center" },
+  empty: { paddingTop: 40, alignItems: "center" },
   emptyTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
-  emptySub: { marginTop: 6, fontSize: 13, fontWeight: "600", color: "#6B7280" },
+  emptySub: { marginTop: 6, fontSize: 13, fontWeight: "600", color: "#6B7280", textAlign: "center" },
 });

@@ -1,457 +1,447 @@
 // app/(app)/inventory.tsx
-import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+// Parts Admin: the catalogue technicians pick from when adding parts to a
+// job. Only roles that can edit parts reach this screen (admin, rm_manager,
+// inventory_manager — see ROLE_ALLOWED_PREFIXES in _layout.tsx).
+//
+// Each part's quantity on hand (PART.part_stock) is shown and edited here.
+// It isn't yet deducted automatically when a technician uses a part on a job
+// — that's a later piece of work — so it's kept up to date by hand for now.
+import { FontAwesome5 } from '@expo/vector-icons';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
-  ScrollView,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
   View,
-  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '../components/card';
-import SegmentedTabs from '../components/SegmentedTabs';
-import { useI18n } from '../i18n/i18n-ctx';
+import { api, CatalogPart, PartInput } from '@/api/client';
+import { useI18n } from '@/i18n/i18n-ctx';
 
-type TabKey = 'all' | 'low' | 'recent';
-
-type Part = {
-  id: string;
-  code: string;
-  name: string;
-  category: string;
-  stock: number;
-  minStock: number;
-  unitPrice: number;
-  updatedAt: string; // ISO string
+const formatPrice = (v: CatalogPart['part_cost']) => {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? `RM ${n.toFixed(2)}` : null;
 };
 
-const INITIAL_PARTS: Part[] = [
-  { id: '1', code: 'BRK-PAD-F', name: 'Front Brake Pads', category: 'Brakes', stock: 24, minStock: 10, unitPrice: 45.99, updatedAt: '2025-10-14T10:00:00Z' },
-  { id: '2', code: 'OIL-FLT-STD', name: 'Oil Filter', category: 'Engine', stock: 8, minStock: 15, unitPrice: 12.5, updatedAt: '2025-10-15T11:00:00Z' },
-  { id: '3', code: 'AIR-FLT-HD', name: 'Heavy Duty Air Filter', category: 'Engine', stock: 32, minStock: 20, unitPrice: 28.75, updatedAt: '2025-10-15T11:30:00Z' },
-  { id: '4', code: 'WPR-BLD-26', name: 'Wiper Blade 26"', category: 'Body', stock: 4, minStock: 10, unitPrice: 19.99, updatedAt: '2025-10-16T08:05:00Z' },
-  { id: '5', code: 'FUS-10A', name: 'Fuse 10A (Pack)', category: 'Electrical', stock: 6, minStock: 12, unitPrice: 6.25, updatedAt: '2025-10-17T12:00:00Z' },
-  { id: '6', code: 'BLT-ALT-7PK', name: 'Alternator Belt 7PK', category: 'Engine', stock: 14, minStock: 10, unitPrice: 34.5, updatedAt: '2025-10-18T08:40:00Z' },
-  { id: '7', code: 'BRK-FLD-DOT4', name: 'Brake Fluid DOT4', category: 'Brakes', stock: 3, minStock: 8, unitPrice: 14.75, updatedAt: '2025-10-18T09:10:00Z' },
-  { id: '8', code: 'LMP-H7', name: 'Headlight Bulb H7', category: 'Electrical', stock: 11, minStock: 10, unitPrice: 9.95, updatedAt: '2025-10-18T09:25:00Z' },
-  { id: '9', code: 'TYR-VAL-SET', name: 'Tyre Valve Set', category: 'Wheels', stock: 2, minStock: 6, unitPrice: 7.8, updatedAt: '2025-10-18T10:00:00Z' },
-  { id: '10', code: 'CLN-DSG-1L', name: 'Degreaser 1L', category: 'Supplies', stock: 9, minStock: 10, unitPrice: 11.25, updatedAt: '2025-10-18T11:45:00Z' },
-];
+type FormState = { name: string; code: string; brand: string; price: string; stock: string };
+const EMPTY_FORM: FormState = { name: '', code: '', brand: '', price: '', stock: '' };
 
-const money = (n: number) => `$${n.toFixed(2)}`;
-const isLowStock = (p: Part) => p.stock < p.minStock;
-
-type ColKey =
-  | 'code'
-  | 'name'
-  | 'category'
-  | 'stock'
-  | 'min'
-  | 'unit'
-  | 'status'
-  | 'actions';
-
-type ColSpec = {
-  key: ColKey;
-  min: number;     // minimum width on very small screens
-  max: number;     // cap growth on large screens (so name doesn't eat everything)
-  weight: number;  // how extra space is distributed
-  align?: 'left' | 'center' | 'right';
+const stockOf = (p: CatalogPart) => {
+  const n = Number(p.part_stock);
+  return Number.isFinite(n) ? n : 0;
 };
-
-const COLS: ColSpec[] = [
-  { key: 'code', min: 110, max: 160, weight: 0.8 },
-  { key: 'name', min: 180, max: 320, weight: 2.4 },
-  { key: 'category', min: 110, max: 180, weight: 1.1 },
-  { key: 'stock', min: 70, max: 90, weight: 0.4, align: 'center' },
-  { key: 'min', min: 70, max: 90, weight: 0.4, align: 'right' },
-  { key: 'unit', min: 90, max: 120, weight: 0.6, align: 'right' },
-  { key: 'status', min: 120, max: 170, weight: 0.7, align: 'right' },
-  { key: 'actions', min: 190, max: 260, weight: 1.2, align: 'right' },
-];
-
-function computeColumnWidths(available: number) {
-  const minTotal = COLS.reduce((s, c) => s + c.min, 0);
-
-  // If the screen is narrow, stick to mins and allow horizontal scroll.
-  if (available <= minTotal) {
-    const widths: Record<ColKey, number> = {} as any;
-    for (const c of COLS) widths[c.key] = c.min;
-    return { widths, tableWidth: minTotal };
-  }
-
-  // Otherwise distribute extra space by weight, capped by max.
-  const widths: Record<ColKey, number> = {} as any;
-  for (const c of COLS) widths[c.key] = c.min;
-
-  let remaining = available - minTotal;
-
-  // Distribute in a few passes so max caps are respected.
-  for (let pass = 0; pass < 6 && remaining > 0.5; pass++) {
-    const growable = COLS.filter((c) => widths[c.key] < c.max);
-    if (growable.length === 0) break;
-
-    const weightSum = growable.reduce((s, c) => s + c.weight, 0) || 1;
-
-    let consumedThisPass = 0;
-
-    for (const c of growable) {
-      const share = (remaining * c.weight) / weightSum;
-      const room = c.max - widths[c.key];
-      const add = Math.min(room, share);
-      widths[c.key] += add;
-      consumedThisPass += add;
-    }
-
-    remaining -= consumedThisPass;
-
-    // If we couldn't consume much (all capped), stop.
-    if (consumedThisPass < 0.5) break;
-  }
-
-  const tableWidth = COLS.reduce((s, c) => s + widths[c.key], 0);
-  return { widths, tableWidth };
-}
 
 export default function Inventory() {
-  const router = useRouter();
   const { t } = useI18n();
-  const { width: windowWidth } = useWindowDimensions();
 
-  const [tab, setTab] = useState<TabKey>('all');
+  const [parts, setParts] = useState<CatalogPart[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState('');
-  const [parts, setParts] = useState<Part[]>(INITIAL_PARTS);
 
-  const totalParts = parts.length;
-  const lowStockCount = parts.filter(isLowStock).length;
-  const totalValue = parts.reduce((sum, p) => sum + p.stock * p.unitPrice, 0);
+  // null = closed; 'new' = adding; a part = editing that part.
+  const [editing, setEditing] = useState<CatalogPart | 'new' | null>(null);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [saving, setSaving] = useState(false);
 
-  const filteredParts = useMemo(() => {
+  const load = useCallback(
+    async (isRefresh = false) => {
+      if (isRefresh) setRefreshing(true);
+      try {
+        const rows = await api.parts();
+        setParts(Array.isArray(rows) ? rows : []);
+      } catch (e: any) {
+        Alert.alert(t('inventory.loadFailed'), e?.message ?? t('common.unknownError'));
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [t],
+  );
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const totalItems = useMemo(() => parts.reduce((sum, p) => sum + stockOf(p), 0), [parts]);
+
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    if (!q) return parts;
+    return parts.filter((p) =>
+      [p.part_name, p.part_code, p.part_brand ?? ''].some((v) => String(v).toLowerCase().includes(q)),
+    );
+  }, [parts, query]);
 
-    let base = parts;
-    if (tab === 'low') base = base.filter(isLowStock);
-    if (tab === 'recent') base = [...base].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  const openAdd = () => {
+    setForm(EMPTY_FORM);
+    setEditing('new');
+  };
 
-    if (!q) return base;
-
-    return base.filter((p) => {
-      return (
-        p.code.toLowerCase().includes(q) ||
-        p.name.toLowerCase().includes(q) ||
-        p.category.toLowerCase().includes(q)
-      );
+  const openEdit = (p: CatalogPart) => {
+    setForm({
+      name: p.part_name ?? '',
+      code: p.part_code ?? '',
+      brand: p.part_brand ?? '',
+      price: p.part_cost == null ? '' : String(Number(p.part_cost)),
+      stock: String(stockOf(p)),
     });
-  }, [parts, tab, query]);
+    setEditing(p);
+  };
 
-  const tabCounts = useMemo(() => {
-    return {
-      all: parts.length,
-      low: parts.filter(isLowStock).length,
-      recent: parts.length,
+  const closeForm = () => {
+    if (saving) return;
+    setEditing(null);
+  };
+
+  const save = async () => {
+    if (saving || !editing) return;
+
+    const name = form.name.trim();
+    const code = form.code.trim();
+    const brand = form.brand.trim();
+    const priceRaw = form.price.trim().replace(/^RM\s*/i, '').replace(/,/g, '');
+
+    if (!name) return Alert.alert(t('inventory.saveFailed'), t('inventory.nameRequired'));
+    if (!code) return Alert.alert(t('inventory.saveFailed'), t('inventory.numberRequired'));
+
+    let price: number | null = null;
+    if (priceRaw) {
+      price = Number(priceRaw);
+      if (!Number.isFinite(price) || price < 0) {
+        return Alert.alert(t('inventory.saveFailed'), t('inventory.invalidPrice'));
+      }
+    }
+
+    const stockRaw = form.stock.trim();
+    const stock = stockRaw ? Number(stockRaw) : 0;
+    if (!/^\d*$/.test(stockRaw) || !Number.isInteger(stock) || stock < 0) {
+      return Alert.alert(t('inventory.saveFailed'), t('inventory.invalidStock'));
+    }
+
+    const body: PartInput = {
+      part_name: name,
+      part_code: code,
+      part_brand: brand || null,
+      part_cost: price,
+      part_stock: stock,
     };
-  }, [parts]);
 
-  const onAdd = (id: string) => {
-    setParts((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, stock: p.stock + 1, updatedAt: new Date().toISOString() } : p
-      )
+    setSaving(true);
+    try {
+      if (editing === 'new') await api.createPart(body);
+      else await api.updatePart(editing.part_id, body);
+    } catch (e: any) {
+      Alert.alert(t('inventory.saveFailed'), e?.message ?? t('common.unknownError'));
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
+    setEditing(null);
+    load(true);
+  };
+
+  const renderPart = ({ item }: { item: CatalogPart }) => {
+    const price = formatPrice(item.part_cost);
+    const stock = stockOf(item);
+    return (
+      <Pressable style={({ pressed }) => [s.partCard, pressed && s.pressed]} onPress={() => openEdit(item)}>
+        <View style={s.partIcon}>
+          <FontAwesome5 name="cog" size={16} color="#16A34A" />
+        </View>
+        <View style={s.partBody}>
+          <Text style={s.partName} numberOfLines={2}>{item.part_name}</Text>
+          <Text style={s.partMeta} numberOfLines={1}>
+            {item.part_code} · {item.part_brand || t('inventory.noBrand')}
+          </Text>
+          <View style={[s.stockPill, stock === 0 && s.stockPillEmpty]}>
+            <Text style={[s.stockText, stock === 0 && s.stockTextEmpty]}>
+              {stock === 0 ? t('inventory.outOfStock') : t('inventory.inStock', { count: stock })}
+            </Text>
+          </View>
+        </View>
+        <View style={s.partRight}>
+          <Text style={[s.partPrice, !price && s.partPriceMissing]}>{price ?? t('inventory.noPrice')}</Text>
+          <FontAwesome5 name="pen" size={11} color="#9CA3AF" />
+        </View>
+      </Pressable>
     );
   };
 
-  const onRemove = (id: string) => {
-    setParts((prev) => prev.filter((p) => p.id !== id));
-  };
-
-  // Compute dynamic column widths based on screen width.
-  const tableLayout = useMemo(() => {
-    const outerPadding = 18 * 2; // matches your row/header horizontal padding
-    const safeAvailable = Math.max(0, windowWidth - outerPadding);
-    return computeColumnWidths(safeAvailable);
-  }, [windowWidth]);
-
-  const W = tableLayout.widths;
-
-  const cell = (key: ColKey) => ({ width: W[key] });
-  const textAlignFor = (key: ColKey) => {
-    const spec = COLS.find((c) => c.key === key);
-    if (spec?.align === 'center') return styles.centerText;
-    if (spec?.align === 'right') return styles.rightText;
-    return null;
-  };
-
   return (
-    <SafeAreaView style={styles.safe}>
+    <View style={s.page}>
       <FlatList
-        data={[]}
-        keyExtractor={() => 'x'}
-        renderItem={null as any}
-        contentContainerStyle={styles.content}
+        data={filtered}
+        keyExtractor={(p) => String(p.part_id)}
+        renderItem={renderPart}
+        contentContainerStyle={s.content}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} />}
+        keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
-          <>
-            {/* Back */}
-            <View style={styles.topBar}>
-              <Pressable onPress={() => router.back()} style={styles.backBtn}>
-                <Text style={styles.backArrow}>←</Text>
-                <Text style={styles.backText}>{t('inventory.backToRoles')}</Text>
+          <View style={s.header}>
+            <Text style={s.subtitle}>{t('inventory.subtitle')}</Text>
+
+            <View style={s.headerRow}>
+              <View style={s.stats}>
+                <View>
+                  <Text style={s.count}>{parts.length}</Text>
+                  <Text style={s.countLabel}>{t('inventory.totalParts')}</Text>
+                </View>
+                <View>
+                  <Text style={s.count}>{totalItems.toLocaleString()}</Text>
+                  <Text style={s.countLabel}>{t('inventory.totalItems')}</Text>
+                </View>
+              </View>
+              <Pressable style={({ pressed }) => [s.addBtn, pressed && s.pressed]} onPress={openAdd}>
+                <FontAwesome5 name="plus" size={13} color="#fff" />
+                <Text style={s.addBtnText}>{t('inventory.addPart')}</Text>
               </Pressable>
             </View>
 
-            {/* Title */}
-            <View style={styles.header}>
-              <Text style={styles.title}>{t('inventory.navTitle')}</Text>
-              <Text style={styles.subtitle}>{t('inventory.subtitle')}</Text>
-            </View>
-
-            {/* Stats cards */}
-            <View style={styles.statsRow}>
-              <StatCard title={t('inventory.totalParts')} value={`${totalParts}`} subtitle={t('inventory.activeSkus')} />
-              <StatCard title={t('inventory.lowStockAlerts')} value={`${lowStockCount}`} subtitle={t('inventory.itemsNeedRestocking')} danger />
-              <StatCard title={t('inventory.totalValue')} value={money(totalValue)} subtitle={t('inventory.currentInventoryValue')} />
-            </View>
-
-            {/* Tabs */}
-            <View style={styles.tabsWrap}>
-              <SegmentedTabs<TabKey>
-                value={tab}
-                onChange={setTab}
-                tabs={[
-                  { key: 'all', label: `${t('inventory.tabAllParts')} (${tabCounts.all})` },
-                  { key: 'low', label: `${t('inventory.tabLowStock')} (${tabCounts.low})` },
-                  { key: 'recent', label: t('inventory.tabRecentActivity') },
-                ]}
+            <View style={s.searchBox}>
+              <FontAwesome5 name="search" size={13} color="#9CA3AF" />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder={t('inventory.searchPlaceholder')}
+                placeholderTextColor="#9CA3AF"
+                style={s.searchInput}
+                autoCorrect={false}
               />
             </View>
 
-            {/* Search */}
-            <View style={styles.searchWrap}>
-              <View style={styles.searchBox}>
-                <Text style={styles.searchIcon}>🔎</Text>
-                <TextInput
-                  value={query}
-                  onChangeText={setQuery}
-                  placeholder={t('inventory.searchPlaceholder')}
-                  placeholderTextColor="#8A8FA3"
-                  style={styles.searchInput}
-                />
-              </View>
+          </View>
+        }
+        ListEmptyComponent={
+          loading ? (
+            <ActivityIndicator style={{ marginTop: 30 }} />
+          ) : (
+            <View style={s.empty}>
+              <Text style={s.emptyTitle}>
+                {parts.length ? t('inventory.noMatches') : t('inventory.noItemsFound')}
+              </Text>
+              {!parts.length && <Text style={s.emptySub}>{t('inventory.noItemsFoundHint')}</Text>}
             </View>
-
-            {/* TABLE (header + rows share one horizontal scroll) */}
-            <ScrollView horizontal showsHorizontalScrollIndicator>
-              <View style={[styles.table, { width: tableLayout.tableWidth }]}>
-                {/* Header */}
-                <View style={styles.tableHeader}>
-                  <Text style={[styles.th, cell('code')]}>{t('inventory.colCode')}</Text>
-                  <Text style={[styles.th, cell('name')]}>{t('inventory.colName')}</Text>
-                  <Text style={[styles.th, cell('category')]}>{t('inventory.colCategory')}</Text>
-                  <Text style={[styles.th, cell('stock'), styles.centerText]}>{t('inventory.colStock')}</Text>
-                  <Text style={[styles.th, cell('min'), styles.centerText]}>{t('inventory.colMin')}</Text>
-                  <Text style={[styles.th, cell('unit'), styles.rightText]}>{t('inventory.colUnit')}</Text>
-                  <Text style={[styles.th, cell('status')]}>{t('inventory.colStatus')}</Text>
-                  <Text style={[styles.th, cell('actions')]}>{t('inventory.colActions')}</Text>
-                </View>
-
-                {/* Rows (vertical scroll handled by outer screen, so this list is not scrollable) */}
-                <FlatList
-                  data={filteredParts}
-                  keyExtractor={(item) => item.id}
-                  scrollEnabled={false}
-                  ItemSeparatorComponent={() => <View style={styles.sepInner} />}
-                  ListEmptyComponent={
-                    <View style={styles.empty}>
-                      <Text style={styles.emptyTitle}>{t('inventory.noItemsFound')}</Text>
-                      <Text style={styles.emptySub}>{t('inventory.tryClearingSearchOrTabs')}</Text>
-                    </View>
-                  }
-                  renderItem={({ item }) => {
-                    const low = isLowStock(item);
-
-                    return (
-                      <View style={styles.row}>
-                        <Text style={[styles.td, cell('code')]} numberOfLines={1}>
-                          {item.code}
-                        </Text>
-
-                        <Text style={[styles.td, cell('name')]} numberOfLines={1}>
-                          {item.name}
-                        </Text>
-
-                        <Text style={[styles.td, cell('category')]} numberOfLines={1}>
-                          {item.category}
-                        </Text>
-
-                        <Text style={[styles.td, cell('stock'), styles.centerText]}>
-                          {item.stock}
-                        </Text>
-
-                        <Text style={[styles.td, cell('min'), styles.centerText]}>
-                          {item.minStock}
-                        </Text>
-
-                        <Text style={[styles.td, cell('unit'), styles.rightText]}>
-                          {money(item.unitPrice)}
-                        </Text>
-
-                        <Text
-                          style={[
-                            styles.td,
-                            cell('status'),
-                            low ? styles.statusLow : styles.statusOk,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {low ? t('statusBadge.lowStock') : t('statusBadge.inStock')}
-                        </Text>
-
-                        <View style={[cell('actions'), styles.actionsCell]}>
-                          <Pressable onPress={() => onAdd(item.id)} style={styles.actionBtn}>
-                            <Text style={styles.actionBtnText}>＋ {t('inventory.addAction')}</Text>
-                          </Pressable>
-
-                          <Pressable onPress={() => onRemove(item.id)} style={styles.actionBtn}>
-                            <Text style={styles.actionBtnText}>{t('inventory.removeAction')}</Text>
-                          </Pressable>
-                        </View>
-                      </View>
-                    );
-                  }}
-                />
-              </View>
-            </ScrollView>
-          </>
+          )
         }
       />
-    </SafeAreaView>
+
+      <Modal visible={!!editing} transparent animationType="fade" onRequestClose={closeForm}>
+        <KeyboardAvoidingView
+          style={s.overlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>
+              {editing === 'new' ? t('inventory.addPart') : t('inventory.editPart')}
+            </Text>
+
+            <Field
+              label={t('inventory.partName')}
+              value={form.name}
+              placeholder={t('inventory.partNamePlaceholder')}
+              onChange={(v) => setForm((f) => ({ ...f, name: v }))}
+              editable={!saving}
+              required
+            />
+            <Field
+              label={t('inventory.partNumber')}
+              value={form.code}
+              placeholder={t('inventory.partNumberPlaceholder')}
+              onChange={(v) => setForm((f) => ({ ...f, code: v }))}
+              editable={!saving}
+              autoCapitalize="characters"
+              required
+            />
+            <Field
+              label={t('inventory.partBrand')}
+              value={form.brand}
+              placeholder={t('inventory.partBrandPlaceholder')}
+              onChange={(v) => setForm((f) => ({ ...f, brand: v }))}
+              editable={!saving}
+            />
+            <Field
+              label={t('inventory.partPrice')}
+              value={form.price}
+              placeholder={t('inventory.partPricePlaceholder')}
+              onChange={(v) => setForm((f) => ({ ...f, price: v }))}
+              editable={!saving}
+              keyboardType="decimal-pad"
+            />
+            <Field
+              label={t('inventory.partStock')}
+              value={form.stock}
+              placeholder="0"
+              onChange={(v) => setForm((f) => ({ ...f, stock: v }))}
+              editable={!saving}
+              keyboardType="number-pad"
+            />
+
+            <View style={s.modalButtons}>
+              <Pressable style={s.cancelBtn} onPress={closeForm} disabled={saving}>
+                <Text style={s.cancelText}>{t('common.cancel')}</Text>
+              </Pressable>
+              <Pressable style={[s.saveBtn, saving && { opacity: 0.6 }]} onPress={save} disabled={saving}>
+                <Text style={s.saveText}>{saving ? t('inventory.saving') : t('inventory.save')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    </View>
   );
 }
 
-function StatCard({
-  title,
+function Field({
+  label,
   value,
-  subtitle,
-  danger,
+  placeholder,
+  onChange,
+  editable,
+  required,
+  keyboardType,
+  autoCapitalize,
 }: {
-  title: string;
+  label: string;
   value: string;
-  subtitle: string;
-  danger?: boolean;
+  placeholder: string;
+  onChange: (v: string) => void;
+  editable: boolean;
+  required?: boolean;
+  keyboardType?: 'default' | 'decimal-pad' | 'number-pad';
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
 }) {
   return (
-    <Card style={styles.statCard}>
-      <CardHeader style={styles.statHeader}>
-        <View style={styles.statHeaderRow}>
-          <CardTitle style={styles.statTitle}>{title}</CardTitle>
-          <Text style={[styles.statTrend, danger && styles.statTrendDanger]}>{danger ? '↘' : '↗'}</Text>
-        </View>
-        <Text style={styles.statValue}>{value}</Text>
-        <CardDescription style={styles.statSub}>{subtitle}</CardDescription>
-      </CardHeader>
-      <CardContent />
-    </Card>
+    <View style={s.field}>
+      <Text style={s.fieldLabel}>
+        {label}
+        {required && <Text style={{ color: '#DC2626' }}> *</Text>}
+      </Text>
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        placeholder={placeholder}
+        placeholderTextColor="#9CA3AF"
+        style={s.input}
+        editable={editable}
+        keyboardType={keyboardType ?? 'default'}
+        autoCapitalize={autoCapitalize ?? 'sentences'}
+        autoCorrect={false}
+      />
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#FFFFFF' },
-  content: { paddingBottom: 28 },
+const s = StyleSheet.create({
+  page: { flex: 1, backgroundColor: '#F9FAFB' },
+  content: { padding: 16, paddingBottom: 40 },
+  pressed: { opacity: 0.7 },
 
-  topBar: { paddingHorizontal: 18, paddingTop: 8, paddingBottom: 4 },
-  backBtn: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  backArrow: { fontSize: 18, color: '#111827' },
-  backText: { fontSize: 14, color: '#111827', fontWeight: '700' },
-
-  header: { paddingHorizontal: 18, paddingTop: 6, paddingBottom: 14 },
-  title: { fontSize: 34, fontWeight: '800', color: '#111827' },
-  subtitle: { marginTop: 6, fontSize: 16, color: '#6B7280' },
-
-  statsRow: { flexDirection: 'row', gap: 12, paddingHorizontal: 18, paddingBottom: 10 },
-  statCard: { flex: 1, borderRadius: 16, paddingVertical: 0 },
-  statHeader: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 12 },
-  statHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  statTitle: { fontSize: 14, fontWeight: '700' },
-  statTrend: { fontSize: 14, color: '#6B7280' },
-  statTrendDanger: { color: '#E11D48' },
-  statValue: { marginTop: 12, fontSize: 28, fontWeight: '800', color: '#111827' },
-  statSub: { marginTop: 6, fontSize: 12, color: '#6B7280' },
-
-  tabsWrap: { paddingHorizontal: 18, paddingVertical: 8 },
-
-  searchWrap: { paddingHorizontal: 18, paddingTop: 6, paddingBottom: 10 },
+  header: { marginBottom: 14, gap: 12 },
+  subtitle: { fontSize: 14, color: '#6B7280', fontWeight: '500' },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  count: { fontSize: 28, fontWeight: '800', color: '#111827' },
+  countLabel: { fontSize: 12, fontWeight: '600', color: '#6B7280' },
+  addBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#16A34A',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  addBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
   searchBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#F9FAFB',
-  },
-  searchIcon: { marginRight: 8, fontSize: 14 },
-  searchInput: { flex: 1, fontSize: 14, color: '#111827' },
-
-  // Table container (width is set dynamically)
-  table: {
-    backgroundColor: '#FFFFFF',
-  },
-
-  tableHeader: {
-    marginTop: 6,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
-  th: { fontSize: 12, color: '#111827', fontWeight: '800' },
-
-  row: {
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
-  td: { fontSize: 12, color: '#111827', fontWeight: '600' },
-
-  sepInner: { height: 1, backgroundColor: '#E5E7EB', marginHorizontal: 18 },
-
-  centerText: { textAlign: 'left' },
-  rightText: { textAlign: 'left' },
-
-  statusOk: { color: '#111827' },
-  statusLow: { color: '#B45309' },
-
-  actionsCell: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'center',
-  },
-
-  actionBtn: {
+    gap: 8,
     borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 12,
-    paddingVertical: 8,
     paddingHorizontal: 12,
-    backgroundColor: '#FFFFFF',
+    paddingVertical: Platform.OS === 'ios' ? 11 : 4,
+    backgroundColor: '#fff',
   },
-  actionBtnText: { fontSize: 12, fontWeight: '800', color: '#111827' },
+  searchInput: { flex: 1, fontSize: 14, color: '#111827' },
 
-  empty: { paddingHorizontal: 18, paddingVertical: 30 },
-  emptyTitle: { fontSize: 16, fontWeight: '800', color: '#111827' },
+  partCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    padding: 14,
+  },
+  partIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#F0FDF4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  partBody: { flex: 1 },
+  partName: { fontSize: 15, fontWeight: '800', color: '#111827' },
+  partMeta: { marginTop: 2, fontSize: 12, fontWeight: '600', color: '#6B7280' },
+  partRight: { alignItems: 'flex-end', gap: 6 },
+  partPrice: { fontSize: 14, fontWeight: '800', color: '#111827' },
+  partPriceMissing: { color: '#9CA3AF', fontWeight: '600' },
+  stats: { flexDirection: 'row', gap: 24 },
+  stockPill: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: '#F0FDF4',
+  },
+  stockPillEmpty: { backgroundColor: '#FEF2F2' },
+  stockText: { fontSize: 12, fontWeight: '800', color: '#15803D' },
+  stockTextEmpty: { color: '#DC2626' },
+
+  empty: { paddingVertical: 30, alignItems: 'center' },
+  emptyTitle: { fontSize: 15, fontWeight: '800', color: '#111827' },
   emptySub: { marginTop: 6, fontSize: 13, color: '#6B7280' },
+
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
+  modalCard: { backgroundColor: '#fff', borderRadius: 20, padding: 22 },
+  modalTitle: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 14 },
+  field: { marginBottom: 12 },
+  fieldLabel: { fontSize: 13, fontWeight: '700', color: '#374151', marginBottom: 6 },
+  input: {
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 11 : 8,
+    fontSize: 15,
+    color: '#111827',
+    backgroundColor: '#F9FAFB',
+  },
+  modalButtons: { flexDirection: 'row', gap: 10, marginTop: 6 },
+  cancelBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    alignItems: 'center',
+  },
+  cancelText: { fontSize: 15, fontWeight: '700', color: '#374151' },
+  saveBtn: { flex: 1, paddingVertical: 13, borderRadius: 12, backgroundColor: '#16A34A', alignItems: 'center' },
+  saveText: { fontSize: 15, fontWeight: '800', color: '#fff' },
 });

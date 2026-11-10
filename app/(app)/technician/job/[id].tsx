@@ -14,23 +14,25 @@ import {
   View,
 } from "react-native";
 
-import type { JobMedia, ReportMedia } from "../../../api/client";
-import { api } from "../../../api/client";
-import AfterPhotoSlots from "../../../components/AfterPhotoSlots";
-import BusDetailsModal from "../../../components/BusDetailsModal";
-import type { LocalMedia } from "../../../components/ImagePicker";
-import ImagePickerField from "../../../components/ImagePicker";
-import ImageViewerOverlay from "../../../components/ImageViewerOverlay";
-import InstrumentClusterIcon from "../../../components/icons/InstrumentClusterIcon";
-import JobTaskCard from "../../../components/JobTaskCard";
-import JobTimeline, { TimelineEvent } from "../../../components/JobTimeline";
-import type { StatusType } from "../../../components/StatusBadge";
-import StatusBadge from "../../../components/StatusBadge";
-import VerificationModal from "../../../components/VerificationModal";
-import { useI18n } from "../../../i18n/i18n-ctx";
-import { openDirections } from "../../../utils/directions";
-import { computeJobPendingStage } from "../../../utils/jobPendingStage";
-import { reportTypeTitleLabel } from "../../../utils/reportType";
+import type { JobMedia, ReportMedia } from "@/api/client";
+import { api } from "@/api/client";
+import AfterPhotoSlots from "@/components/AfterPhotoSlots";
+import BusDetailsModal from "@/components/BusDetailsModal";
+import type { LocalMedia } from "@/components/ImagePicker";
+import ImagePickerField from "@/components/ImagePicker";
+import ImageViewerOverlay from "@/components/ImageViewerOverlay";
+import InstrumentClusterIcon from "@/components/icons/InstrumentClusterIcon";
+import JobTaskCard from "@/components/JobTaskCard";
+import JobTimeline, { TimelineEvent } from "@/components/JobTimeline";
+import SignoffCard from "@/components/SignoffCard";
+import type { StatusType } from "@/components/StatusBadge";
+import StatusBadge from "@/components/StatusBadge";
+import VerificationModal from "@/components/VerificationModal";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { openDirections } from "@/utils/directions";
+import { computeJobPendingStage } from "@/utils/jobPendingStage";
+import { buildJobSignoffs, buildJobTimelineEvents, ODOMETER_TASK_NAME } from "@/utils/jobSignoffs";
+import { reportTypeTitleLabel } from "@/utils/reportType";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -38,7 +40,6 @@ type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 // reading is saved (see upsertOdometerRecordedTask in the lambda) — it's a
 // bookkeeping row, not a real repair task, so it's surfaced only in the
 // timeline and excluded from the Tasks list.
-const ODOMETER_TASK_NAME = "Recorded odometer reading";
 
 // Completing a job requires exactly one after-photo per side of the bus,
 // plus one of the instrument cluster — these are the 5 fixed slots shown in
@@ -79,6 +80,8 @@ type JobListItem = {
   technician_name?: string | null;
   job_verified_name?: string | null;
   job_selfie_view_url?: string | null;
+  job_accept_verified_name?: string | null;
+  job_accept_selfie_view_url?: string | null;
 };
 
 type ReportDto = {
@@ -96,6 +99,8 @@ type ReportDto = {
   report_review_by?: string | null;
   report_verified_name?: string | null;
   report_selfie_view_url?: string | null;
+  report_review_verified_name?: string | null;
+  report_review_selfie_view_url?: string | null;
 };
 
 type JobTask = {
@@ -108,11 +113,19 @@ type JobTask = {
   completed_at?: string | null;
 };
 
+// Brand · how many are in stock. No price: technicians don't need it, so
+// it's shown only in Parts Admin.
+function partMetaLine(p: { part_brand?: string | null; part_stock?: number | null }) {
+  const stock = `Stock: ${p.part_stock ?? 0}`;
+  return [p.part_brand, stock].filter(Boolean).join(" · ");
+}
+
 type PartRow = {
   part_id: number;
   part_name: string;
   part_code: string;
-  part_cost: number | null;
+  part_brand?: string | null;
+  part_cost: number | string | null;
   part_stock: number | null;
 };
 
@@ -337,7 +350,7 @@ export default function TechnicianJobDetailsScreen() {
   const loadParts = async () => {
     setLoadingParts(true);
     try {
-      const rows = (await api.parts({ limit: 200 })) as PartRow[];
+      const rows = (await api.parts()) as PartRow[];
       setParts(Array.isArray(rows) ? rows : []);
     } catch (e: unknown) {
       handleApiError(e, t("jobDetail.failedToLoadParts"));
@@ -351,7 +364,8 @@ export default function TechnicianJobDetailsScreen() {
     if (!Number.isFinite(jobId) || jobId <= 0) return;
     setLoading(true);
     try {
-      const allJobs = (await api.listJobs()) as JobListItem[];
+      // Fetched by id — scanning the project's list missed older jobs.
+      const allJobs = (await api.listJobs({ job_id: jobId })) as JobListItem[];
       const found = (Array.isArray(allJobs) ? allJobs : []).find(
         (j) => Number(j.job_id) === jobId,
       );
@@ -459,6 +473,9 @@ export default function TechnicianJobDetailsScreen() {
             .toLowerCase()
             .includes(q) ||
           String(p.part_code ?? "")
+            .toLowerCase()
+            .includes(q) ||
+          String(p.part_brand ?? "")
             .toLowerCase()
             .includes(q),
       )
@@ -606,104 +623,15 @@ export default function TechnicianJobDetailsScreen() {
     [afterPhotoSlotDefs, afterPhotoSlots],
   );
 
-  const timelineEvents = useMemo<TimelineEvent[]>(() => {
-    const events: TimelineEvent[] = [];
+  const timelineEvents = useMemo<TimelineEvent[]>(
+    () => buildJobTimelineEvents({ job: jobSummary, report, tasks, afterPhotosUploadedAt, t }),
+    [report, jobSummary, tasks, afterPhotosUploadedAt, t],
+  );
 
-    if (report?.report_uploaded_at) {
-      events.push({
-        id: "report-submitted",
-        icon: "file-alt",
-        color: "#2563EB",
-        colorLight: "#EFF6FF",
-        title: t("jobDetail.eventReportSubmitted"),
-        by: report.report_verified_name ?? report.reporter_name,
-        selfieUrl: report.report_selfie_view_url,
-        at: report.report_uploaded_at,
-      });
-    }
-
-    if (jobSummary?.job_created_at) {
-      events.push({
-        id: "job-created",
-        icon: "briefcase",
-        color: "#7C3AED",
-        colorLight: "#F5F3FF",
-        title: t("jobDetail.eventJobCreated"),
-        by: report?.report_review_by,
-        at: jobSummary.job_created_at,
-      });
-    }
-
-    if (jobSummary?.job_accepted_at) {
-      events.push({
-        id: "job-accepted",
-        icon: "hand-paper",
-        color: "#EA580C",
-        colorLight: "#FFF7ED",
-        title: t("jobDetail.eventJobAccepted"),
-        by: jobSummary.technician_name,
-        at: jobSummary.job_accepted_at,
-      });
-    }
-
-    const odometerTask = tasks.find((tk) => tk.task_name === ODOMETER_TASK_NAME);
-    if (odometerTask?.completed_at) {
-      events.push({
-        id: "odometer",
-        icon: "tachometer-alt",
-        color: "#0EA5E9",
-        colorLight: "#F0F9FF",
-        title: t("jobDetail.eventOdometerRecorded"),
-        subtitle: hasOdometer
-          ? `${jobSummary?.job_odometer?.toLocaleString()} km`
-          : undefined,
-        at: odometerTask.completed_at,
-      });
-    }
-
-    let taskNumber = 0;
-    for (const task of visibleTasks) {
-      if (task.task_status === "done" && task.completed_at) {
-        taskNumber += 1;
-        events.push({
-          id: `task-${task.task_id}`,
-          icon: "check-circle",
-          color: "#16A34A",
-          colorLight: "#F0FDF4",
-          title: t("jobDetail.eventTaskCompleted", { number: taskNumber }),
-          subtitle: task.task_desc ? `${task.task_name} — ${task.task_desc}` : task.task_name,
-          at: task.completed_at,
-        });
-      }
-    }
-
-    if (afterPhotosUploadedAt) {
-      events.push({
-        id: "after-photos",
-        icon: "camera",
-        color: "#7C3AED",
-        colorLight: "#F5F3FF",
-        title: t("jobDetail.eventAfterPhotosTaken"),
-        at: afterPhotosUploadedAt,
-      });
-    }
-
-    if (jobSummary?.job_completed_at) {
-      events.push({
-        id: "job-completed",
-        icon: "flag-checkered",
-        color: "#111827",
-        colorLight: "#F3F4F6",
-        title: t("jobDetail.eventJobCompletedBy", {
-          name: jobSummary.job_verified_name ?? jobSummary.technician_name ?? t("jobDetail.eventJobCompletedByFallback"),
-        }),
-        selfieUrl: jobSummary.job_selfie_view_url,
-        at: jobSummary.job_completed_at,
-      });
-    }
-
-    return events;
-  }, [report, jobSummary, tasks, visibleTasks, hasOdometer, afterPhotosUploadedAt, t]);
+  const signoffs = useMemo(
+    () => buildJobSignoffs(jobSummary, report, t),
+    [jobSummary, report, t],
+  );
 
   const pendingStage = useMemo(
     () => computeJobPendingStage(jobSummary, visibleTasks, t),
@@ -737,40 +665,61 @@ export default function TechnicianJobDetailsScreen() {
     }
   };
 
+  // What has already reached the server during this completion attempt, so a
+  // retry after a part-way failure doesn't upload the selfie or any after
+  // photo a second time (they used to show up twice).
+  const completionProgress = useRef<{ selfieUri: string | null; selfieName: string | null; photoUris: Set<string> }>({
+    selfieUri: null,
+    selfieName: null,
+    photoUris: new Set(),
+  });
+
   const doCompleteJob = async (selfie: LocalMedia, verifiedName: string) => {
     const reportId = jobSummary?.report_id ?? null;
+    const progress = completionProgress.current;
     setCompleting(true);
     try {
       // Identity-verification selfie — a dedicated presign/confirm pair that
       // writes straight onto the JOB row, separate from the after-photo
       // gallery uploaded below.
-      try {
-        const presign = await api.presignJobSelfie(jobId, selfie.mime_type);
-        const blob = await (await fetch(selfie.localUri)).blob();
-        const put = await fetch(presign.uploadUrl, {
-          method: "PUT",
-          headers: { "Content-Type": selfie.mime_type },
-          body: blob,
-        });
-        if (!put.ok) throw new Error(`Selfie upload failed (${put.status})`);
-        await api.confirmJobSelfie(jobId, {
-          s3_key: presign.s3_key,
-          mime_type: selfie.mime_type,
-          size_bytes: blob.size,
-          verified_name: verifiedName,
-        });
-      } catch (e: unknown) {
-        handleApiError(e, t("verification.failedToVerify"));
-        return;
+      if (progress.selfieUri !== selfie.localUri || progress.selfieName !== verifiedName) {
+        try {
+          const presign = await api.presignJobSelfie(jobId, selfie.mime_type);
+          const blob = await (await fetch(selfie.localUri)).blob();
+          const put = await fetch(presign.uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": selfie.mime_type },
+            body: blob,
+          });
+          if (!put.ok) throw new Error(`Selfie upload failed (${put.status})`);
+          await api.confirmJobSelfie(jobId, {
+            s3_key: presign.s3_key,
+            mime_type: selfie.mime_type,
+            size_bytes: blob.size,
+            verified_name: verifiedName,
+          });
+          progress.selfieUri = selfie.localUri;
+          progress.selfieName = verifiedName;
+        } catch (e: unknown) {
+          handleApiError(e, t("verification.failedToVerify"));
+          return;
+        }
       }
 
       try {
-        await uploadAfterPhotos(jobId, afterMedia);
+        for (const m of afterMedia) {
+          if (progress.photoUris.has(m.localUri)) continue;
+          await uploadAfterPhotos(jobId, [m]);
+          progress.photoUris.add(m.localUri);
+        }
       } catch (e: unknown) {
         handleApiError(e, t("jobDetail.failedToUploadAfterPhotos"));
         return;
       }
 
+      // Closes the linked report too, server-side and in the same step, so a
+      // job can no longer end up closed with its report left Open. Safe to
+      // repeat if the first attempt's response was lost.
       try {
         await api.updateJobStatus(jobId, { to_status: "closed" });
       } catch (e: unknown) {
@@ -778,30 +727,9 @@ export default function TechnicianJobDetailsScreen() {
         return;
       }
 
-      if (Number.isFinite(reportId) && (reportId as number) > 0) {
-        try {
-          await api.updateReportStatus(reportId as number, {
-            report_status: "closed",
-            report_review_action: null,
-            report_review_reason: null,
-            report_review_by: null,
-            report_review_at: new Date().toISOString(),
-          });
-        } catch (e: unknown) {
-          // The job itself is already closed at this point — don't leave the
-          // technician stuck retrying just because the report side failed.
-          handleApiError(
-            e,
-            "Job closed, but failed to close the linked report",
-          );
-          router.back();
-          return;
-        }
-      }
-
       setVerifyVisible(false);
       Alert.alert(
-        "Job completed",
+        t("jobDetail.jobCompleted"),
         reportId ? "Job and report have been closed." : "Job has been closed.",
       );
       router.back();
@@ -885,7 +813,7 @@ export default function TechnicianJobDetailsScreen() {
                 <Text style={s.heroId}>
                   {reportTypeTitleLabel(jobSummary?.report_type, t)} Job #{jobId}
                 </Text>
-                {loading && <Text style={s.loadingText}>Loading…</Text>}
+                {loading && <Text style={s.loadingText}>{t("common.loading")}</Text>}
               </View>
               <View style={s.badgeStack}>
                 <StatusBadge
@@ -914,7 +842,11 @@ export default function TechnicianJobDetailsScreen() {
                     ]}
                     onPress={() =>
                       hasLocation &&
-                      openDirections(report.report_lat!, report.report_lng!)
+                      openDirections(report.report_lat!, report.report_lng!, {
+                        title: t("directions.openDirections"),
+                        message: t("directions.chooseApp"),
+                        cancel: t("common.cancel"),
+                      })
                     }
                     disabled={!hasLocation}
                   >
@@ -944,7 +876,7 @@ export default function TechnicianJobDetailsScreen() {
               <View style={s.hintBanner}>
                 <FontAwesome5 name="eye" size={12} color="#2563EB" />
                 <Text style={s.hintText}>
-                  View only — accept the job to update tasks.
+                  {t("jobDetail.viewOnly")}
                 </Text>
               </View>
             )}
@@ -1137,7 +1069,7 @@ export default function TechnicianJobDetailsScreen() {
               </View>
 
               <View style={[s.rowBetween, { marginTop: 14 }]}>
-                <Text style={s.inputLabel}>Parts Used</Text>
+                <Text style={s.inputLabel}>{t("partsUsed.title")}</Text>
                 <View style={s.countPill}>
                   <Text style={s.countPillText}>
                     {selectedPartIds.length} selected
@@ -1172,7 +1104,7 @@ export default function TechnicianJobDetailsScreen() {
                     <TextInput
                       value={partsSearch}
                       onChangeText={setPartsSearch}
-                      placeholder="Search by name or code…"
+                      placeholder={t("partsUsed.searchByNameOrCode")}
                       placeholderTextColor="#9CA3AF"
                       style={s.input}
                       autoCorrect={false}
@@ -1209,8 +1141,7 @@ export default function TechnicianJobDetailsScreen() {
                                 <Text style={s.partCode}>({p.part_code})</Text>
                               </Text>
                               <Text style={s.partMeta}>
-                                Stock: {p.part_stock ?? "—"} · Cost:{" "}
-                                {p.part_cost ?? "—"}
+                                {partMetaLine(p)}
                               </Text>
                             </View>
                             {qty > 0 && (
@@ -1228,7 +1159,7 @@ export default function TechnicianJobDetailsScreen() {
 
               <View style={{ marginTop: 12, gap: 10 }}>
                 {selectedPartIds.length === 0 ? (
-                  <Text style={s.mutedText}>No parts selected.</Text>
+                  <Text style={s.mutedText}>{t("partsUsed.noPartsSelected")}</Text>
                 ) : (
                   selectedPartIds.map((pid) => {
                     const p = partsById.get(pid);
@@ -1242,8 +1173,7 @@ export default function TechnicianJobDetailsScreen() {
                             <Text style={s.partCode}>({p.part_code})</Text>
                           </Text>
                           <Text style={s.partMeta}>
-                            Stock: {p.part_stock ?? "—"} · Cost:{" "}
-                            {p.part_cost ?? "—"}
+                            {partMetaLine(p)}
                           </Text>
                         </View>
                         <View style={s.qtyRow}>
@@ -1279,7 +1209,7 @@ export default function TechnicianJobDetailsScreen() {
                             }
                             disabled={jobLocked}
                           >
-                            <Text style={s.removeBtnText}>Remove</Text>
+                            <Text style={s.removeBtnText}>{t("common.remove")}</Text>
                           </Pressable>
                         </View>
                       </View>
@@ -1292,7 +1222,7 @@ export default function TechnicianJobDetailsScreen() {
                 {jobLocked ? (
                   <Pressable onPress={handleOdometerRequired}>
                     <ImagePickerField
-                      title="Task Photos"
+                      title={t("photoSlots.taskPhotos")}
                       value={newTaskPhotos}
                       onChange={setNewTaskPhotos}
                       captureLabel="Capture Photo"
@@ -1303,7 +1233,7 @@ export default function TechnicianJobDetailsScreen() {
                   </Pressable>
                 ) : (
                   <ImagePickerField
-                    title="Task Photos"
+                    title={t("photoSlots.taskPhotos")}
                     value={newTaskPhotos}
                     onChange={setNewTaskPhotos}
                     captureLabel="Capture Photo"
@@ -1335,6 +1265,11 @@ export default function TechnicianJobDetailsScreen() {
               )}
             </SectionCard>
           )}
+
+          {/* ── Sign-offs: who reported, approved, accepted, completed ── */}
+          <SectionCard title={t("signoffs.sectionTitle")} icon="user-check">
+            <SignoffCard signoffs={signoffs} />
+          </SectionCard>
 
           {/* ── Job Progress Timeline ── */}
           <SectionCard title={t("jobDetail.sectionJobProgress")} icon="stream">

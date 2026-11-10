@@ -1,7 +1,7 @@
 // app/(app)/rm-manager/job/[id].tsx
 import { Stack, useLocalSearchParams } from "expo-router";
 import React, { useMemo } from "react";
-import JobDetailsView from "../../../components/JobDetailsView";
+import JobDetailsView from "@/components/JobDetailsView";
 
 export default function RMJobDetailsViewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();

@@ -3,7 +3,7 @@ import { useRouter } from "expo-router";
 import React, { useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { useI18n } from "../i18n/i18n-ctx";
+import { useI18n } from "@/i18n/i18n-ctx";
 
 type ReportType = "problem" | "repair" | "accident";
 

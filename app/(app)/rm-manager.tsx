@@ -4,16 +4,18 @@ import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import { Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { api } from "../api/client";
-import ConfirmActionModal from "../components/ConfirmActionModal";
-import DeclineReasonModal from "../components/DeclineReasonModal";
-import JobDetailsModal from "../components/JobDetailsModal";
-import ReportCard from "../components/ReportCard";
-import SegmentedTabs from "../components/SegmentedTabs";
-import { useSession } from "../ctx";
-import { useI18n } from "../i18n/i18n-ctx";
-import { useProject } from "../project-ctx";
-import { Report } from "../types/report";
+import { api } from "@/api/client";
+import { uploadVerificationSelfie } from "@/api/media";
+import type { LocalMedia } from "@/components/ImagePicker";
+import VerificationModal from "@/components/VerificationModal";
+import DeclineReasonModal from "@/components/DeclineReasonModal";
+import JobDetailsModal from "@/components/JobDetailsModal";
+import ReportCard from "@/components/ReportCard";
+import SegmentedTabs from "@/components/SegmentedTabs";
+import { useSession } from "@/ctx";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { useProjectFilter } from "@/hooks/useProjectFilter";
+import { Report } from "@/types/report";
 
 type Tab = "pending" | "open" | "closed" | "kpi";
 
@@ -38,6 +40,8 @@ type JobSummary = {
   bus_id?: string | null;
   reporter_name?: string | null;
   reporter_email?: string | null;
+  job_accept_verified_name?: string | null;
+  job_accept_selfie_view_url?: string | null;
 };
 
 function formatDate(isoLike?: string | null) {
@@ -93,11 +97,21 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
         by: r.report_review_by ?? undefined,
         at: r.report_review_at ?? undefined,
         reason: r.report_review_reason ?? undefined,
+        person: {
+          name: r.report_review_verified_name ?? null,
+          username: r.report_review_by ?? null,
+          selfieUrl: r.report_review_selfie_view_url ?? null,
+        },
       }
     : undefined;
 
   return {
     id: safeId,
+    reporter: {
+      name: r?.report_verified_name ?? null,
+      username: reporterName ?? null,
+      selfieUrl: r?.report_selfie_view_url ?? null,
+    },
     type: normaliseType(r?.report_type ?? job?.report_type),
     severity: normaliseSeverity(r?.report_priority ?? job?.report_priority),
     vehicle: String(r?.bus_id ?? job?.bus_id ?? "—"),
@@ -107,10 +121,20 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
     description: String(r?.report_desc ?? job?.report_desc ?? job?.job_desc ?? ""),
     date: formatDate(r?.report_uploaded_at ?? job?.report_uploaded_at ?? job?.job_created_at),
     dateIso: r?.report_uploaded_at ?? job?.report_uploaded_at ?? job?.job_created_at ?? null,
-    closedAt: r?.report_review_at ?? job?.job_completed_at ?? null,
+    // A job's completion closes its report; a declined report has no job and
+    // closed at review time.
+    closedAt: r?.job_completed_at ?? job?.job_completed_at ?? r?.report_review_at ?? null,
     status: normaliseStatusToUi(r?.report_status ?? job?.job_status),
     reportedBy,
-    assigned: job?.technician_name ?? undefined,
+    assigned: job?.technician_name ?? r?.technician_name ?? undefined,
+    assignee:
+      job?.technician_user_id != null || r?.technician_user_id != null
+        ? {
+            name: job?.job_accept_verified_name ?? r?.job_accept_verified_name ?? null,
+            username: job?.technician_name ?? r?.technician_name ?? null,
+            selfieUrl: job?.job_accept_selfie_view_url ?? r?.job_accept_selfie_view_url ?? null,
+          }
+        : undefined,
     audit,
   };
 }
@@ -424,7 +448,7 @@ function KpiTab({
 export default function RMManagerScreen() {
   const router = useRouter();
   const { dbUser } = useSession() as any;
-  const { projectId } = useProject();
+  const projectId = useProjectFilter();
   const { t } = useI18n();
 
   const MANAGER_NAME = dbUser?.user_name ?? t("adminHome.rmManagerTitle");
@@ -437,6 +461,7 @@ export default function RMManagerScreen() {
 
   const [approveTarget, setApproveTarget] = useState<Report | null>(null);
   const [approveVisible, setApproveVisible] = useState(false);
+  const [approving, setApproving] = useState(false);
 
   const [declineTarget, setDeclineTarget] = useState<Report | null>(null);
   const [declineVisible, setDeclineVisible] = useState(false);
@@ -526,7 +551,7 @@ export default function RMManagerScreen() {
 
       // If a job already exists for this report (approved/open/closed), show the full job view.
       try {
-        const jobs = await api.listJobs();
+        const jobs = await api.listJobs(projectId ? { project_id: projectId } : undefined);
         const list = Array.isArray(jobs) ? (jobs as JobSummary[]) : [];
         const found = findJobForReport(list, reportId);
         const jobId = Number(found?.job_id);
@@ -545,7 +570,7 @@ export default function RMManagerScreen() {
       // No job yet (e.g. still pending review) — show the report details inline.
       await openReportDetails(report);
     },
-    [router, openReportDetails],
+    [router, openReportDetails, projectId],
   );
 
   const requestApprove = (report: Report) => {
@@ -553,8 +578,11 @@ export default function RMManagerScreen() {
     setApproveVisible(true);
   };
 
-  const confirmApprove = async () => {
-    if (!approveTarget) return;
+  // Approving is a sign-off: the manager's typed name plus a selfie. The
+  // report only moves to Open once both are saved, so there's no optimistic
+  // update here any more.
+  const confirmApprove = async ({ selfie, name }: { selfie: LocalMedia; name: string }) => {
+    if (!approveTarget || approving) return;
 
     const reportId = approveTarget.id;
 
@@ -565,37 +593,39 @@ export default function RMManagerScreen() {
       return;
     }
 
-    setAllReports((prev) =>
-      prev.map((r) =>
-        r.id === reportId
-          ? {
-              ...r,
-              status: "open",
-              audit: { action: "approved", by: MANAGER_NAME, at: new Date().toISOString() },
-            }
-          : r,
-      ),
-    );
-
-    setApproveVisible(false);
-    setApproveTarget(null);
-
+    setApproving(true);
+    // Which of the two requests failed goes into the error, so "Internal
+    // Server Error" alone can't leave it unclear where to look.
+    let step = "selfie upload";
     try {
-      await api.createJobForReport(reportId, { job_desc: null });
-
+      const selfieKey = await uploadVerificationSelfie("report-review", reportId, selfie);
+      step = "approve";
+      // updateReportStatus creates the job itself when approving (and tells
+      // technicians about it), so there's no separate createJobForReport call.
       await api.updateReportStatus(reportId, {
         report_status: "open",
         report_review_action: "approved",
-        report_review_reason: null,
-        report_review_by: MANAGER_NAME,
-        report_review_at: new Date().toISOString(),
+        // Reviewer and time are recorded by the server.
+        review_verified_name: name,
+        review_selfie_s3_key: selfieKey,
       });
-
-      await loadAllReports({ refreshing: true });
     } catch (e: any) {
-      Alert.alert(t("reports.approveFailedTitle"), e?.message ?? t("common.unknownError"));
-      await loadAllReports({ refreshing: true });
+      Alert.alert(
+        t("reports.approveFailedTitle"),
+        `${e?.message ?? t("common.unknownError")} (${step})`,
+      );
+      setApproving(false);
+      // e.g. another manager already handled it — show the current state.
+      setApproveVisible(false);
+      setApproveTarget(null);
+      loadAllReports({ refreshing: true });
+      return;
     }
+
+    setApproving(false);
+    setApproveVisible(false);
+    setApproveTarget(null);
+    await loadAllReports({ refreshing: true });
   };
 
   const requestDecline = (report: Report) => {
@@ -640,8 +670,6 @@ export default function RMManagerScreen() {
         report_status: "closed",
         report_review_action: "declined",
         report_review_reason: reason,
-        report_review_by: MANAGER_NAME,
-        report_review_at: new Date().toISOString(),
       });
 
       await loadAllReports({ refreshing: true });
@@ -654,7 +682,7 @@ export default function RMManagerScreen() {
   return (
     <>
       <ScrollView
-        style={{ flex: 1, backgroundColor: "#f9f9f9" }}
+        style={{ flex: 1, backgroundColor: "#F9FAFB" }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
@@ -663,8 +691,8 @@ export default function RMManagerScreen() {
           value={tab}
           onChange={setTab}
           tabs={[
-            { key: "pending", label: `${t("reports.tabPending")} (${counts.pending})` },
-            { key: "open", label: `${t("reports.tabOpen")} (${counts.open})` },
+            { key: "pending", label: t("reports.tabPending"), alertCount: counts.pending },
+            { key: "open", label: t("reports.tabOpen"), alertCount: counts.open },
             { key: "closed", label: `${t("reports.tabClosed")} (${counts.closed})` },
             { key: "kpi", label: t("reports.tabKpi"), icon: "chart-bar" },
           ]}
@@ -693,13 +721,16 @@ export default function RMManagerScreen() {
         )}
       </ScrollView>
 
-      <ConfirmActionModal
+      <VerificationModal
         visible={approveVisible}
         title={t("reports.approveTitle")}
-        message={t("reports.approveMessage")}
+        message={t("verification.approveReportMessage")}
         confirmLabel={t("reports.approveConfirm")}
-        confirmColor="#4CAF50"
-        onCancel={() => setApproveVisible(false)}
+        submitting={approving}
+        onCancel={() => {
+          if (approving) return;
+          setApproveVisible(false);
+        }}
         onConfirm={confirmApprove}
       />
 

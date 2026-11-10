@@ -12,7 +12,7 @@ import {
   Wrench,
   X,
 } from "lucide-react-native";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -26,15 +26,19 @@ import {
   View,
 } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
-import { api } from "../api/client";
-import ImagePickerField, { LocalMedia } from "../components/ImagePicker";
-import InstrumentClusterIcon from "../components/icons/InstrumentClusterIcon";
-import MapSelector, { LocationValue } from "../components/map";
-import VerificationModal from "../components/VerificationModal";
-import { useI18n } from "../i18n/i18n-ctx";
-import { useProject } from "../project-ctx";
-import { reportTypeTitleLabel } from "../utils/reportType";
-import { getRouteColourHex, routeColourNeedsBorder } from "../utils/routeColours";
+import { api } from "@/api/client";
+import ImagePickerField, { LocalMedia } from "@/components/ImagePicker";
+import InstrumentClusterIcon from "@/components/icons/InstrumentClusterIcon";
+import MapSelector, { LocationValue } from "@/components/map";
+import DraftRestoreBar from "@/components/DraftRestoreBar";
+import VerificationModal from "@/components/VerificationModal";
+import { useFormDraft } from "@/hooks/useFormDraft";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { useProject } from "@/project-ctx";
+import { reportTypeTitleLabel } from "@/utils/reportType";
+import { getRouteColourHex, routeColourNeedsBorder } from "@/utils/routeColours";
+import ProjectChip from "@/components/ProjectChip";
+import { useProjectFilter } from "@/hooks/useProjectFilter";
 
 type Priority = "low" | "medium" | "high" | "critical";
 
@@ -345,7 +349,14 @@ export default function ReportFormScreen() {
 
   const priorityOptions = useMemo(() => buildPriorityOptions(t), [t]);
 
-  const { projectId, loading: projectLoading } = useProject();
+  // The filter, not the raw stored value. A report belongs to exactly one
+  // project, and an admin in fleet-wide mode holds the ALL_PROJECTS sentinel —
+  // sending that as a project_id would fetch no buses and be rejected on
+  // submit. As null it flows into the existing "no project selected" branch
+  // below, which empties the vehicle picker and disables the field, and the
+  // chip above is right there to pick a real one.
+  const projectId = useProjectFilter();
+  const { loading: projectLoading } = useProject();
 
   const [mapLocation, setMapLocation] = useState<LocationValue | null>(null);
   const [locationDesc, setLocationDesc] = useState("");
@@ -366,6 +377,39 @@ export default function ReportFormScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
   const [verifyVisible, setVerifyVisible] = useState(false);
+
+  // One draft per project + report type, so switching either doesn't surface
+  // the wrong half-written report. The photos are deliberately left out: they
+  // are local file URIs from the image picker, and a stale one would fail at
+  // upload time with a far more confusing error than simply re-adding it.
+  const draftValue = useMemo(
+    () => ({ vehicle, priority, description, locationDesc, locationEditedManually, mapLocation }),
+    [vehicle, priority, description, locationDesc, locationEditedManually, mapLocation],
+  );
+  const isDirty = useMemo(
+    () =>
+      !!vehicle ||
+      description.trim() !== "" ||
+      locationDesc.trim() !== "" ||
+      priority !== "medium",
+    [vehicle, description, locationDesc, priority],
+  );
+  const draft = useFormDraft(
+    projectId ? `report-form:${projectId}:${reportType}` : null,
+    draftValue,
+    isDirty,
+  );
+
+  const restoreDraft = () => {
+    const v = draft.restore();
+    if (!v) return;
+    setVehicle(v.vehicle ?? null);
+    setPriority(v.priority ?? "medium");
+    setDescription(v.description ?? "");
+    setLocationDesc(v.locationDesc ?? "");
+    setLocationEditedManually(!!v.locationEditedManually);
+    setMapLocation(v.mapLocation ?? null);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -397,12 +441,16 @@ export default function ReportFormScreen() {
             const route = b?.bus_route ?? b?.route ?? b?.busRoute;
             const routeColour = b?.bus_route_colour ?? b?.routeColour;
             const routeNumber = b?.bus_route_number ?? b?.routeNumber;
+            const evNo = b?.bus_ev_no ?? b?.evNumber;
 
             return {
-              // Route number, then route colour, then the route's name/path.
-              label: `${String(id)}${routeNumber ? ` • ${routeNumber}` : ""}${
-                routeColour ? ` • ${routeColour}` : ""
-              }${route ? ` • ${route}` : ""}`,
+              // Plate, then the VEHICLE's own number, then where it runs. The
+              // EV number comes before the route because that is how the depot
+              // names a bus, and because the route alone cannot tell two buses
+              // on the same service apart.
+              label: `${String(id)}${evNo ? ` • ${evNo}` : ""}${
+                routeNumber ? ` • ${routeNumber}` : ""
+              }${routeColour ? ` • ${routeColour}` : ""}${route ? ` • ${route}` : ""}`,
               value: String(id),
               routeColour: routeColour ?? null,
             };
@@ -507,43 +555,83 @@ export default function ReportFormScreen() {
     return null;
   };
 
+  // The draft a previous, failed attempt already created — and what of it
+  // already uploaded — so retrying finishes that same report instead of
+  // starting a new one. A retry after a lost response to the final submit
+  // used to file the report twice. Reset if the form's fields change.
+  const submitProgress = useRef<{
+    reportId: number;
+    fieldsKey: string;
+    selfieUri: string | null;
+    selfieName: string | null;
+    photoUris: Set<string>;
+  } | null>(null);
+
   const doSubmit = async (selfie: LocalMedia, verifiedName: string) => {
     try {
       setSubmitting(true);
       setUploadingIndex(null);
 
-      const reportId = await createReport();
+      const fieldsKey = JSON.stringify([
+        projectId, reportType, description.trim(), locationDesc.trim(),
+        mapLocation?.latitude ?? null, mapLocation?.longitude ?? null, priority, vehicle,
+      ]);
+      if (!submitProgress.current || submitProgress.current.fieldsKey !== fieldsKey) {
+        const newId = await createReport();
+        submitProgress.current = {
+          reportId: newId,
+          fieldsKey,
+          selfieUri: null,
+          selfieName: null,
+          photoUris: new Set(),
+        };
+      }
+      const progress = submitProgress.current;
+      const reportId = progress.reportId;
 
       // Identity-verification selfie — a dedicated presign/confirm pair that
       // writes straight onto the REPORT row, separate from the report-photo
       // gallery uploaded below.
-      const selfiePresign = await api.request<PresignResponse>(
-        `/reports/${reportId}/selfie/presign?mime=${encodeURIComponent(selfie.mime_type)}`,
-      );
-      const selfieBlob = await uriToBlob(selfie.localUri);
-      const selfiePut = await fetch(selfiePresign.uploadUrl, {
-        method: "PUT",
-        headers: { "Content-Type": selfie.mime_type },
-        body: selfieBlob,
-      });
-      if (!selfiePut.ok) throw new Error(`Selfie upload failed (${selfiePut.status})`);
-      await api.confirmReportSelfie(reportId, {
-        s3_key: selfiePresign.s3_key,
-        mime_type: selfie.mime_type,
-        size_bytes: selfieBlob.size,
-        verified_name: verifiedName,
-      });
+      if (progress.selfieUri !== selfie.localUri || progress.selfieName !== verifiedName) {
+        const selfiePresign = await api.request<PresignResponse>(
+          `/reports/${reportId}/selfie/presign?mime=${encodeURIComponent(selfie.mime_type)}`,
+        );
+        const selfieBlob = await uriToBlob(selfie.localUri);
+        const selfiePut = await fetch(selfiePresign.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": selfie.mime_type },
+          body: selfieBlob,
+        });
+        if (!selfiePut.ok) throw new Error(`Selfie upload failed (${selfiePut.status})`);
+        await api.confirmReportSelfie(reportId, {
+          s3_key: selfiePresign.s3_key,
+          mime_type: selfie.mime_type,
+          size_bytes: selfieBlob.size,
+          verified_name: verifiedName,
+        });
+        progress.selfieUri = selfie.localUri;
+        progress.selfieName = verifiedName;
+      }
 
       const photos = [...dashboardPhoto, ...exteriorPhoto, ...issuePhotos];
 
       for (let i = 0; i < photos.length; i++) {
+        if (progress.photoUris.has(photos[i].localUri)) continue;
         setUploadingIndex(i);
         await uploadOneToReport(
           reportId,
           photos[i].localUri,
           photos[i].mime_type,
         );
+        progress.photoUris.add(photos[i].localUri);
       }
+
+      // Last step, and the only one that makes the report real: everything
+      // above created a draft nobody can see, so a failure at any point leaves
+      // no half-finished report in the reviewer's queue. Safe to repeat.
+      await api.submitReport(reportId);
+      submitProgress.current = null;
+      draft.clear();
 
       setUploadingIndex(null);
       setVerifyVisible(false);
@@ -597,12 +685,28 @@ export default function ReportFormScreen() {
     >
       <Text style={styles.title}>{reportTypeTitleLabel(reportType, t)}</Text>
 
-      <View style={styles.projectPill}>
-        <Text style={styles.projectPillText}>
-          {t("reportForm.projectPrefix")}{" "}
-          {projectLoading ? t("reportForm.loadingEllipsis") : (projectId ?? t("reportForm.notSelected"))}
-        </Text>
-      </View>
+      {draft.pending && (
+        <DraftRestoreBar
+          savedAt={draft.savedAt}
+          onRestore={restoreDraft}
+          onDiscard={draft.discard}
+        />
+      )}
+
+      {/* Was a read-only pill naming the project. Now the shared chip, which
+          says the same thing and can also change it — this screen does not use
+          HomeHeader, so a driver had no route back to the selector at all. */}
+      {projectLoading ? (
+        <View style={styles.projectPill}>
+          <Text style={styles.projectPillText}>
+            {t("reportForm.projectPrefix")} {t("reportForm.loadingEllipsis")}
+          </Text>
+        </View>
+      ) : (
+        <View style={{ marginBottom: 6 }}>
+          <ProjectChip />
+        </View>
+      )}
 
       <Text style={styles.label}>{t("reportForm.vehicleLabel")}</Text>
       <TouchableOpacity

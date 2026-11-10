@@ -1,0 +1,69 @@
+-- Run this against your RDS/MySQL database BEFORE deploying the updated
+-- lambda/index.mjs. SAME ORDERING RULE AS 014, for the same reason:
+--
+--   * Old Lambda + new enum -> fine. The old code only ever writes values that
+--     are still members, and it selects the column opaquely.
+--   * New Lambda + old enum -> BROKEN. createTyreInspectionSession would write
+--     'toe_in'/'toe_out'/'irregular' into an ENUM that has no such member. In
+--     STRICT mode that is an error and the whole inspection fails to save; out
+--     of strict mode it silently stores '' and the wear finding is lost.
+--
+-- So: migrate first, deploy second. Never the other way round.
+--
+-- ---------------------------------------------------------------------------
+-- WHAT CHANGES
+--
+-- The uneven-wear classifier used to merge toe-in and toe-out into a single
+-- 'alignment' bucket, because nothing recorded which way round a tyre's groove
+-- readings were taken — tread_position was a bare ordinal 1..N and the
+-- inspection form was four unlabelled boxes. "Toe-in" vs "toe-out" would have
+-- been a coin flip presented as a diagnosis.
+--
+-- The form now fixes the convention: tread_position 1 is the OUTBOARD shoulder,
+-- position N is the INBOARD shoulder, captioned OUTER/INNER on screen. With a
+-- direction, a one-sided gradient has a side, so the two separate:
+--
+--   shallowest at the OUTBOARD shoulder -> toe_in
+--   shallowest at the INBOARD shoulder  -> toe_out
+--
+-- 'imbalance' is also renamed to 'irregular' going forward. It was never a
+-- detection — it is the shape that matched none of the named causes, and
+-- calling it "imbalance" reported a cause the readings do not support.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE TYRE_INSPECTION
+  MODIFY COLUMN uneven_wear_type
+    ENUM('toe_in','toe_out','under_inflation','over_inflation','irregular',
+         'alignment','imbalance') NULL;
+
+-- ---------------------------------------------------------------------------
+-- NO DATA IS REWRITTEN BY THIS MIGRATION, AND NO BACKFILL IS POSSIBLE.
+--
+-- The two legacy members are kept as trailing enum members purely so existing
+-- rows survive. MySQL stores enums by ordinal, so appending members leaves
+-- every stored value where it was — this ALTER does not touch a single row.
+-- The Lambda never writes either of them again.
+--
+--   'under_inflation' / 'over_inflation' — STILL CORRECT on historic rows.
+--       Both shapes are symmetric about the tread centre, so they never
+--       depended on knowing which shoulder was which. Nothing to do.
+--
+--   'alignment' — CANNOT be split retroactively. The orientation of those
+--       readings was never recorded, so deriving a direction from them now
+--       would be inventing one. Left as-is and displayed as a legacy label.
+--
+--   'imbalance' — deliberately NOT rewritten to 'irregular', so that a reader
+--       (or a later query) can still tell a pre-015 fallthrough from a new one.
+--       They mean the same thing; only the honesty of the name changed.
+--
+-- Sanity check — run before and after, the counts must be identical:
+--
+--   SELECT uneven_wear_type, COUNT(*)
+--   FROM TYRE_INSPECTION
+--   GROUP BY uneven_wear_type
+--   ORDER BY uneven_wear_type;
+--
+-- The bulk of any 'alignment' rows will be the July 2026 import from
+-- migration 010; those readings predate the OUTER/INNER captions and their
+-- groove order is whatever each technician happened to use.
+-- ---------------------------------------------------------------------------

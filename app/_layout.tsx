@@ -1,10 +1,10 @@
 import { Stack, useRouter } from "expo-router";
 import React from "react";
 import { KeyboardProvider } from "react-native-keyboard-controller";
-import { AuthProvider, useSession } from "./ctx";
-import { LanguageProvider } from "./i18n/i18n-ctx";
-import { ProjectProvider } from "./project-ctx";
-import { SplashScreenController } from "./splash";
+import { AuthProvider, useSession } from "@/ctx";
+import { LanguageProvider } from "@/i18n/i18n-ctx";
+import { ProjectProvider } from "@/project-ctx";
+import { SplashScreenController } from "@/splash";
 
 export default function Root() {
   return (

@@ -5,13 +5,31 @@ import crypto from "crypto";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
+// Pool tuned for Lambda, where the process is frozen between invocations and
+// MySQL / the network quietly drops connections that sat idle while frozen.
+//
+// - connectionLimit 2: a Lambda instance serves ONE request at a time, so more
+//   than a couple of connections per instance only multiplies the total held
+//   open across instances. A burst of cold starts at 5 each could exhaust a
+//   small RDS instance's max_connections and 500 every page at once.
+// - enableKeepAlive: TCP keep-alive so half-dead sockets are detected sooner.
+// - maxIdle / idleTimeout: drop idle connections rather than keep them for the
+//   next thaw. Timers do not run while frozen, so this alone is NOT enough —
+//   withConn() also pings every connection before handing it out.
+// - connectTimeout: fail fast instead of eating the whole Lambda timeout when
+//   the database is unreachable.
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 5,
+  connectionLimit: Number(process.env.DB_POOL_LIMIT) || 2,
+  maxIdle: Number(process.env.DB_POOL_LIMIT) || 2,
+  idleTimeout: 30000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
+  connectTimeout: 5000,
 });
 
 const AWS_REGION = process.env.AWS_REGION || "ap-southeast-1";
@@ -29,6 +47,19 @@ export const handler = async (event) => {
     hasPassword: !!process.env.DB_PASSWORD,
   });
 
+  // Scheduled invocations arrive from EventBridge, not API Gateway, so they
+  // have no requestContext and — importantly — no JWT claims. This branch must
+  // never call getAuthFromClaims or requireRole. `event.task` is keyed on as
+  // well as `source` because EventBridge Scheduler delivers the configured
+  // payload verbatim with no `source` field, while classic rules set it. The
+  // requestContext guard makes the branch unreachable over HTTP.
+  if (!event?.requestContext && (event?.task || event?.source === "aws.events")) {
+    // Never re-run a scheduled task or a queued push on a lost connection —
+    // it could double-send. The flag otherwise lingers from the last request.
+    currentRequestRetryable = false;
+    return await withConn((c) => runScheduledTask(c, event));
+  }
+
   const method = event?.requestContext?.http?.method ?? "GET";
 
   const stage = event?.requestContext?.stage;
@@ -44,6 +75,12 @@ export const handler = async (event) => {
   }
 
   console.log("[REQ]", { method, rawPath, stage, path });
+
+  // GETs are read-only, so withConn may safely re-run one whose connection
+  // died mid-request. Writes are never re-run: the first attempt may already
+  // have committed. A Lambda instance handles one event at a time, so a
+  // module-level flag is safe here.
+  currentRequestRetryable = method === "GET";
 
   const params = event?.pathParameters || {};
   const qs = event?.queryStringParameters || {};
@@ -130,6 +167,11 @@ export const handler = async (event) => {
       return await withConn((c) => createReport(c, auth, mustJson(event)));
     }
 
+    if (method === "POST" && isReportsSubmitPath(path)) {
+      const reportId = getIdFromParamsOrPath(params.report_id, path, /^\/reports\/(\d+)\/submit$/);
+      return await withConn((c) => submitReport(c, auth, reportId));
+    }
+
     if (method === "PATCH" && isReportsStatusPath(path)) {
       const reportId = getIdFromParamsOrPath(params.report_id, path, /^\/reports\/(\d+)\/status$/);
       return await withConn((c) => updateReportStatus(c, auth, reportId, mustJson(event)));
@@ -165,6 +207,13 @@ export const handler = async (event) => {
       return await withConn((c) => confirmReportSelfie(c, auth, reportId, mustJson(event)));
     }
 
+    // Selfie upload for the approve (R&M) and accept (technician) sign-offs.
+    // The key comes back to the client, which hands it to the approve/accept
+    // call itself, so the sign-off is stored in the same write as the action.
+    if (method === "GET" && path === "/verification/selfie/presign") {
+      return await withConn((c) => presignVerificationSelfie(c, auth, qs));
+    }
+
     // ===== JOBS =====
 
     if (method === "PATCH" && isJobIdPath(path)) {
@@ -183,7 +232,7 @@ export const handler = async (event) => {
 
     if (method === "PATCH" && isJobsAssignPath(path)) {
       const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/assign$/);
-      return await withConn((c) => assignJobToMe(c, auth, jobId));
+      return await withConn((c) => assignJobToMe(c, auth, jobId, mustJson(event)));
     }
 
     if (method === "GET" && isJobsPartsPath(path)) {
@@ -266,11 +315,11 @@ export const handler = async (event) => {
     // ===== TYRES =====
 
     if (method === "GET" && path === "/tyres/overdue") {
-      return await withConn((c) => getOverdueTyreInspections(c, auth));
+      return await withConn((c) => getOverdueTyreInspections(c, auth, qs));
     }
 
     if (method === "GET" && path === "/tyres/low-tread") {
-      return await withConn((c) => getLowTreadTyres(c, auth));
+      return await withConn((c) => getLowTreadTyres(c, auth, qs));
     }
 
     if (method === "GET" && path === "/tyres/settings") {
@@ -279,6 +328,17 @@ export const handler = async (event) => {
 
     if (method === "PATCH" && path === "/tyres/settings") {
       return await withConn((c) => updateTyreSettings(c, auth, mustJson(event)));
+    }
+
+    // The /tyres/swap/... path is kept alive because app builds already in the
+    // field call it; /tyres/photo/presign is the canonical name now that the
+    // handler also serves inspection photos.
+    if (method === "GET" && (path === "/tyres/photo/presign" || path === "/tyres/swap/photo/presign")) {
+      return await withConn((c) => presignTyrePhoto(c, auth, qs));
+    }
+
+    if (method === "GET" && path === "/tyres/summary") {
+      return await withConn((c) => getTyreSummary(c, auth, qs));
     }
 
     if (method === "POST" && path === "/tyres/swap") {
@@ -311,6 +371,11 @@ export const handler = async (event) => {
     if (method === "GET" && /^\/buses\/[^/]+\/tyres$/.test(path)) {
       const busId = getBusIdFromPath(params.bus_id, path.replace(/\/tyres$/, ""));
       return await withConn((c) => listBusTyres(c, auth, busId));
+    }
+
+    if (method === "GET" && /^\/buses\/[^/]+\/tyre-swaps$/.test(path)) {
+      const busId = getBusIdFromPath(params.bus_id, path.replace(/\/tyre-swaps$/, ""));
+      return await withConn((c) => listBusTyreSwaps(c, auth, busId));
     }
 
     if (method === "POST" && /^\/buses\/[^/]+\/tyre-inspections$/.test(path)) {
@@ -353,7 +418,18 @@ export const handler = async (event) => {
 
     return json(404, { message: `Not found: ${method} ${path}` });
   } catch (e) {
-    console.error("Lambda error:", e);
+    console.error("Lambda error:", { code: e?.code, message: e?.message }, e);
+
+    // The database dropped out from under us (stale socket, restart, too many
+    // connections). Answer 503 with a plain message so the app can tell the
+    // user to retry, instead of a bare 500 that looks like a bug.
+    if (isDbUnavailableError(e)) {
+      return json(503, {
+        code: "DB_UNAVAILABLE",
+        message: "The server is busy. Please try again in a moment.",
+      });
+    }
+
     const msg = e?.message || "Server error";
 
     if (
@@ -410,12 +486,73 @@ function mustJson(event) {
   }
 }
 
+// Error codes meaning the CONNECTION is dead, not that the query was wrong.
+const CONNECTION_LOST_CODES = new Set([
+  "PROTOCOL_CONNECTION_LOST",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "PROTOCOL_SEQUENCE_TIMEOUT",
+  "ER_SERVER_SHUTDOWN",
+  "ER_CON_COUNT_ERROR", // Too many connections
+]);
+
+function isConnectionLostError(e) {
+  if (!e) return false;
+  if (e.fatal === true) return true;
+  if (CONNECTION_LOST_CODES.has(e.code)) return true;
+  const msg = String(e.message || "");
+  return /Connection lost|closed state|Can't add new command when connection is in closed state/i.test(msg);
+}
+
+function isDbUnavailableError(e) {
+  return isConnectionLostError(e) || e?.code === "ER_CON_COUNT_ERROR";
+}
+
+let currentRequestRetryable = false;
+
+/**
+ * Check a connection out of the pool and prove it is alive before use.
+ *
+ * Lambda freezes the process between invocations; a pooled connection that
+ * looked fine before the freeze may be dead after it. Pinging costs one round
+ * trip and turns a failed request into a silent reconnect. A dead connection
+ * is destroyed, not released, so it never goes back into the pool.
+ */
+async function getLiveConnection() {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const c = await pool.getConnection();
+    try {
+      await c.ping();
+      return c;
+    } catch (e) {
+      console.warn("[DB] stale connection discarded", { attempt, code: e?.code, message: e?.message });
+      c.destroy();
+      if (attempt === 2) throw e;
+    }
+  }
+}
+
 async function withConn(fn) {
-  const c = await pool.getConnection();
-  try {
-    return await fn(c);
-  } finally {
-    c.release();
+  const maxAttempts = currentRequestRetryable ? 2 : 1;
+
+  for (let attempt = 1; ; attempt++) {
+    const c = await getLiveConnection();
+    let dead = false;
+    try {
+      return await fn(c);
+    } catch (e) {
+      dead = isConnectionLostError(e);
+      if (dead && attempt < maxAttempts) {
+        console.warn("[DB] connection lost mid-request, retrying read", { code: e?.code });
+        continue;
+      }
+      throw e;
+    } finally {
+      if (dead) c.destroy();
+      else c.release();
+    }
   }
 }
 
@@ -441,6 +578,7 @@ function getIdFromParamsOrPath(paramVal, path, regex) {
 const isReportIdPath = (p) => /^\/reports\/\d+$/.test(p);
 const isReportsJobPath = (p) => /^\/reports\/\d+\/job$/.test(p);
 const isReportsStatusPath = (p) => /^\/reports\/\d+\/status$/.test(p);
+const isReportsSubmitPath = (p) => /^\/reports\/\d+\/submit$/.test(p);
 const isReportsMediaListPath = (p) => /^\/reports\/\d+\/media$/.test(p);
 const isReportsMediaPresignPath = (p) => /^\/reports\/\d+\/media\/presign$/.test(p);
 const isReportsMediaConfirmPath = (p) => /^\/reports\/\d+\/media\/confirm$/.test(p);
@@ -546,7 +684,11 @@ function getAuthFromClaims(claims) {
 
   return {
     sub: claims.sub,
-    email: claims.email ?? "",
+    // NULL, not "", when the Cognito user has no email: USER.user_email is
+    // UNIQUE, and MySQL allows any number of NULLs but only one "". With ""
+    // the second email-less account failed to be created, so every request
+    // it made was a 500.
+    email: claims.email ? String(claims.email) : null,
     name:
       claims.name ??
       claims["cognito:username"] ??
@@ -561,85 +703,426 @@ function getAuthFromClaims(claims) {
 
 const EXPO_PUSH_TOKEN_RE = /^Expo(nent)?PushToken\[.+\]$/;
 
-// Best-effort: a push failure (bad token, Expo outage) must never break the
-// primary operation, same contract as the in-app NOTIFICATION insert below.
-async function sendExpoPushNotifications(conn, { userIds, title, body, data }) {
-  try {
-    if (!userIds?.length) return;
+// Expo rejects unauthenticated sends when "Enhanced Security for Push
+// Notifications" is enabled on the project. Optional so an unset variable
+// changes nothing; `hasAuth` is logged so you can see which mode is live.
+const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN || null;
+const EXPO_PUSH_TIMEOUT_MS = 8000;
 
-    const placeholders = userIds.map(() => "?").join(",");
-    const [rows] = await conn.execute(
-      `SELECT DISTINCT expo_push_token FROM PUSH_TOKEN WHERE user_id IN (${placeholders})`,
-      userIds
-    );
-    const tokens = (rows || [])
-      .map((r) => r.expo_push_token)
-      .filter((t) => EXPO_PUSH_TOKEN_RE.test(t));
+/**
+ * One structured line per stage of a push, under a single tag.
+ *
+ * Push used to fail completely silently: three separate early returns logged
+ * nothing, the catch blocks discarded the stack, and Expo signals per-message
+ * failure as HTTP 200 with an error inside the body — which nothing read. A
+ * total fleet-wide outage produced zero log lines. Filter with:
+ *   fields @timestamp, @message | filter @message like /"tag":"PUSH"/
+ */
+function plog(stage, fields = {}) {
+  console.log(JSON.stringify({ tag: "PUSH", stage, ...fields }));
+}
+
+function maskToken(t) {
+  return typeof t === "string" && t.length > 12 ? `${t.slice(0, 18)}…${t.slice(-7)}` : String(t);
+}
+
+function errFields(e) {
+  return { errName: e?.name, errMessage: e?.message, errStack: e?.stack };
+}
+
+// The users' registered devices, as valid Expo tokens. Logs what it found;
+// returns [] (after logging why) when there is nothing to send to.
+async function lookupPushTokens(conn, userIds, title) {
+  if (!userIds?.length) {
+    plog("push.skip", { reason: "no_users", title });
+    return [];
+  }
+
+  const placeholders = userIds.map(() => "?").join(",");
+  const [rows] = await conn.execute(
+    `SELECT DISTINCT expo_push_token FROM PUSH_TOKEN WHERE user_id IN (${placeholders})`,
+    userIds
+  );
+
+  const all = (rows || []).map((r) => r.expo_push_token);
+  const tokens = all.filter((t) => EXPO_PUSH_TOKEN_RE.test(t));
+  plog("push.lookup", {
+    userIds: userIds.length,
+    rowsFound: all.length,
+    tokensValid: tokens.length,
+    tokensRejected: all.length - tokens.length,
+  });
+
+  if (!tokens.length) {
+    // The single most common failure: nobody has ever successfully
+    // registered a device. Previously indistinguishable from a good send.
+    plog("push.skip", {
+      reason: all.length ? "no_valid_tokens" : "no_tokens",
+      userIds: userIds.length,
+      title,
+    });
+  }
+  return tokens;
+}
+
+function buildPushMessages(tokens, { title, body, data }) {
+  return tokens.map((to) => ({
+    to,
+    title,
+    body: body ?? undefined,
+    data: data ?? {},
+    sound: "default",
+    priority: "high",
+  }));
+}
+
+async function sendExpoPushNotifications(conn, { userIds, title, body, data, timeoutMs = EXPO_PUSH_TIMEOUT_MS }) {
+  const startedAt = Date.now();
+  try {
+    const tokens = await lookupPushTokens(conn, userIds, title);
     if (!tokens.length) return;
 
-    const messages = tokens.map((to) => ({
-      to,
-      title,
-      body: body ?? undefined,
-      data: data ?? {},
-      sound: "default",
-    }));
+    const messages = buildPushMessages(tokens, { title, body, data });
+
+    let ticketsOk = 0;
+    let ticketsError = 0;
+    const deadTokens = [];
 
     // Expo's push API caps each request at 100 messages.
     for (let i = 0; i < messages.length; i += 100) {
       const chunk = messages.slice(i, i + 100);
-      const res = await fetch("https://exp.host/--/api/v2/push/send", {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Accept-Encoding": "gzip, deflate",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(chunk),
-      });
-      if (!res.ok) {
-        console.error("Expo push send failed", res.status, await res.text().catch(() => ""));
+      const chunkNo = i / 100 + 1;
+
+      try {
+        plog("push.request", { chunk: chunkNo, size: chunk.length, hasAuth: !!EXPO_ACCESS_TOKEN });
+
+        const res = await fetch("https://exp.host/--/api/v2/push/send", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Accept-Encoding": "gzip, deflate",
+            "Content-Type": "application/json",
+            ...(EXPO_ACCESS_TOKEN ? { Authorization: `Bearer ${EXPO_ACCESS_TOKEN}` } : {}),
+          },
+          body: JSON.stringify(chunk),
+          // Without this a stalled connection hangs the whole request until the
+          // Lambda times out — a best-effort side effect taking down the
+          // operation it was attached to.
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+
+        const text = await res.text().catch(() => "");
+        if (!res.ok) {
+          ticketsError += chunk.length;
+          plog("push.response", { chunk: chunkNo, httpStatus: res.status, ok: false, body: text.slice(0, 500) });
+          continue;
+        }
+
+        // A 200 does NOT mean delivered. Expo returns a ticket per message,
+        // index-aligned with the request, and failures live in there.
+        let tickets = [];
+        try {
+          tickets = JSON.parse(text)?.data ?? [];
+        } catch (e) {
+          plog("push.response", { chunk: chunkNo, httpStatus: res.status, ok: true, parseFailed: true, ...errFields(e) });
+          continue;
+        }
+
+        const errors = [];
+        tickets.forEach((ticket, idx) => {
+          if (ticket?.status === "ok") {
+            ticketsOk += 1;
+            return;
+          }
+          ticketsError += 1;
+          const to = chunk[idx]?.to;
+          const detail = ticket?.details?.error;
+          errors.push({ token: maskToken(to), status: ticket?.status, message: ticket?.message, detail });
+          // Only DeviceNotRegistered means the token is genuinely dead.
+          // InvalidCredentials / MismatchSenderId are project-level faults —
+          // pruning on those would wipe the table over one bad build.
+          if (detail === "DeviceNotRegistered" && to) deadTokens.push(to);
+        });
+
+        plog("push.response", {
+          chunk: chunkNo,
+          httpStatus: res.status,
+          ok: true,
+          ticketsOk: tickets.filter((x) => x?.status === "ok").length,
+          errors,
+        });
+      } catch (e) {
+        ticketsError += chunk.length;
+        plog("push.chunk.fail", { chunk: chunkNo, ...errFields(e) });
       }
     }
+
+    let pruned = 0;
+    if (deadTokens.length) {
+      try {
+        const ph = deadTokens.map(() => "?").join(",");
+        const [res] = await conn.execute(
+          `DELETE FROM PUSH_TOKEN WHERE expo_push_token IN (${ph})`,
+          deadTokens
+        );
+        pruned = res?.affectedRows ?? 0;
+      } catch (e) {
+        plog("push.prune.fail", errFields(e));
+      }
+    }
+
+    plog("push.summary", {
+      title,
+      tokensAttempted: tokens.length,
+      ticketsOk,
+      ticketsError,
+      pruned,
+      ms: Date.now() - startedAt,
+    });
   } catch (e) {
-    console.error("Failed to send push notifications", { title, e: e?.message });
+    plog("push.fail", { title, ms: Date.now() - startedAt, ...errFields(e) });
   }
 }
 
-// Best-effort: a notification failure (e.g. the NOTIFICATION table hasn't
-// been migrated in yet) must never break the primary operation it's attached to.
-async function notifyUsersByRole(conn, { roles, type, title, body = null, reportId = null, jobId = null }) {
+// Project scoping for notifications is env-gated because it is the only
+// change here that can REDUCE who gets notified: if non-admins have no
+// USER_PROJECT rows they would stop receiving anything. Set to "0" to revert
+// to fleet-wide without a redeploy.
+const NOTIFY_PROJECT_SCOPE = process.env.NOTIFY_PROJECT_SCOPE !== "0";
+
+/**
+ * Who should hear about an event, by role and project.
+ *
+ * Mirrors getBuses: admins see the whole fleet, everyone else only their own
+ * projects. This was the one place in the API that ignored USER_PROJECT, so a
+ * manager on one project got pushes for every other project and then hit a 403
+ * tapping through. Roles are compared case/whitespace-insensitively, matching
+ * how statuses are handled elsewhere.
+ *
+ * A null projectId falls back to fleet-wide rather than dropping the
+ * notification — silence is the worse failure.
+ */
+// Jobs carry no project of their own — they inherit it from the report that
+// spawned them. A job created outside a report has none, which falls back to
+// fleet-wide rather than notifying nobody.
+async function projectIdForJob(conn, jobId) {
   try {
-    if (!roles?.length) return;
-
-    const rolePlaceholders = roles.map(() => "?").join(",");
-    const [users] = await conn.execute(
-      `SELECT user_id FROM \`USER\` WHERE user_role IN (${rolePlaceholders})`,
-      roles
+    const [rows] = await conn.execute(
+      "SELECT project_id FROM REPORT WHERE job_id=? LIMIT 1",
+      [jobId]
     );
-    if (!users.length) return;
+    return rows?.[0]?.project_id ?? null;
+  } catch {
+    return null;
+  }
+}
 
+async function resolveRecipientsByRole(conn, { roles, projectId = null, excludeUserId = null }) {
+  if (!roles?.length) return { userIds: [], scope: "none" };
+
+  const rolePlaceholders = roles.map(() => "?").join(",");
+  const scoped = NOTIFY_PROJECT_SCOPE && projectId != null;
+
+  const sql = `
+    SELECT DISTINCT u.user_id
+    FROM \`USER\` u
+    WHERE LOWER(TRIM(u.user_role)) IN (${rolePlaceholders})
+      ${scoped ? `AND (LOWER(TRIM(u.user_role)) = 'admin'
+                       OR EXISTS (SELECT 1 FROM USER_PROJECT up
+                                  WHERE up.user_id = u.user_id AND up.project_id = ?))` : ""}
+      ${excludeUserId != null ? "AND u.user_id <> ?" : ""}`;
+
+  const vals = [
+    ...roles.map((r) => String(r).trim().toLowerCase()),
+    ...(scoped ? [projectId] : []),
+    ...(excludeUserId != null ? [excludeUserId] : []),
+  ];
+
+  const [users] = await conn.execute(sql, vals);
+  return {
+    userIds: users.map((u) => Number(u.user_id)),
+    scope: scoped ? "project" : projectId == null ? "fleet_fallback" : "fleet",
+  };
+}
+
+/**
+ * Write the in-app rows, then push. Best-effort by design — a notification
+ * failure must never break the operation it is attached to — but the two steps
+ * are guarded separately: they used to share one try, so an FK violation on
+ * report_id/job_id silently took the push down with it.
+ */
+async function notifyUsers(conn, { userIds, type, title, body = null, reportId = null, jobId = null }) {
+  if (!userIds?.length) {
+    plog("notify.recipients", { type, title, count: 0, reason: "none" });
+    return;
+  }
+  plog("notify.recipients", { type, title, count: userIds.length, userIds });
+
+  try {
     const rowPlaceholders = [];
     const values = [];
-    for (const u of users) {
+    for (const userId of userIds) {
       rowPlaceholders.push("(?,?,?,?,?,?)");
-      values.push(u.user_id, type, title, body, reportId, jobId);
+      values.push(userId, type, title, body, reportId, jobId);
     }
-
     await conn.execute(
       `INSERT INTO NOTIFICATION (user_id, notification_type, notification_title, notification_body, report_id, job_id)
        VALUES ${rowPlaceholders.join(",")}`,
       values
     );
-
-    await sendExpoPushNotifications(conn, {
-      userIds: users.map((u) => u.user_id),
-      title,
-      body,
-      data: { type, reportId, jobId },
-    });
+    plog("notify.insert.ok", { type, rows: userIds.length });
   } catch (e) {
-    console.error("Failed to create notifications", { type, title, e: e?.message });
+    plog("notify.insert.fail", { type, title, ...errFields(e) });
+  }
+
+  await dispatchPush(conn, {
+    userIds,
+    title,
+    body,
+    data: { type, reportId, jobId },
+  });
+}
+
+// ===== Push dispatch (off the request path) =====
+//
+// Sending to Expo used to happen inline, so a slow exp.host held the user's
+// request open for up to 8s per chunk — long enough to time the Lambda out and
+// turn a successful report submission into an "Internal Server Error".
+//
+// Now the push is handed to a separate, asynchronous invocation of THIS
+// function (InvocationType "Event"): AWS queues it and returns immediately,
+// and the queued run sends the push on its own clock. Plain fire-and-forget
+// would not work — Lambda freezes the process as soon as the response is
+// returned, so an un-awaited fetch may never run.
+//
+// Needs the function's execution role to allow lambda:InvokeFunction on
+// itself. If that permission is missing (or the Lambda API is unreachable),
+// it falls back to sending inline under a short timeout, so pushes keep
+// working either way. Set PUSH_ASYNC=0 to force the inline path.
+
+const PUSH_ASYNC = process.env.PUSH_ASYNC !== "0";
+const PUSH_INLINE_TIMEOUT_MS = 3000;
+const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME || null;
+
+// Loaded lazily, not imported at the top: a static import of a package the
+// runtime lacks would crash EVERY request at module load. Here a missing
+// package only disables the async path, and pushes fall back to inline.
+let _lambda = null;
+async function lambdaApi() {
+  if (!_lambda) {
+    const { LambdaClient, InvokeCommand } = await import("@aws-sdk/client-lambda");
+    let requestHandler;
+    try {
+      const { NodeHttpHandler } = await import("@smithy/node-http-handler");
+      // Short timeouts so an unreachable Lambda API (e.g. VPC with no NAT and
+      // no endpoint) costs ~2s, not the SDK's default minutes.
+      requestHandler = new NodeHttpHandler({ connectionTimeout: 1000, requestTimeout: 2000 });
+    } catch {
+      requestHandler = { connectionTimeout: 1000, requestTimeout: 2000 };
+    }
+    _lambda = {
+      client: new LambdaClient({ region: AWS_REGION, maxAttempts: 1, requestHandler }),
+      InvokeCommand,
+    };
+  }
+  return _lambda;
+}
+
+// ===== Push via the S3 queue (the path that works from inside the VPC) =====
+//
+// This function runs in a VPC with no NAT gateway, so it cannot reach
+// exp.host (or the Lambda API) at all — both paths below simply time out.
+// S3, though, is reachable through a free S3 gateway endpoint. So the push is
+// written as a file under push-queue/, and the S3 event triggers the separate
+// sksbus-push-sender Lambda, which runs outside the VPC and sends it. See
+// lambda/push-sender/index.mjs and lambda/scripts/setup_push_sender.sh.
+//
+// Tokens are resolved HERE, where the database is, so the sender never needs
+// database access. Set PUSH_QUEUE=0 to skip straight to the older paths.
+
+const PUSH_QUEUE = process.env.PUSH_QUEUE !== "0";
+const PUSH_QUEUE_BUCKET = process.env.PUSH_QUEUE_BUCKET || S3_BUCKET;
+const PUSH_QUEUE_PREFIX = "push-queue/";
+
+// Its own client with short timeouts: without the gateway endpoint a PutObject
+// from inside the VPC would otherwise hang for the whole Lambda timeout.
+let _s3Queue = null;
+async function s3QueueClient() {
+  if (!_s3Queue) {
+    let requestHandler;
+    try {
+      const { NodeHttpHandler } = await import("@smithy/node-http-handler");
+      requestHandler = new NodeHttpHandler({ connectionTimeout: 1500, requestTimeout: 3000 });
+    } catch {
+      requestHandler = { connectionTimeout: 1500, requestTimeout: 3000 };
+    }
+    _s3Queue = new S3Client({ region: AWS_REGION, maxAttempts: 2, requestHandler });
+  }
+  return _s3Queue;
+}
+
+async function queuePush(conn, payload) {
+  const tokens = await lookupPushTokens(conn, payload.userIds, payload.title);
+  if (!tokens.length) return;
+
+  const Key = `${PUSH_QUEUE_PREFIX}${Date.now()}-${crypto.randomUUID()}.json`;
+  const client = await s3QueueClient();
+  await client.send(
+    new PutObjectCommand({
+      Bucket: PUSH_QUEUE_BUCKET,
+      Key,
+      ContentType: "application/json",
+      Body: JSON.stringify({ title: payload.title, messages: buildPushMessages(tokens, payload) }),
+    })
+  );
+  plog("push.queued", { key: Key, messages: tokens.length, title: payload.title });
+}
+
+async function dispatchPush(conn, payload) {
+  if (!payload?.userIds?.length) return;
+
+  if (PUSH_QUEUE) {
+    try {
+      await queuePush(conn, payload);
+      return;
+    } catch (e) {
+      plog("push.queue_fail", { fallback: "async_or_inline", ...errFields(e) });
+    }
+  }
+
+  if (PUSH_ASYNC && SELF_FUNCTION_NAME) {
+    try {
+      const { client, InvokeCommand } = await lambdaApi();
+      await client.send(
+        new InvokeCommand({
+          FunctionName: SELF_FUNCTION_NAME,
+          InvocationType: "Event",
+          Payload: Buffer.from(JSON.stringify({ task: "push", push: payload })),
+        })
+      );
+      plog("push.dispatch.async", { userIds: payload.userIds.length, title: payload.title });
+      return;
+    } catch (e) {
+      plog("push.dispatch.async_fail", { fallback: "inline", ...errFields(e) });
+    }
+  }
+
+  try {
+    await sendExpoPushNotifications(conn, { ...payload, timeoutMs: PUSH_INLINE_TIMEOUT_MS });
+  } catch (e) {
+    plog("push.fail", { title: payload.title, ...errFields(e) });
+  }
+}
+
+async function notifyUsersByRole(conn, opts) {
+  const { roles, type, title, projectId = null, excludeUserId = null } = opts;
+  plog("notify.start", { type, title, roles, projectId, excludeUserId });
+  try {
+    const { userIds, scope } = await resolveRecipientsByRole(conn, { roles, projectId, excludeUserId });
+    plog("notify.scope", { type, scope, count: userIds.length });
+    await notifyUsers(conn, { ...opts, userIds });
+  } catch (e) {
+    plog("notify.fail", { type, title, ...errFields(e) });
   }
 }
 
@@ -679,6 +1162,14 @@ async function registerPushToken(conn, auth, b) {
 
   const token = (b.expo_push_token || "").toString().trim();
   if (!token) throw new Error("expo_push_token is required");
+  // Validated here, not only at send time. A malformed token used to be stored
+  // with a 200 and then silently dropped when sending, so the table looked
+  // healthy while nothing was deliverable. The length check matters because
+  // the column is VARCHAR(255) — an over-long value would surface as a 500.
+  if (!EXPO_PUSH_TOKEN_RE.test(token) || token.length > 255) {
+    plog("register.invalid", { token: maskToken(token), length: token.length });
+    return json(400, { message: "Invalid expo_push_token" });
+  }
 
   const userId = await getOrCreateUserId(conn, auth);
   // A device's token is unique — if it's re-registered under a different
@@ -689,6 +1180,7 @@ async function registerPushToken(conn, auth, b) {
      ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), updated_at = NOW()`,
     [userId, token]
   );
+  plog("register.ok", { userId, token: maskToken(token) });
   return json(200, { success: true });
 }
 
@@ -752,6 +1244,7 @@ const REPORT_COUNTS_BY_PROJECT_SQL = `
          SUM(CASE WHEN report_status IS NULL OR TRIM(report_status)='' OR LOWER(TRIM(report_status)) IN ('submitted','pending') THEN 1 ELSE 0 END) AS pending_count,
          SUM(CASE WHEN LOWER(TRIM(report_status))='open' THEN 1 ELSE 0 END) AS open_count
   FROM REPORT
+  WHERE LOWER(TRIM(COALESCE(report_status,''))) <> 'draft'
   GROUP BY project_id
 `;
 
@@ -816,7 +1309,7 @@ async function getBuses(conn, auth, qs) {
     }
 
     const [rows] = await conn.execute(
-      `SELECT bus_id, bus_route, bus_route_colour, bus_route_number, bus_model, project_id
+      `SELECT bus_id, bus_route, bus_route_colour, bus_route_number, bus_ev_no, bus_model, project_id
        FROM BUS WHERE project_id=? ORDER BY bus_id ASC`,
       [projectId]
     );
@@ -825,7 +1318,7 @@ async function getBuses(conn, auth, qs) {
 
   if (auth.role === "admin") {
     const [rows] = await conn.execute(
-      "SELECT bus_id, bus_route, bus_route_colour, bus_route_number, bus_model, project_id FROM BUS ORDER BY bus_id ASC"
+      "SELECT bus_id, bus_route, bus_route_colour, bus_route_number, bus_ev_no, bus_model, project_id FROM BUS ORDER BY bus_id ASC"
     );
     return json(200, rows);
   }
@@ -833,7 +1326,7 @@ async function getBuses(conn, auth, qs) {
   const userId = await getOrCreateUserId(conn, auth);
 
   const [rows] = await conn.execute(
-    `SELECT b.bus_id, b.bus_route, b.bus_route_colour, b.bus_route_number, b.bus_model, b.project_id
+    `SELECT b.bus_id, b.bus_route, b.bus_route_colour, b.bus_route_number, b.bus_ev_no, b.bus_model, b.project_id
      FROM BUS b
      JOIN USER_PROJECT up ON up.project_id = b.project_id
      WHERE up.user_id = ?
@@ -851,12 +1344,17 @@ async function createBus(conn, auth, b) {
   if (!b.bus_id) throw new Error("bus_id is required");
 
   const [res] = await conn.execute(
-    `INSERT INTO BUS (bus_id, bus_route, bus_route_colour, bus_route_number, bus_model, project_id) VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO BUS (bus_id, bus_route, bus_route_colour, bus_route_number, bus_ev_no, bus_model, project_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
       String(b.bus_id).trim(),
       b.bus_route ? String(b.bus_route).trim() : null,
       b.bus_route_colour ? String(b.bus_route_colour).trim() : null,
       b.bus_route_number ? String(b.bus_route_number).trim() : null,
+      // The fleet's own sequential number for the vehicle (EV006). Distinct
+      // from bus_route_number, which is the route it runs and is shared by
+      // every bus on that route.
+      b.bus_ev_no ? String(b.bus_ev_no).trim() : null,
       b.bus_model ? String(b.bus_model).trim() : null,
       b.project_id ? String(b.project_id).trim() : null,
     ]
@@ -876,6 +1374,7 @@ async function updateBus(conn, auth, busId, b) {
   if (b.bus_route !== undefined)       { updates.push("bus_route=?");         vals.push(b.bus_route ? String(b.bus_route).trim() : null); }
   if (b.bus_route_colour !== undefined) { updates.push("bus_route_colour=?"); vals.push(b.bus_route_colour ? String(b.bus_route_colour).trim() : null); }
   if (b.bus_route_number !== undefined) { updates.push("bus_route_number=?"); vals.push(b.bus_route_number ? String(b.bus_route_number).trim() : null); }
+  if (b.bus_ev_no !== undefined)       { updates.push("bus_ev_no=?");          vals.push(b.bus_ev_no ? String(b.bus_ev_no).trim() : null); }
   if (b.bus_model !== undefined)       { updates.push("bus_model=?");         vals.push(b.bus_model ? String(b.bus_model).trim() : null); }
   if (b.project_id !== undefined)      { updates.push("project_id=?");        vals.push(b.project_id ? String(b.project_id).trim() : null); }
 
@@ -900,63 +1399,95 @@ async function deleteBus(conn, auth, busId) {
 
 // ===================== PARTS =====================
 
+const PARTS_MAX = 5000;
+
+function parseStock(v) {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 async function getParts(conn, auth, qs) {
   const deny = requireRole(auth, [
     "admin", "inventory_manager", "technician", "fleet_manager", "rm_manager",
   ]);
   if (deny) return deny;
 
+  // The whole catalogue by default — the inventory list and the technician's
+  // part picker both need every part, and a 200 cap silently hid the rest.
   const raw = qs?.limit;
-  let limit = 200;
+  let limit = PARTS_MAX;
   if (raw != null) {
     const n = parseInt(String(raw), 10);
-    if (Number.isFinite(n) && n > 0) limit = Math.min(n, 200);
+    if (Number.isFinite(n) && n > 0) limit = Math.min(n, PARTS_MAX);
   }
 
   const [rows] = await conn.query(
-    `SELECT part_id, part_name, part_code, part_cost, part_stock FROM PART ORDER BY part_name ASC LIMIT ${limit}`
+    `SELECT part_id, part_name, part_code, part_brand, part_cost, part_stock FROM PART ORDER BY part_name ASC LIMIT ${limit}`
   );
   return json(200, rows);
 }
 
+// Parts catalogue editors. R&M managers maintain the list technicians pick
+// from when adding parts to a job.
+const PART_EDITOR_ROLES = ["admin", "inventory_manager", "rm_manager"];
+
 async function createPart(conn, auth, b) {
-  const deny = requireRole(auth, ["admin", "inventory_manager"]);
+  const deny = requireRole(auth, PART_EDITOR_ROLES);
   if (deny) return deny;
 
-  if (!b.part_name) throw new Error("part_name is required");
-  if (!b.part_code) throw new Error("part_code is required");
+  const name = String(b.part_name ?? "").trim();
+  const code = String(b.part_code ?? "").trim();
+  if (!name) return json(400, { message: "Part name is required" });
+  if (!code) return json(400, { message: "Part number is required" });
+  const brand = b.part_brand != null && String(b.part_brand).trim() ? String(b.part_brand).trim() : null;
 
-  const cost = b.part_cost == null ? null : Number(b.part_cost);
-  if (cost != null && !Number.isFinite(cost)) throw new Error("Invalid part_cost");
+  const cost = b.part_cost == null || b.part_cost === "" ? null : Number(b.part_cost);
+  if (cost != null && (!Number.isFinite(cost) || cost < 0)) return json(400, { message: "Invalid price" });
 
-  const stock = b.part_stock == null ? 0 : Number(b.part_stock);
-  if (!Number.isFinite(stock)) throw new Error("Invalid part_stock");
+  // Stock tracking isn't wired into the app yet; the column is kept so it
+  // can be, and new parts simply start at 0.
+  // Quantity on hand. Recorded and shown, but not yet deducted when a
+  // technician uses a part on a job.
+  const stock = b.part_stock == null || b.part_stock === "" ? 0 : parseStock(b.part_stock);
+  if (stock == null) return json(400, { message: "Quantity must be a whole number (0 or more)" });
 
-  await conn.execute(
-    "INSERT INTO PART (part_name, part_code, part_cost, part_stock) VALUES (?,?,?,?)",
-    [String(b.part_name), String(b.part_code), cost, stock]
+  const [res] = await conn.execute(
+    "INSERT INTO PART (part_name, part_code, part_brand, part_cost, part_stock) VALUES (?,?,?,?,?)",
+    [name, code, brand, cost, stock]
   );
 
-  return json(200, { success: true });
+  return json(200, { success: true, part_id: Number(res.insertId) });
 }
 
 async function updatePart(conn, auth, partId, b) {
-  const deny = requireRole(auth, ["admin", "inventory_manager"]);
+  const deny = requireRole(auth, PART_EDITOR_ROLES);
   if (deny) return deny;
 
   const updates = [];
   const vals = [];
 
-  if (b.part_name != null) { updates.push("part_name=?"); vals.push(String(b.part_name)); }
-  if (b.part_code != null) { updates.push("part_code=?"); vals.push(String(b.part_code)); }
-  if (b.part_cost != null) {
-    const cost = Number(b.part_cost);
-    if (!Number.isFinite(cost)) throw new Error("Invalid part_cost");
+  if (b.part_name != null) {
+    const name = String(b.part_name).trim();
+    if (!name) return json(400, { message: "Part name is required" });
+    updates.push("part_name=?"); vals.push(name);
+  }
+  if (b.part_code != null) {
+    const code = String(b.part_code).trim();
+    if (!code) return json(400, { message: "Part number is required" });
+    updates.push("part_code=?"); vals.push(code);
+  }
+  if (b.part_brand !== undefined) {
+    const brand = b.part_brand != null && String(b.part_brand).trim() ? String(b.part_brand).trim() : null;
+    updates.push("part_brand=?"); vals.push(brand);
+  }
+  if (b.part_cost !== undefined) {
+    const cost = b.part_cost == null || b.part_cost === "" ? null : Number(b.part_cost);
+    if (cost != null && (!Number.isFinite(cost) || cost < 0)) return json(400, { message: "Invalid price" });
     updates.push("part_cost=?"); vals.push(cost);
   }
   if (b.part_stock != null) {
-    const stock = Number(b.part_stock);
-    if (!Number.isFinite(stock)) throw new Error("Invalid part_stock");
+    const stock = parseStock(b.part_stock);
+    if (stock == null) return json(400, { message: "Quantity must be a whole number (0 or more)" });
     updates.push("part_stock=?"); vals.push(stock);
   }
 
@@ -968,6 +1499,11 @@ async function updatePart(conn, auth, partId, b) {
 }
 
 // ===================== REPORTS =====================
+
+// A report that exists only so its selfie and photos have something to attach
+// to. It is not a submission yet: excluded from every list, count and
+// notification until POST /reports/{id}/submit promotes it.
+const REPORT_STATUS_DRAFT = "draft";
 
 async function listReports(conn, auth, qs) {
   const deny = requireRole(auth, [
@@ -997,25 +1533,79 @@ async function listReports(conn, auth, qs) {
 
   if (type) { where.push("LOWER(TRIM(r.report_type))=?"); vals.push(type.toLowerCase()); }
   if (projectId) { where.push("r.project_id=?"); vals.push(projectId); }
+  // Everyone but admin sees only the projects they are assigned to.
+  if (auth.role !== "admin") {
+    where.push("r.project_id IN (SELECT project_id FROM USER_PROJECT WHERE user_id=?)");
+    vals.push(userId);
+  }
 
-  const sql = `
+  where.push("LOWER(TRIM(COALESCE(r.report_status,''))) <> ?");
+  vals.push(REPORT_STATUS_DRAFT);
+
+  // Pending and Open reports are always returned in full — they are the
+  // work queue, and a flat LIMIT 200 used to drop the oldest of them off the
+  // R&M screen (and out of the red count) once a project passed 200 reports.
+  // Only closed history is capped.
+  const closedClause = "LOWER(TRIM(COALESCE(r.report_status,''))) = 'closed'";
+  const queries =
+    status === "closed"
+      ? [{ extra: null, limit: CLOSED_HISTORY_LIMIT }]
+      : status
+        ? [{ extra: null, limit: null }]
+        : [
+            { extra: `NOT (${closedClause})`, limit: null },
+            { extra: closedClause, limit: CLOSED_HISTORY_LIMIT },
+          ];
+
+  const rows = [];
+  for (const q of queries) {
+    const w = q.extra ? [...where, q.extra] : where;
+    const [part] = await conn.execute(reportListSql(w, q.limit), vals);
+    rows.push(...(part || []));
+  }
+  rows.sort(
+    (a, b) =>
+      new Date(b.report_uploaded_at ?? 0).getTime() - new Date(a.report_uploaded_at ?? 0).getTime() ||
+      Number(b.report_id) - Number(a.report_id)
+  );
+
+  const enriched = await Promise.all(
+    rows.map(async (r) => ({
+      ...r,
+      report_selfie_view_url: await signS3Url(r.report_selfie_s3_bucket, r.report_selfie_s3_key),
+      report_review_selfie_view_url: await signS3Url(r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key),
+      job_accept_selfie_view_url: await signS3Url(r.job_accept_selfie_s3_bucket, r.job_accept_selfie_s3_key),
+    }))
+  );
+  return json(200, enriched);
+}
+
+// Closed reports/jobs shown in history lists; open work is never capped.
+const CLOSED_HISTORY_LIMIT = 200;
+
+function reportListSql(where, limit) {
+  return `
     SELECT
       r.report_id, r.report_type, r.report_desc, r.report_location,
       r.report_lat, r.report_lng, r.report_priority, r.report_status,
       r.report_uploaded_at, r.user_id, r.bus_id, r.job_id,
       r.report_review_action, r.report_review_reason, r.report_review_by, r.report_review_at,
+      r.report_verified_name, r.report_selfie_s3_bucket, r.report_selfie_s3_key,
+      r.report_review_verified_name, r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key,
       u.user_name AS reporter_name, u.user_email AS reporter_email,
-      b.bus_route, b.bus_model
+      b.bus_route, b.bus_model,
+      jb.job_completed_at, jb.technician_user_id,
+      jb.job_accept_verified_name, jb.job_accept_selfie_s3_bucket, jb.job_accept_selfie_s3_key,
+      tech.user_name AS technician_name
     FROM REPORT r
     LEFT JOIN \`USER\` u ON u.user_id = r.user_id
     LEFT JOIN BUS b ON b.bus_id = r.bus_id
+    LEFT JOIN JOB jb ON jb.job_id = r.job_id
+    LEFT JOIN \`USER\` tech ON tech.user_id = jb.technician_user_id
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
     ORDER BY r.report_uploaded_at DESC, r.report_id DESC
-    LIMIT 200
+    ${limit ? `LIMIT ${Number(limit)}` : ""}
   `;
-
-  const [rows] = await conn.execute(sql, vals);
-  return json(200, rows);
 }
 
 async function getReport(conn, auth, reportId) {
@@ -1040,8 +1630,9 @@ async function getReport(conn, auth, reportId) {
 
   const row = rows[0];
   const report_selfie_view_url = await signS3Url(row.report_selfie_s3_bucket, row.report_selfie_s3_key);
+  const report_review_selfie_view_url = await signS3Url(row.report_review_selfie_s3_bucket, row.report_review_selfie_s3_key);
 
-  return json(200, { ...row, report_selfie_view_url });
+  return json(200, { ...row, report_selfie_view_url, report_review_selfie_view_url });
 }
 
 async function createReport(conn, auth, b) {
@@ -1072,30 +1663,82 @@ async function createReport(conn, auth, b) {
   );
   if (!busRows.length) throw new Error("bus_id is not in the selected project");
 
+  // Created as a draft, not 'submitted'. The row has to exist before its
+  // selfie and photos can be presigned against it, but until those uploads
+  // finish it isn't a real report — so it stays invisible to reviewers and
+  // silent until POST /reports/{id}/submit promotes it.
   const [res] = await conn.execute(
     `INSERT INTO REPORT
      (project_id, report_type, report_desc, report_location, report_lat, report_lng,
       report_priority, report_status, user_id, bus_id, report_uploaded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?, NOW())`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
     [
       projectId, b.report_type, b.report_desc ?? null,
       b.report_location ?? null, b.report_lat ?? null, b.report_lng ?? null,
-      b.report_priority ?? "medium", userId, b.bus_id,
+      b.report_priority ?? "medium", REPORT_STATUS_DRAFT, userId, b.bus_id,
     ]
   );
 
-  const reportId = res.insertId;
+  return json(200, { report_id: res.insertId, report_status: REPORT_STATUS_DRAFT });
+}
+
+// Promotes a finished draft to 'submitted' — the point at which the report
+// becomes visible to reviewers and the "new report" notification fires. Called
+// by the reporter once the selfie and every photo have uploaded, so a
+// submission that fails part-way leaves a draft nobody ever sees rather than a
+// blank report in the pending queue.
+async function submitReport(conn, auth, reportId) {
+  const deny = requireRole(auth, [
+    "admin", "fleet_manager", "rm_manager", "technician", "inventory_manager", "driver",
+  ]);
+  if (deny) return deny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+
+  const [rows] = await conn.execute(
+    "SELECT report_id, user_id, bus_id, report_type, report_status, project_id FROM REPORT WHERE report_id=?",
+    [reportId]
+  );
+  if (!rows.length) return json(404, { message: "Report not found" });
+
+  const report = rows[0];
+  // Only the author finalises their own report, whatever their role.
+  if (Number(report.user_id) !== userId && auth.role !== "admin") {
+    return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+  }
+
+  // Idempotent: a retried submit (flaky network, double tap) must not fire a
+  // second notification or reopen a report a reviewer has already moved on.
+  const current = (report.report_status ?? "").toString().trim().toLowerCase();
+  if (current !== REPORT_STATUS_DRAFT) {
+    return json(200, { success: true, already_submitted: true, report_status: report.report_status });
+  }
+
+  await conn.execute(
+    "UPDATE REPORT SET report_status='submitted', report_uploaded_at=NOW() WHERE report_id=? AND LOWER(TRIM(report_status))=?",
+    [reportId, REPORT_STATUS_DRAFT]
+  );
 
   const reporterName = await getDisplayName(conn, auth);
   await notifyUsersByRole(conn, {
-    roles: ["admin", "rm_manager"],
+    roles: ["admin", "rm_manager", "fleet_manager"],
+    projectId: report.project_id ?? null,
+    excludeUserId: userId,
     type: "new_report",
     title: "New report submitted",
-    body: `${reporterName} submitted a ${b.report_type} report for bus ${b.bus_id}.`,
+    body: `${reporterName} submitted a ${report.report_type} report for bus ${report.bus_id}.`,
     reportId,
   });
 
-  return json(200, { report_id: reportId });
+  return json(200, { success: true, report_status: "submitted" });
+}
+
+const REVIEW_ACTIONS = ["approved", "declined"];
+
+// '' / NULL / 'submitted' / 'pending' all mean "awaiting review".
+function normaliseReportStatus(raw) {
+  const s = (raw ?? "").toString().trim().toLowerCase();
+  return !s || s === "submitted" ? "pending" : s;
 }
 
 async function updateReportStatus(conn, auth, reportId, b) {
@@ -1103,38 +1746,90 @@ async function updateReportStatus(conn, auth, reportId, b) {
 
   const nextStatus = String(b.report_status).trim().toLowerCase();
   const action = b.report_review_action != null ? String(b.report_review_action).trim().toLowerCase() : null;
+  const isTech = auth.role === "technician";
 
-  if (auth.role === "technician") {
-    // Technicians may only close the report tied to their own job when completing it —
-    // approve/decline stays exclusive to admin/fleet_manager/rm_manager below.
+  if (isTech) {
+    // Technicians may only close the report tied to their own job. Closing
+    // now also happens server-side when the job is closed (updateJobStatus);
+    // this path stays for older app versions.
     if (nextStatus !== "closed" || action != null) {
       return json(403, { code: "FORBIDDEN", message: "Forbidden" });
     }
-    const techUserId = await getOrCreateUserId(conn, auth);
-    const [chk] = await conn.execute(
-      `SELECT r.report_id FROM REPORT r JOIN JOB j ON j.job_id = r.job_id
-       WHERE r.report_id=? AND j.technician_user_id=? LIMIT 1`,
-      [reportId, techUserId]
-    );
-    if (!chk.length) return json(403, { code: "FORBIDDEN", message: "Forbidden" });
   } else {
     const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager"]);
     if (deny) return deny;
+    if (action != null && !REVIEW_ACTIONS.includes(action)) {
+      return json(400, { message: "Invalid report_review_action" });
+    }
   }
 
-  const shouldCreateJob = action === "approved" || nextStatus === "open";
+  // Looked up before the transaction: anything that throws after COMMIT
+  // would report an error for a change that was in fact saved.
+  const userId = await getOrCreateUserId(conn, auth);
+  const reviewerName = isTech ? null : await getDisplayName(conn, auth);
+
+  // Approving is a sign-off: the manager types their name and takes a selfie
+  // (uploaded via presignVerificationSelfie, kind=report-review).
+  const reviewName = (b.review_verified_name ?? "").toString().trim() || null;
+  const reviewSelfieKey = (b.review_selfie_s3_key ?? "").toString().trim() || null;
+  if (action === "approved" && (!reviewName || !reviewSelfieKey)) {
+    return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to approve a report" });
+  }
+  if (reviewSelfieKey && !reviewSelfieKey.startsWith(`reports/${reportId}/review-selfie/`)) {
+    return json(400, { message: "Invalid review_selfie_s3_key" });
+  }
+
+  const shouldCreateJob = !isTech && (action === "approved" || nextStatus === "open");
+  let report;
+  let jobId;
+  let jobWasCreated = false;
 
   await conn.beginTransaction();
   try {
     const [rRows] = await conn.execute(
-      `SELECT report_id, job_id FROM REPORT WHERE report_id=? FOR UPDATE`,
+      `SELECT r.report_id, r.job_id, r.user_id, r.bus_id, r.report_type, r.project_id,
+              r.report_status, r.report_review_action, r.report_review_by, j.technician_user_id
+       FROM REPORT r LEFT JOIN JOB j ON j.job_id = r.job_id
+       WHERE r.report_id=? FOR UPDATE`,
       [reportId]
     );
-
     if (!rRows.length) { await conn.rollback(); return json(404, { message: "Report not found" }); }
+    report = rRows[0];
+    const current = normaliseReportStatus(report.report_status);
 
-    let jobId = rRows[0].job_id ? Number(rRows[0].job_id) : null;
-    const jobWasCreated = shouldCreateJob && !jobId;
+    if (isTech) {
+      if (report.technician_user_id == null || Number(report.technician_user_id) !== userId) {
+        await conn.rollback();
+        return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+      }
+      // Already closed (normally by updateJobStatus) — nothing to do.
+      if (current === "closed") {
+        await conn.rollback();
+        return json(200, { success: true, already: true, job_id: report.job_id });
+      }
+    } else if (auth.role !== "admin") {
+      const [member] = await conn.execute(
+        "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+        [userId, report.project_id]
+      );
+      if (!member.length) { await conn.rollback(); return json(403, { code: "FORBIDDEN", message: "Forbidden" }); }
+    }
+
+    // Approve/decline only from Pending. Without this, a manager looking at
+    // a stale list (or a second manager) could decline a report whose job a
+    // technician was already working on, or approve a finished report back
+    // to Open.
+    if (action != null && current !== "pending") {
+      await conn.rollback();
+      const done = report.report_review_action || current;
+      return json(409, {
+        code: "REPORT_ALREADY_HANDLED",
+        message: `This report was already ${done}${report.report_review_by ? ` by ${report.report_review_by}` : ""}. Pull down to refresh.`,
+      });
+    }
+
+    jobId = report.job_id ? Number(report.job_id) : null;
+    jobWasCreated = shouldCreateJob && !jobId;
 
     if (jobWasCreated) {
       const jobDesc = b.job_desc != null ? String(b.job_desc) : `Created from approved report #${reportId}`;
@@ -1149,31 +1844,57 @@ async function updateReportStatus(conn, auth, reportId, b) {
     const updates = ["report_status=?"];
     const values = [String(b.report_status)];
 
-    if (b.report_review_action != null)    { updates.push("report_review_action=?");  values.push(b.report_review_action); }
-    if (b.report_review_reason !== undefined) { updates.push("report_review_reason=?"); values.push(b.report_review_reason ?? null); }
-    if (b.report_review_by != null)        { updates.push("report_review_by=?");      values.push(b.report_review_by); }
-    if (b.report_review_at != null)        { updates.push("report_review_at=?");      values.push(b.report_review_at); }
+    // Review fields are written only by an approve/decline, and the reviewer
+    // and time come from the server — the technician's close used to send its
+    // own report_review_at and overwrite the approval time.
+    if (action != null) {
+      updates.push("report_review_action=?", "report_review_reason=?", "report_review_by=?", "report_review_at=NOW()");
+      values.push(action, action === "declined" ? (b.report_review_reason ?? null) : null, reviewerName);
+      if (reviewName && reviewSelfieKey) {
+        updates.push("report_review_verified_name=?", "report_review_selfie_s3_bucket=?", "report_review_selfie_s3_key=?");
+        values.push(reviewName, S3_BUCKET, reviewSelfieKey);
+      }
+    }
 
     values.push(reportId);
     await conn.execute(`UPDATE REPORT SET ${updates.join(", ")} WHERE report_id=?`, values);
     await conn.commit();
-
-    if (jobWasCreated) {
-      await notifyUsersByRole(conn, {
-        roles: ["technician"],
-        type: "new_job",
-        title: "New job available",
-        body: `A new job is available to accept (from report #${reportId}).`,
-        reportId,
-        jobId,
-      });
-    }
-
-    return json(200, { success: true, job_id: jobId });
   } catch (e) {
     await conn.rollback();
     throw e;
   }
+
+  // Saved. Notifications are best-effort and cannot fail the request.
+  if (jobWasCreated) {
+    await notifyUsersByRole(conn, {
+      roles: ["technician"],
+      projectId: report.project_id ?? null,
+      excludeUserId: userId,
+      type: "new_job",
+      title: "New job available",
+      body: `A new job is available to accept (from report #${reportId}).`,
+      reportId,
+      jobId,
+    });
+  }
+
+  // Tell the person who filed the report what happened to it.
+  if (action === "approved" || action === "declined") {
+    const authorId = Number(report.user_id);
+    const reason = b.report_review_reason ? String(b.report_review_reason).trim() : "";
+    await notifyUsers(conn, {
+      userIds: authorId && authorId !== userId ? [authorId] : [],
+      type: "report_reviewed",
+      title: action === "approved" ? "Report approved" : "Report declined",
+      body:
+        action === "approved"
+          ? `Your ${report.report_type} report for bus ${report.bus_id} was approved.`
+          : `Your ${report.report_type} report for bus ${report.bus_id} was declined${reason ? `: ${reason}` : "."}`,
+      reportId,
+    });
+  }
+
+  return json(200, { success: true, job_id: jobId });
 }
 
 // ===================== JOBS =====================
@@ -1199,13 +1920,15 @@ async function assertTechJobUnlocked(conn, auth, jobId) {
 
   const techUserId = await getOrCreateUserId(conn, auth);
   const [rows] = await conn.execute(
-    `SELECT technician_user_id, job_odometer FROM JOB WHERE job_id=? LIMIT 1`,
+    `SELECT technician_user_id, job_odometer, job_status FROM JOB WHERE job_id=? LIMIT 1`,
     [jobId]
   );
 
   if (!rows.length) throw new Error("job_id not found");
   if (rows[0].technician_user_id == null) return json(409, { code: "JOB_NOT_ACCEPTED", message: "Job not accepted yet" });
   if (Number(rows[0].technician_user_id) !== techUserId) return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+  // A completed job is final: no more tasks, parts or photos.
+  if (JOB_DONE_STATUSES.includes(rows[0].job_status)) return json(409, { code: "JOB_CLOSED", message: "This job is already completed" });
   if (rows[0].job_odometer == null) return json(409, { code: "ODOMETER_REQUIRED", message: "Initial odometer is required before updating this job" });
 
   return null;
@@ -1292,20 +2015,54 @@ async function createJobForReport(conn, auth, reportId, b) {
   }
 }
 
-async function assignJobToMe(conn, auth, jobId) {
+async function assignJobToMe(conn, auth, jobId, b = {}) {
   const deny = requireRole(auth, ["technician", "admin"]);
   if (deny) return deny;
 
+  // Who is physically accepting: a name typed on the spot plus a selfie,
+  // required from technicians (see presignVerificationSelfie).
+  const verifiedName = (b.verified_name ?? "").toString().trim() || null;
+  const selfieKey = (b.selfie_s3_key ?? "").toString().trim() || null;
+  if (auth.role === "technician" && (!verifiedName || !selfieKey)) {
+    return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to accept a job" });
+  }
+  if (selfieKey && !selfieKey.startsWith(`jobs/${jobId}/accept-selfie/`)) {
+    return json(400, { message: "Invalid selfie_s3_key" });
+  }
+
   const techUserId = await getOrCreateUserId(conn, auth);
   const [res] = await conn.execute(
-    `UPDATE JOB SET technician_user_id=?, job_accepted_at=NOW(), job_updated_at=NOW() WHERE job_id=? AND technician_user_id IS NULL`,
-    [techUserId, jobId]
+    `UPDATE JOB SET technician_user_id=?, job_accepted_at=NOW(), job_updated_at=NOW(),
+       job_accept_verified_name=?, job_accept_selfie_s3_bucket=?, job_accept_selfie_s3_key=?
+     WHERE job_id=? AND technician_user_id IS NULL`,
+    [techUserId, verifiedName, selfieKey ? S3_BUCKET : null, selfieKey, jobId]
   );
-  if (!res.affectedRows) return json(409, { message: "Job already assigned (or not found)" });
+  if (!res.affectedRows) {
+    // A repeated tap (or a retry after a dropped response) arrives after the
+    // first request already assigned the job to this same technician. That
+    // is a success, not a conflict — reporting it as an error is what made
+    // accepting look like it failed while the job moved to My Jobs anyway.
+    const [chk] = await conn.execute(
+      `SELECT j.technician_user_id, u.user_name
+       FROM JOB j LEFT JOIN \`USER\` u ON u.user_id = j.technician_user_id
+       WHERE j.job_id=? LIMIT 1`,
+      [jobId]
+    );
+    if (!chk.length) return json(404, { message: "Job not found" });
+    if (Number(chk[0].technician_user_id) === techUserId) {
+      return json(200, { success: true, already: true });
+    }
+    return json(409, {
+      code: "JOB_TAKEN",
+      message: `This job was already accepted by ${chk[0].user_name || "another technician"}.`,
+    });
+  }
 
   const technicianName = await getDisplayName(conn, auth);
   await notifyUsersByRole(conn, {
-    roles: ["admin", "rm_manager"],
+    roles: ["admin", "rm_manager", "fleet_manager"],
+    projectId: await projectIdForJob(conn, jobId),
+    excludeUserId: techUserId,
     type: "job_progress",
     title: "Job accepted",
     body: `Job #${jobId} was accepted by ${technicianName}.`,
@@ -1321,19 +2078,74 @@ async function listJobs(conn, auth, qs) {
 
   const status = qs.status ? String(qs.status) : null;
   const projectId = qs.project_id ? String(qs.project_id).trim() : null;
+  // One job by id, for the job screens — they used to find their job by
+  // scanning the 200-row list, and showed "not found" once it fell off.
+  const jobId = qs.job_id != null ? toId(qs.job_id, "job_id") : null;
+
   const where = [];
   const vals = [];
+  if (jobId) { where.push("j.job_id=?"); vals.push(jobId); }
   if (status) { where.push("j.job_status=?"); vals.push(status); }
   if (projectId) { where.push("r.project_id=?"); vals.push(projectId); }
+  // Everyone but admin sees only the projects they are assigned to.
+  if (auth.role !== "admin") {
+    const userId = await getOrCreateUserId(conn, auth);
+    where.push("r.project_id IN (SELECT project_id FROM USER_PROJECT WHERE user_id=?)");
+    vals.push(userId);
+  }
 
-  const sql = `
+  // Open work is returned in full; only finished history is capped (see
+  // listReports for why).
+  const doneClause = `j.job_status IN ${JOB_DONE_SQL}`;
+  const queries =
+    jobId || status
+      ? [{ extra: null, limit: JOB_DONE_STATUSES.includes(status) ? CLOSED_HISTORY_LIMIT : null }]
+      : [
+          { extra: `NOT (${doneClause})`, limit: null },
+          { extra: doneClause, limit: CLOSED_HISTORY_LIMIT },
+        ];
+
+  const rows = [];
+  for (const q of queries) {
+    const w = q.extra ? [...where, q.extra] : where;
+    const [part] = await conn.execute(jobListSql(w, q.limit), vals);
+    rows.push(...(part || []));
+  }
+  rows.sort(
+    (a, b) =>
+      new Date(b.job_created_at ?? 0).getTime() - new Date(a.job_created_at ?? 0).getTime() ||
+      Number(b.job_id) - Number(a.job_id)
+  );
+
+  const enriched = await Promise.all(
+    rows.map(async (r) => ({
+      ...r,
+      job_selfie_view_url: await signS3Url(r.job_selfie_s3_bucket, r.job_selfie_s3_key),
+      job_accept_selfie_view_url: await signS3Url(r.job_accept_selfie_s3_bucket, r.job_accept_selfie_s3_key),
+      report_selfie_view_url: await signS3Url(r.report_selfie_s3_bucket, r.report_selfie_s3_key),
+      report_review_selfie_view_url: await signS3Url(r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key),
+    }))
+  );
+
+  return json(200, enriched);
+}
+
+const JOB_DONE_STATUSES = ["closed", "completed", "done"];
+const JOB_DONE_SQL = "('closed','completed','done')";
+
+function jobListSql(where, limit) {
+  return `
     SELECT
       j.job_id, j.job_desc, j.job_status, j.technician_user_id,
       tech.user_name AS technician_name,
       j.job_odometer, j.job_created_at, j.job_accepted_at, j.job_updated_at, j.job_completed_at,
       j.job_verified_name, j.job_selfie_s3_bucket, j.job_selfie_s3_key,
+      j.job_accept_verified_name, j.job_accept_selfie_s3_bucket, j.job_accept_selfie_s3_key,
       r.report_id, r.report_type, r.report_priority, r.report_desc,
       r.report_location, r.report_uploaded_at, r.bus_id, r.project_id,
+      r.report_verified_name, r.report_selfie_s3_bucket, r.report_selfie_s3_key,
+      r.report_review_by, r.report_review_at, r.report_review_verified_name,
+      r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key,
       reporter.user_name AS reporter_name
     FROM JOB j
     LEFT JOIN REPORT r ON r.job_id = j.job_id
@@ -1341,19 +2153,8 @@ async function listJobs(conn, auth, qs) {
     LEFT JOIN \`USER\` tech ON tech.user_id = j.technician_user_id
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
     ORDER BY j.job_created_at DESC, j.job_id DESC
-    LIMIT 200
+    ${limit ? `LIMIT ${Number(limit)}` : ""}
   `;
-
-  const [rows] = await conn.execute(sql, vals);
-
-  const enriched = await Promise.all(
-    (rows || []).map(async (r) => ({
-      ...r,
-      job_selfie_view_url: await signS3Url(r.job_selfie_s3_bucket, r.job_selfie_s3_key),
-    }))
-  );
-
-  return json(200, enriched);
 }
 
 async function getJob(conn, auth, jobId) {
@@ -1370,7 +2171,7 @@ async function listJobParts(conn, auth, jobId) {
   if (deny) return deny;
 
   const [rows] = await conn.execute(
-    `SELECT t.task_id, t.task_name, tp.part_id, tp.qty AS jp_qty, tp.line_cost AS jp_linecost, p.part_name, p.part_code, p.part_cost
+    `SELECT t.task_id, t.task_name, tp.part_id, tp.qty AS jp_qty, tp.line_cost AS jp_linecost, p.part_name, p.part_code, p.part_brand, p.part_cost
      FROM JOB_TASK t JOIN JOB_TASK_PART tp ON tp.task_id = t.task_id JOIN PART p ON p.part_id = tp.part_id
      WHERE t.job_id=? ORDER BY t.task_order, p.part_name`,
     [jobId]
@@ -1404,26 +2205,67 @@ async function updateJobStatus(conn, auth, jobId, b) {
   const deny = requireRole(auth, ["admin", "technician", "fleet_manager", "rm_manager"]);
   if (deny) return deny;
 
+  if (!b.to_status) throw new Error("to_status is required");
+  const toStatus = String(b.to_status);
+  const isTerminal = JOB_DONE_STATUSES.includes(toStatus);
+  const userId = await getOrCreateUserId(conn, auth);
+
+  const [jRows] = await conn.execute(
+    "SELECT job_status, technician_user_id, job_selfie_s3_key FROM JOB WHERE job_id=? LIMIT 1",
+    [jobId]
+  );
+  if (!jRows.length) return json(404, { message: "Job not found" });
+  const job = jRows[0];
+
+  // Closing twice (a retry after a lost response) is a success, and must not
+  // move the completion time or send "Job completed" again.
+  if (isTerminal && JOB_DONE_STATUSES.includes(job.job_status)) {
+    if (auth.role === "technician" && Number(job.technician_user_id) !== userId) {
+      return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+    }
+    return json(200, { success: true, already: true });
+  }
+
   const lock = await assertTechJobUnlocked(conn, auth, jobId);
   if (lock) return lock;
 
-  if (!b.to_status) throw new Error("to_status is required");
-  const toStatus = String(b.to_status);
-  const isTerminal = toStatus === "closed" || toStatus === "completed" || toStatus === "done";
-  if (isTerminal) {
-    await conn.execute(
-      "UPDATE JOB SET job_status=?, job_updated_at=NOW(), job_completed_at=NOW() WHERE job_id=?",
-      [toStatus, jobId]
-    );
-  } else {
-    await conn.execute(
-      "UPDATE JOB SET job_status=?, job_updated_at=NOW() WHERE job_id=?",
-      [toStatus, jobId]
-    );
+  // The completion sign-off (name + selfie) has to be on the job first —
+  // the app enforced this, the server didn't.
+  if (auth.role === "technician" && isTerminal && !job.job_selfie_s3_key) {
+    return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to complete a job" });
+  }
+
+  // The job and its report close together. The app used to close the report
+  // in a second request, and when that one failed the report stayed Open
+  // forever with nothing the technician could do about it.
+  await conn.beginTransaction();
+  try {
+    if (isTerminal) {
+      await conn.execute(
+        "UPDATE JOB SET job_status=?, job_updated_at=NOW(), job_completed_at=NOW() WHERE job_id=?",
+        [toStatus, jobId]
+      );
+      await conn.execute(
+        `UPDATE REPORT SET report_status='closed'
+         WHERE job_id=? AND LOWER(TRIM(COALESCE(report_status,''))) <> 'closed'`,
+        [jobId]
+      );
+    } else {
+      await conn.execute(
+        "UPDATE JOB SET job_status=?, job_updated_at=NOW() WHERE job_id=?",
+        [toStatus, jobId]
+      );
+    }
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
   }
 
   await notifyUsersByRole(conn, {
-    roles: ["admin", "rm_manager"],
+    roles: ["admin", "rm_manager", "fleet_manager"],
+    projectId: await projectIdForJob(conn, jobId),
+    excludeUserId: userId,
     type: "job_progress",
     title: isTerminal ? "Job completed" : "Job status updated",
     body: `Job #${jobId} status changed to "${toStatus}".`,
@@ -1492,7 +2334,9 @@ async function createJobTask(conn, auth, jobId, b) {
   if (taskStatus === "done") {
     const technicianName = await getDisplayName(conn, auth);
     await notifyUsersByRole(conn, {
-      roles: ["admin", "rm_manager"],
+      roles: ["admin", "rm_manager", "fleet_manager"],
+      projectId: await projectIdForJob(conn, jobId),
+      excludeUserId: await getOrCreateUserId(conn, auth),
       type: "job_progress",
       title: "Job progress update",
       body: `${technicianName} completed a task on Job #${jobId}: ${b.task_name}.`,
@@ -1530,11 +2374,12 @@ async function listTaskParts(conn, auth, taskId) {
   const deny = requireRole(auth, ["admin", "inventory_manager", "technician", "fleet_manager", "rm_manager"]);
   if (deny) return deny;
 
-  const lock = await assertTechTaskUnlocked(conn, auth, taskId);
-  if (lock) return lock;
+  // Read-only, so no assertTechTaskUnlocked: that gate is for changing a job,
+  // and it refuses other technicians' jobs (the "Assigned" tab) and completed
+  // ones, which left their parts lists blank.
 
   const [rows] = await conn.execute(
-    `SELECT tp.task_id, tp.part_id, tp.qty, tp.line_cost, p.part_name, p.part_code, p.part_cost, p.part_stock
+    `SELECT tp.task_id, tp.part_id, tp.qty, tp.line_cost, p.part_name, p.part_code, p.part_brand, p.part_cost, p.part_stock
      FROM JOB_TASK_PART tp JOIN PART p ON p.part_id = tp.part_id
      WHERE tp.task_id=? ORDER BY p.part_name ASC, p.part_code ASC`,
     [taskId]
@@ -1577,21 +2422,435 @@ async function addTaskPart(conn, auth, taskId, b) {
 
 const TYRE_AXLE_SIDES = ["left", "right"];
 const TYRE_WHEEL_POSITIONS = ["single", "inner", "outer"];
+// The verdicts deriveInspectionResult can produce, in ascending severity. No
+// longer validated against a request: the technician stopped choosing this and
+// the server now derives it from the readings.
 const TYRE_INSPECTION_RESULTS = ["pass", "monitor", "reject"];
 // Statuses a tyre may be moved to directly via PATCH/unmount — "mounted" is
 // only ever set by swapTyre, so it's excluded here to keep TYRE_MOUNTING the
 // single source of truth for "is this tyre currently on a bus".
 const TYRE_MANUAL_STATUSES = ["spare", "rejected", "retreading", "retired"];
-const TYRE_UNMOUNTABLE_STATUSES = ["rejected", "retired", "retreading"];
+// 'retreading' is deliberately NOT here: a tyre sent away for retreading is
+// expected to come back and go on a bus again, often in the same position it
+// came off. Only scrapped tyres are permanently unmountable.
+const TYRE_UNMOUNTABLE_STATUSES = ["rejected", "retired"];
 // Any tyre whose most recently recorded groove reading is below this is
 // surfaced by getLowTreadTyres() regardless of the technician's pass/monitor/
 // reject call on that inspection — it's an independent safety threshold.
 const TYRE_LOW_TREAD_THRESHOLD_MM = 5;
 
+// One row per tyre: its most recent inspection, with that inspection's groove
+// readings rolled up. Three call sites need this — the low-tread list, the
+// nightly digest and the fleet summary — and the first two carried
+// byte-identical copies of it.
+//
+// The inner pick uses the GROUP_CONCAT/SUBSTRING_INDEX argmax idiom rather than
+// matching on "MAX(inspection_datetime) = inspection_datetime". The old form
+// returned TWO rows for a tyre whenever two sessions shared an identical
+// inspection_datetime — which the 2026-07 import can produce, since it writes
+// explicit datetimes — silently double-counting that tyre in the low-tread list
+// and the digest. Picking a single tyre_inspection_id cannot tie. Truncation at
+// group_concat_max_len is harmless here: only the first id is ever read.
+//
+// Interpolated into template literals, never built from user input.
+//
+// REQUIRES migration 014 (uneven_wear_type, tread_spread_mm). Deploying this
+// Lambda against a database that has not been migrated 500s the low-tread list,
+// the nightly digest and the fleet summary alike.
+const LATEST_TYRE_INSPECTION_SQL = `
+  SELECT ti.tyre_id,
+         ti.tyre_inspection_id,
+         ti.inspection_result,
+         ti.sidewall_condition,
+         ti.uneven_wear_type,
+         ti.tread_spread_mm,
+         s.inspection_datetime,
+         MIN(tt.tread_thickness_mm) AS min_tread_mm,
+         MAX(tt.tread_thickness_mm) AS max_tread_mm,
+         COUNT(tt.tyre_tread_id)    AS groove_count
+  FROM TYRE_INSPECTION ti
+  JOIN TYRE_INSPECTION_SESSION s ON s.tyre_inspection_session_id = ti.session_id
+  JOIN TYRE_TREAD tt ON tt.tyre_inspection_id = ti.tyre_inspection_id
+  JOIN (
+    SELECT ti2.tyre_id,
+           SUBSTRING_INDEX(
+             GROUP_CONCAT(ti2.tyre_inspection_id
+               ORDER BY s2.inspection_datetime DESC, ti2.tyre_inspection_id DESC),
+             ',', 1) AS latest_inspection_id
+    FROM TYRE_INSPECTION ti2
+    JOIN TYRE_INSPECTION_SESSION s2 ON s2.tyre_inspection_session_id = ti2.session_id
+    GROUP BY ti2.tyre_id
+  ) pick ON pick.latest_inspection_id = ti.tyre_inspection_id
+  GROUP BY ti.tyre_inspection_id, ti.tyre_id, ti.inspection_result,
+           ti.sidewall_condition, ti.uneven_wear_type, ti.tread_spread_mm,
+           s.inspection_datetime
+`;
+// Sidewall / tyre-condition toggle, asked for every tyre on both the
+// replacement popup (outgoing and incoming) and the technician's periodic
+// inspection. Distinct from TYRE_INSPECTION_RESULTS, which is the overall
+// pass/monitor/reject verdict on an inspected tyre.
+const TYRE_SIDEWALL_CONDITIONS = ["ok", "not_ok"];
+// Groove counts a tyre may have. The fleet runs 4-groove (LM 666, GT 867,
+// GITI, FR 208) and 3-groove (LM 668) tyres; TYRE.tyre_tread_count records
+// which, and the thickness readings for a tyre must match it one-for-one.
+const TYRE_ALLOWED_TREAD_COUNTS = [3, 4];
+// Retread history is tracked in buckets 0..3. 3 is a HARD MAXIMUM, not a "3+":
+// a casing retreaded three times is at the end of its life and cannot
+// legitimately be recorded as retreaded again. Rows predating this scheme may
+// hold a higher number; they read back as 3 and are never written downwards
+// (see the GREATEST() writes at the swap and inspection call sites).
+//
+// Note the meaning shift from the previous scheme, where the top bucket was 2
+// and meant "two or more": a stored 2 now means exactly two. 014's trailing
+// comment lists the casings that may therefore under-report.
+const TYRE_RETREAD_COUNTS = [0, 1, 2, 3];
+const TYRE_MAX_RETREAD_BUCKET = 3;
+// The same number, named for what it means rather than how it clamps, so the
+// end-of-life checks read as intent instead of arithmetic.
+const TYRE_RETREAD_END_OF_LIFE = TYRE_MAX_RETREAD_BUCKET;
+
+function requireRetreadCount(value, name) {
+  const n = toWholeNumber(value, name);
+  if (!TYRE_RETREAD_COUNTS.includes(n)) {
+    throw new Error(
+      `Invalid ${name} — must be ${TYRE_RETREAD_COUNTS.join(", ")}; ${TYRE_MAX_RETREAD_BUCKET} is the maximum a casing can carry`
+    );
+  }
+  return n;
+}
+
+// What a stored count counts as for comparison, so a legacy 5 still satisfies a
+// "3" reading rather than blocking it. This is also the only thing enforcing
+// the ceiling on read — nothing in the schema bounds the column.
+function retreadBucket(value) {
+  const n = Number(value) || 0;
+  return Math.min(Math.max(n, 0), TYRE_MAX_RETREAD_BUCKET);
+}
+
+/**
+ * The sticker photograph backing a retread count.
+ *
+ * The count is a claim about how much life a casing has left, it is written
+ * with GREATEST() so it can only ever go up, and at TYRE_MAX_RETREAD_BUCKET the
+ * casing is scrapped — so the number needs its evidence, and a mistake cannot be
+ * walked back through the app. Every form that SETS a count must send the
+ * sticker it read the count from.
+ *
+ * A count of 0 is a never-retreaded casing with no sticker to photograph, so
+ * nothing is required, and a stray key is dropped rather than filed against a
+ * tyre that has never been retreaded.
+ */
+function retreadStickerKeyFor(value, count, name) {
+  const key = value ? String(value).trim() : null;
+  if (count != null && retreadBucket(count) > 0 && !key) {
+    throw new Error(`${name} is required when the retread count is 1 or more`);
+  }
+  return count != null && retreadBucket(count) > 0 ? key : null;
+}
+
+// ===== DERIVED INSPECTION FINDINGS =====
+//
+// !! MIRRORED IN src/utils/tyreWear.ts — KEEP THE TWO IN STEP !!
+//
+// Duplicated rather than shared because there is no shared module path between
+// the two halves of this repo: the Lambda is a single plain .mjs deployed as-is
+// with no bundler and no package.json, the app is TypeScript compiled by Metro.
+// Standing up a build step to share sixty lines of dependency-free arithmetic
+// would cost more than it saves. The client needs this to show the technician a
+// live verdict as they type, offline, on a depot floor; the server needs it
+// because the stored verdict must never be whatever the client felt like
+// sending. The fixture table in src/utils/tyreWear.ts is the spec for both.
+
+// The spread between the deepest and shallowest groove on one tyre that means
+// it is wearing unevenly rather than just imperfectly. Inclusive: a spread of
+// exactly 1.5mm counts, which is what makes the worked example 12/13.5/13.5/13.5
+// classify at all.
+const UNEVEN_WEAR_SPREAD_MM = 1.5;
+
+// Verdict thresholds, applied to the tyre's SHALLOWEST groove.
+const TYRE_REJECT_TREAD_MM = 5.0;
+const TYRE_MONITOR_TREAD_MM = 7.0;
+
+const INSPECTION_RESULT_RANK = { pass: 0, monitor: 1, reject: 2 };
+function worstResult(a, b) {
+  return INSPECTION_RESULT_RANK[a] >= INSPECTION_RESULT_RANK[b] ? a : b;
+}
+
+/**
+ * Classify a tyre's groove readings by the CAUSE of any uneven wear.
+ *
+ * READING ORDER, and why the wheel's side is needed.
+ *
+ * Readings are recorded against a fixed edge of the BUS, not of the tyre:
+ * tread_position 1 is always the kerb-side edge (READING_ANCHOR). One
+ * instruction a technician can follow at any wheel — but it means the same array
+ * means opposite things on opposite sides. On a LEFT wheel the kerb-side edge IS
+ * the outboard shoulder, so the array already runs outer-to-inner; on a RIGHT
+ * wheel it is the inboard shoulder and has to be reversed.
+ *
+ * Toe-in and toe-out are the same gradient with opposite signs, so getting this
+ * wrong inverts the answer rather than blurring it: 5/5/7/8 is toe-in on the
+ * left of the bus and toe-out on the right. Inflation wear is symmetric about
+ * the tread centre and survives a reversal unchanged.
+ *
+ * Omitting axleSide treats the readings as already outer-to-inner.
+ *
+ * CAVEAT — camber produces the same one-sided gradient as toe: positive camber
+ * mimics toe-in, negative mimics toe-out. The tell for toe is feathering, felt
+ * by hand, which is not a depth. 'toe_in'/'toe_out' are the most likely cause of
+ * the shape, not a certainty.
+ *
+ * Returns { type, spread }; type is null when the tyre is wearing evenly.
+ */
+// The edge of the bus tread_position 1 is always measured from. Mirrors
+// READING_ANCHOR in src/utils/tyreWear.ts — the two must agree or the server
+// will disagree with the screen the technician was looking at.
+const READING_ANCHOR = "left";
+
+function toOuterToInner(readings, axleSide) {
+  if (!axleSide || axleSide === READING_ANCHOR) return readings;
+  return [...readings].reverse();
+}
+
+function classifyUnevenWear(readings, axleSide) {
+  const raw = (readings || []).map(Number).filter((n) => Number.isFinite(n) && n >= 0);
+  const v = toOuterToInner(raw, axleSide);
+  if (v.length < 3) return { type: null, spread: null };
+
+  const max = Math.max(...v);
+  const min = Math.min(...v);
+  // Rounded to one decimal to match TYRE_TREAD.tread_thickness_mm's DECIMAL(4,1),
+  // so the stored spread can't disagree with the readings it came from.
+  const spread = Math.round((max - min) * 10) / 10;
+  if (spread < UNEVEN_WEAR_SPREAD_MM) return { type: null, spread };
+
+  const shoulders = [v[0], v[v.length - 1]];
+  const centre = v.slice(1, -1);
+  const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
+  // From here the tyre HAS an issue — the spread said so. All that is left is to
+  // name it, and a named cause is always more use than "irregular", so the two
+  // physical signals are read off the profile and the stronger one wins.
+  //
+  //   inflation — where the CENTRE sits against the two SHOULDERS. Positive: the
+  //               shoulders are the worn part, so the tyre has been running on
+  //               its edges (under-inflated). Negative: the crown is worn
+  //               (over-inflated). Symmetric about the tread centre, so it
+  //               carries no direction and is safe whatever the groove order.
+  //
+  //   toe       — where the INNER shoulder sits against the OUTER one. Positive:
+  //               the outer edge is worn (toe-in). Negative: the inner (toe-out).
+  //               Purely antisymmetric — it is nothing BUT direction.
+  //
+  // Ties go to inflation: it is the commoner cause, and it is the claim that
+  // does not depend on the readings having been taken outer-to-inner.
+  //
+  // This replaced four all-or-nothing shape tests — both shoulders strictly
+  // below the whole centre, the centre strictly below both shoulders, and two
+  // monotonic runs. They agree with this rule on every shape they DID match, but
+  // anything that missed all four fell to 'irregular' however obvious its
+  // profile: 6.7 / 8 / 6.5 / 6.9 has its shoulders a clear 0.45mm below its
+  // centre and was reported as having no identifiable cause.
+  const inflation = avg(centre) - avg(shoulders);
+  const toe = v[v.length - 1] - v[0];
+
+  if (Math.abs(inflation) >= Math.abs(toe)) {
+    if (inflation > 0) return { type: "under_inflation", spread };
+    if (inflation < 0) return { type: "over_inflation", spread };
+  } else {
+    return { type: toe > 0 ? "toe_in" : "toe_out", spread };
+  }
+
+  // Both signals are exactly zero. The tread varies — the spread said so — but
+  // symmetrically AND with level shoulders, so no cause fits it better than any
+  // other and naming one would be invention. e.g. 12 / 10 / 14 / 12.
+  return { type: "irregular", spread };
+}
+
+/**
+ * The pass/monitor/reject verdict, derived from what was measured rather than
+ * chosen from a dropdown.
+ *
+ * NOTE: a derived 'reject' is a finding about the READING, not an instruction to
+ * retire the tyre. It must never write TYRE.tyre_status — see
+ * createTyreInspectionSession for why.
+ */
+function deriveInspectionResult({ minTread, sidewallCondition, unevenWearType }) {
+  let result = "pass";
+  if (minTread != null && Number.isFinite(minTread)) {
+    if (minTread < TYRE_REJECT_TREAD_MM) result = "reject";
+    else if (minTread < TYRE_MONITOR_TREAD_MM) result = "monitor";
+  }
+  if (sidewallCondition === "not_ok") result = worstResult(result, "monitor");
+  if (unevenWearType) result = worstResult(result, "monitor");
+  return result;
+}
+
+// How each wear type reads inside reject_reason. Spelled out rather than
+// interpolating the raw enum, which produced sentences like "Uneven wear
+// (toe_in)" — a column that managers actually read should not leak the schema.
+// The legacy members can still be hit when an old row is re-described.
+const UNEVEN_WEAR_PHRASE = {
+  toe_in: "Toe-in wear (outer edge worn)",
+  toe_out: "Toe-out wear (inner edge worn)",
+  under_inflation: "Under-inflation wear (both edges worn)",
+  over_inflation: "Over-inflation wear (centre worn)",
+  irregular: "Irregular wear (no single cause)",
+  alignment: "Alignment wear (legacy, direction not recorded)",
+  imbalance: "Irregular wear (legacy)",
+};
+
+/**
+ * A short human sentence for why, stored in reject_reason so the report screens
+ * still have something to show now that the technician no longer types one.
+ * Kept inside the column's 255 chars by construction.
+ */
+function describeInspectionResult({ minTread, sidewallCondition, unevenWearType, spread }) {
+  const parts = [];
+  if (minTread != null && minTread < TYRE_REJECT_TREAD_MM) {
+    parts.push(`Shallowest groove ${minTread}mm is below the ${TYRE_REJECT_TREAD_MM}mm limit`);
+  } else if (minTread != null && minTread < TYRE_MONITOR_TREAD_MM) {
+    parts.push(`Shallowest groove ${minTread}mm is below ${TYRE_MONITOR_TREAD_MM}mm`);
+  }
+  if (sidewallCondition === "not_ok") parts.push("Sidewall condition not OK");
+  if (unevenWearType) {
+    const phrase = UNEVEN_WEAR_PHRASE[unevenWearType] ?? `Uneven wear (${unevenWearType})`;
+    parts.push(`${phrase}, ${spread}mm spread`);
+  }
+  return parts.length ? parts.join("; ").slice(0, 255) : null;
+}
+
+// Tyre data is scoped to the projects a user is assigned to, matching how
+// getBuses already behaves — an admin sees the whole fleet, everyone else sees
+// only their own projects' buses.
+//
+// The subtlety is stock: a spare, retreading, rejected or retired tyre isn't on
+// any bus, so it belongs to no project. Filtering those on a bus's project would
+// hide the entire stock list from every non-admin, so unmounted tyres are always
+// included and only mounted ones are filtered by where they're fitted.
+// Guards the write paths that take a bus_id from the request body. Scoping the
+// list queries only controls what a user is shown; without this they could
+// still swap a tyre onto, or file an inspection against, a bus belonging to a
+// project they aren't assigned to.
+async function assertBusInScope(conn, auth, busId) {
+  const [busRows] = await conn.execute(
+    "SELECT bus_id, project_id FROM BUS WHERE bus_id=? LIMIT 1",
+    [busId]
+  );
+  if (!busRows.length) throw new Error("bus_id not found");
+  if (auth.role === "admin") return null;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const [chk] = await conn.execute(
+    "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+    [userId, busRows[0].project_id]
+  );
+  if (!chk.length) return json(403, { code: "FORBIDDEN", message: "Bus is not in one of your projects" });
+  return null;
+}
+
+/**
+ * The project the caller has SELECTED in the app, as opposed to the set of
+ * projects they are permitted to see.
+ *
+ * Every role but admin now picks one project before reaching any screen, and
+ * the screens are expected to show that project only. The two scope helpers
+ * below already narrowed results to a user's USER_PROJECT rows; this narrows
+ * them further to the single project asked for.
+ *
+ * The membership check is not redundant with that scoping. A caller can put any
+ * project_id in the query string, and for endpoints that return aggregates a
+ * silent empty result would be indistinguishable from "this project has no
+ * tyres" — so an unauthorised project is refused outright rather than filtered
+ * to nothing. Admin skips the check, as it does everywhere else.
+ *
+ * Returns null when no project was requested (the fleet-wide view admin keeps),
+ * or a json() 403 response, which callers must return as-is.
+ */
+async function resolveSelectedProject(conn, auth, qs) {
+  const projectId = qs?.project_id ? String(qs.project_id).trim() : null;
+  if (!projectId) return { projectId: null, deny: null };
+
+  if (auth.role !== "admin") {
+    const userId = await getOrCreateUserId(conn, auth);
+    const [chk] = await conn.execute(
+      "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+      [userId, projectId]
+    );
+    if (!chk.length) {
+      return {
+        projectId: null,
+        deny: json(403, { code: "FORBIDDEN", message: "Project is not one of yours" }),
+      };
+    }
+  }
+  return { projectId, deny: null };
+}
+
+function busProjectScope(auth, userId, busAlias = "b", projectId = null) {
+  const sql = [];
+  const vals = [];
+  if (auth.role !== "admin") {
+    sql.push(`AND EXISTS (SELECT 1 FROM USER_PROJECT up WHERE up.user_id=? AND up.project_id=${busAlias}.project_id)`);
+    vals.push(userId);
+  }
+  if (projectId) {
+    sql.push(`AND ${busAlias}.project_id = ?`);
+    vals.push(projectId);
+  }
+  return { sql: sql.join(" "), vals };
+}
+
+function mountedTyreProjectScope(auth, userId, mountAlias = "m", projectId = null) {
+  const sql = [];
+  const vals = [];
+  if (auth.role !== "admin") {
+    sql.push(`AND (${mountAlias}.tyre_mounting_id IS NULL OR EXISTS (
+            SELECT 1 FROM BUS sb JOIN USER_PROJECT up ON up.project_id = sb.project_id
+            WHERE sb.bus_id = ${mountAlias}.bus_id AND up.user_id = ?))`);
+    vals.push(userId);
+  }
+  if (projectId) {
+    // NOTE the IS NULL arm: an UNMOUNTED tyre belongs to no bus and therefore to
+    // no project, so a strict filter would empty the spares list for every
+    // project and leave the replacement flow with nothing to fit. Spare stock is
+    // shared across projects until the moment it goes on a bus, and there is no
+    // column that says otherwise. Mounted tyres are filtered normally.
+    sql.push(`AND (${mountAlias}.tyre_mounting_id IS NULL OR EXISTS (
+            SELECT 1 FROM BUS pb WHERE pb.bus_id = ${mountAlias}.bus_id AND pb.project_id = ?))`);
+    vals.push(projectId);
+  }
+  return { sql: sql.join(" "), vals };
+}
+
 function requireOneOf(value, allowed, name) {
   const v = (value ?? "").toString().trim().toLowerCase();
   if (!allowed.includes(v)) throw new Error(`Invalid ${name}`);
   return v;
+}
+
+// Both halves of the Tyre Replacement popup take one groove-thickness reading
+// (mm) per groove on the tyre — the fleet runs both 4-groove (LM 666, GT 867)
+// and 3-groove (LM 668) tyres, and the paper form leaves the fourth box empty
+// on the latter. `expected` is the tyre's own TYRE.tyre_tread_count, so the
+// count is validated against the actual tyre rather than assumed. Returns null
+// when the field wasn't sent at all (e.g. no outgoing tyre to measure).
+function parseThicknessReadings(value, name, expected = null) {
+  if (value == null) return null;
+  if (!Array.isArray(value)) throw new Error(`Invalid ${name} — must be an array of readings`);
+
+  const allowed = expected != null ? [expected] : TYRE_ALLOWED_TREAD_COUNTS;
+  if (!allowed.includes(value.length)) {
+    throw new Error(
+      `Invalid ${name} — this tyre has ${allowed.join(" or ")} grooves, so ${allowed.join(" or ")} readings are required`
+    );
+  }
+
+  return value.map((v, i) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`Invalid ${name}[${i}] — must be a number >= 0`);
+    return n;
+  });
 }
 
 async function getTyreInspectionIntervalDays(conn) {
@@ -1603,36 +2862,64 @@ async function getTyreInspectionIntervalDays(conn) {
 }
 
 async function listTyres(conn, auth, qs) {
-  const deny = requireRole(auth, ["admin", "rm_manager", "fleet_manager", "technician"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
+
+  const { projectId, deny: projectDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (projectDeny) return projectDeny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const scope = mountedTyreProjectScope(auth, userId, "m", projectId);
 
   const where = [];
   const vals = [];
   if (qs?.status) { where.push("t.tyre_status=?"); vals.push(requireOneOf(qs.status, [...TYRE_MANUAL_STATUSES, "mounted"], "status")); }
   if (qs?.unmounted === "1") where.push("m.tyre_mounting_id IS NULL");
 
+  // The latest inspection's finding rides along on every tyre row, so a tyre can
+  // be LABELLED with its wear classification anywhere it is listed. Without this
+  // the classification only existed inside the tread diagram, which means it was
+  // invisible in every list — the places a manager actually scans.
+  //
+  // LEFT JOIN, so a tyre that has never been inspected still comes back; its
+  // latest_* columns are simply null and the label renders as "not inspected".
   const [rows] = await conn.execute(
     `SELECT t.*, m.tyre_mounting_id AS current_mounting_id, m.bus_id AS current_bus_id,
-            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at
+            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at,
+            b.bus_route AS current_bus_route, b.bus_route_colour AS current_bus_route_colour,
+            b.bus_route_number AS current_bus_route_number, b.bus_ev_no AS current_bus_ev_no,
+            b.bus_model AS current_bus_model,
+            b.project_id AS current_project_id,
+            latest.uneven_wear_type  AS latest_uneven_wear_type,
+            latest.tread_spread_mm   AS latest_tread_spread_mm,
+            latest.min_tread_mm      AS latest_min_tread_mm,
+            latest.inspection_datetime AS latest_inspection_datetime
      FROM TYRE t
      LEFT JOIN TYRE_MOUNTING m ON m.tyre_id = t.tyre_id AND m.unmounted_at IS NULL
-     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+     LEFT JOIN BUS b ON b.bus_id = m.bus_id
+     LEFT JOIN (${LATEST_TYRE_INSPECTION_SQL}) latest ON latest.tyre_id = t.tyre_id
+     WHERE 1=1 ${where.length ? `AND ${where.join(" AND ")}` : ""} ${scope.sql}
      ORDER BY t.tyre_serial_number ASC
-     LIMIT 500`,
-    vals
+     LIMIT 2000`,
+    [...vals, ...scope.vals]
   );
   return json(200, rows);
 }
 
 async function getTyre(conn, auth, tyreId) {
-  const deny = requireRole(auth, ["admin", "rm_manager", "fleet_manager", "technician"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   const [rows] = await conn.execute(
     `SELECT t.*, m.tyre_mounting_id AS current_mounting_id, m.bus_id AS current_bus_id,
-            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at
+            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at,
+            b.bus_route AS current_bus_route, b.bus_route_colour AS current_bus_route_colour,
+            b.bus_route_number AS current_bus_route_number, b.bus_ev_no AS current_bus_ev_no,
+            b.bus_model AS current_bus_model,
+            b.project_id AS current_project_id
      FROM TYRE t
      LEFT JOIN TYRE_MOUNTING m ON m.tyre_id = t.tyre_id AND m.unmounted_at IS NULL
+     LEFT JOIN BUS b ON b.bus_id = m.bus_id
      WHERE t.tyre_id=?`,
     [tyreId]
   );
@@ -1644,11 +2931,21 @@ async function getTyre(conn, auth, tyreId) {
   );
 
   const [inspectionHistory] = await conn.execute(
-    `SELECT ti.tyre_inspection_id, ti.session_id, ti.tyre_pressure, ti.retread_count_observed,
-            ti.inspection_result, ti.reject_reason,
-            s.bus_id, s.inspection_datetime
+    `SELECT ti.tyre_inspection_id, ti.tyre_id, ti.session_id, ti.tyre_pressure, ti.sidewall_condition,
+            ti.sidewall_note, ti.retread_count_observed, ti.inspection_result, ti.result_source,
+            ti.reject_reason, ti.uneven_wear_type, ti.tread_spread_mm,
+            s.bus_id, s.inspection_datetime, s.odometer_reading,
+            b.bus_route, b.bus_route_colour, b.bus_route_number, b.bus_ev_no,
+            (SELECT MIN(tt.tread_thickness_mm) FROM TYRE_TREAD tt
+              WHERE tt.tyre_inspection_id = ti.tyre_inspection_id) AS min_tread_mm,
+            -- Ordered groove readings, so the tread diagram can be drawn from a
+            -- history row without a second round trip per inspection.
+            (SELECT GROUP_CONCAT(tt.tread_thickness_mm ORDER BY tt.tread_position ASC)
+               FROM TYRE_TREAD tt
+              WHERE tt.tyre_inspection_id = ti.tyre_inspection_id) AS tread_readings
      FROM TYRE_INSPECTION ti
      JOIN TYRE_INSPECTION_SESSION s ON s.tyre_inspection_session_id = ti.session_id
+     LEFT JOIN BUS b ON b.bus_id = s.bus_id
      WHERE ti.tyre_id=?
      ORDER BY s.inspection_datetime DESC
      LIMIT 50`,
@@ -1659,23 +2956,31 @@ async function getTyre(conn, auth, tyreId) {
 }
 
 async function createTyre(conn, auth, b) {
-  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   if (!b.tyre_serial_number) throw new Error("tyre_serial_number is required");
 
-  const retreadCount = b.tyre_retread_count != null ? toWholeNumber(b.tyre_retread_count, "tyre_retread_count") : 0;
+  const retreadCount = b.tyre_retread_count != null ? requireRetreadCount(b.tyre_retread_count, "tyre_retread_count") : 0;
+  const stickerKey = retreadStickerKeyFor(
+    b.retread_sticker_s3_key, retreadCount, "retread_sticker_s3_key");
   const treadCount = b.tyre_tread_count != null ? toWholeNumber(b.tyre_tread_count, "tyre_tread_count") : 4;
-  if (treadCount <= 0) throw new Error("tyre_tread_count must be a whole number > 0");
+  if (!TYRE_ALLOWED_TREAD_COUNTS.includes(treadCount)) {
+    throw new Error(`Invalid tyre_tread_count — must be ${TYRE_ALLOWED_TREAD_COUNTS.join(" or ")}`);
+  }
 
   const [res] = await conn.execute(
-    `INSERT INTO TYRE (tyre_serial_number, tyre_brand, tyre_model, tyre_retread_count, tyre_tread_count, tyre_bought_date)
-     VALUES (?,?,?,?,?,?)`,
+    `INSERT INTO TYRE (tyre_serial_number, tyre_brand, tyre_model, tyre_retread_count,
+                       retread_sticker_s3_bucket, retread_sticker_s3_key,
+                       tyre_tread_count, tyre_bought_date)
+     VALUES (?,?,?,?,?,?,?,?)`,
     [
       String(b.tyre_serial_number).trim(),
       b.tyre_brand ? String(b.tyre_brand).trim() : null,
       b.tyre_model ? String(b.tyre_model).trim() : null,
       retreadCount,
+      stickerKey ? S3_BUCKET : null,
+      stickerKey,
       treadCount,
       b.tyre_bought_date ?? null,
     ]
@@ -1684,7 +2989,7 @@ async function createTyre(conn, auth, b) {
 }
 
 async function updateTyre(conn, auth, tyreId, b) {
-  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   const updates = [];
@@ -1693,7 +2998,24 @@ async function updateTyre(conn, auth, tyreId, b) {
   if (b.tyre_serial_number != null) { updates.push("tyre_serial_number=?"); vals.push(String(b.tyre_serial_number).trim()); }
   if (b.tyre_brand !== undefined)   { updates.push("tyre_brand=?");         vals.push(b.tyre_brand ? String(b.tyre_brand).trim() : null); }
   if (b.tyre_model !== undefined)   { updates.push("tyre_model=?");         vals.push(b.tyre_model ? String(b.tyre_model).trim() : null); }
-  if (b.tyre_retread_count != null) { updates.push("tyre_retread_count=?"); vals.push(toWholeNumber(b.tyre_retread_count, "tyre_retread_count")); }
+  if (b.tyre_retread_count != null) {
+    const count = requireRetreadCount(b.tyre_retread_count, "tyre_retread_count");
+    updates.push("tyre_retread_count=?"); vals.push(count);
+    // Editing the count is setting the count, so it carries the same burden of
+    // proof as recording it on any of the three forms.
+    const key = retreadStickerKeyFor(b.retread_sticker_s3_key, count, "retread_sticker_s3_key");
+    if (key) {
+      updates.push("retread_sticker_s3_bucket=?"); vals.push(S3_BUCKET);
+      updates.push("retread_sticker_s3_key=?"); vals.push(key);
+    }
+  }
+  if (b.tyre_tread_count != null) {
+    const treadCount = toWholeNumber(b.tyre_tread_count, "tyre_tread_count");
+    if (!TYRE_ALLOWED_TREAD_COUNTS.includes(treadCount)) {
+      throw new Error(`Invalid tyre_tread_count — must be ${TYRE_ALLOWED_TREAD_COUNTS.join(" or ")}`);
+    }
+    updates.push("tyre_tread_count=?"); vals.push(treadCount);
+  }
   if (b.tyre_bought_date !== undefined) { updates.push("tyre_bought_date=?"); vals.push(b.tyre_bought_date ?? null); }
   if (b.tyre_status != null) {
     updates.push("tyre_status=?");
@@ -1708,13 +3030,27 @@ async function updateTyre(conn, auth, tyreId, b) {
 }
 
 async function listBusTyres(conn, auth, busId) {
-  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
+  // Same latest-inspection join listTyres carries, so the wheel diagram can
+  // label each position with its shallowest groove. Without it this endpoint
+  // returns no tread at all and the diagram has nothing to show.
   const [rows] = await conn.execute(
-    `SELECT t.*, m.tyre_mounting_id AS current_mounting_id, m.axle_number, m.axle_side, m.wheel_position, m.mounted_at
+    `SELECT t.*, m.tyre_mounting_id AS current_mounting_id, m.bus_id AS current_bus_id,
+            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at,
+            b.bus_route AS current_bus_route, b.bus_route_colour AS current_bus_route_colour,
+            b.bus_route_number AS current_bus_route_number, b.bus_ev_no AS current_bus_ev_no,
+            b.bus_model AS current_bus_model,
+            b.project_id AS current_project_id,
+            latest.uneven_wear_type    AS latest_uneven_wear_type,
+            latest.tread_spread_mm     AS latest_tread_spread_mm,
+            latest.min_tread_mm        AS latest_min_tread_mm,
+            latest.inspection_datetime AS latest_inspection_datetime
      FROM TYRE_MOUNTING m
      JOIN TYRE t ON t.tyre_id = m.tyre_id
+     LEFT JOIN BUS b ON b.bus_id = m.bus_id
+     LEFT JOIN (${LATEST_TYRE_INSPECTION_SQL}) latest ON latest.tyre_id = t.tyre_id
      WHERE m.bus_id=? AND m.unmounted_at IS NULL
      ORDER BY m.axle_number ASC, m.axle_side ASC, m.wheel_position ASC`,
     [busId]
@@ -1723,7 +3059,7 @@ async function listBusTyres(conn, auth, busId) {
 }
 
 async function swapTyre(conn, auth, b) {
-  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   if (!b.bus_id) throw new Error("bus_id is required");
@@ -1735,38 +3071,122 @@ async function swapTyre(conn, auth, b) {
   const incomingTyreId = toId(b.incoming_tyre_id, "incoming_tyre_id");
   const outgoingStatus = b.outgoing_status != null ? requireOneOf(b.outgoing_status, TYRE_MANUAL_STATUSES, "outgoing_status") : "spare";
 
+  // Tyre Replacement popup detail — all optional at this layer so the
+  // endpoint still works for a bare swap; the rm-manager screen always sends
+  // the incoming side, and the outgoing side whenever there was a tyre to
+  // measure before removal.
+  // The thickness arrays are validated inside the transaction instead of here:
+  // how many readings are required depends on each tyre's own
+  // TYRE.tyre_tread_count (3 or 4 grooves), which isn't known until the rows
+  // are read below.
+  const outgoingSidewallCondition = b.outgoing_sidewall_condition != null
+    ? requireOneOf(b.outgoing_sidewall_condition, TYRE_SIDEWALL_CONDITIONS, "outgoing_sidewall_condition")
+    : null;
+  const incomingSidewallCondition = b.incoming_sidewall_condition != null
+    ? requireOneOf(b.incoming_sidewall_condition, TYRE_SIDEWALL_CONDITIONS, "incoming_sidewall_condition")
+    : null;
+
+  // A not-OK sidewall must come with the photograph that shows it — see
+  // createTyreInspectionSession for the reasoning. Two independent pairs,
+  // because the tyre coming off and the tyre going on are different casings and
+  // either can be NC on its own.
+  const sidewallPhotoKey = (value, condition, name) => {
+    const key = value ? String(value).trim() : null;
+    if (condition === "not_ok" && !key) {
+      throw new Error(`${name} is required when the sidewall condition is not_ok`);
+    }
+    // An OK sidewall has nothing to show, so a stray key is dropped rather than
+    // stored against a tyre that was judged sound.
+    return condition === "not_ok" ? key : null;
+  };
+  const outgoingSidewallPhotoKey = sidewallPhotoKey(
+    b.outgoing_sidewall_photo_s3_key, outgoingSidewallCondition, "outgoing_sidewall_photo_s3_key");
+  const incomingSidewallPhotoKey = sidewallPhotoKey(
+    b.incoming_sidewall_photo_s3_key, incomingSidewallCondition, "incoming_sidewall_photo_s3_key");
+  const retreadStickerKey = b.retread_sticker_s3_key ? String(b.retread_sticker_s3_key).trim() : null;
+  let incomingTyrePressure = null;
+  if (b.incoming_tyre_pressure != null) {
+    incomingTyrePressure = Number(b.incoming_tyre_pressure);
+    if (!Number.isFinite(incomingTyrePressure)) throw new Error("Invalid incoming_tyre_pressure");
+  }
+  const installPhotoKey = b.install_photo_s3_key ? String(b.install_photo_s3_key).trim() : null;
+
   const userId = await getOrCreateUserId(conn, auth);
 
   await conn.beginTransaction();
   try {
-    const [busRows] = await conn.execute("SELECT bus_id FROM BUS WHERE bus_id=? LIMIT 1", [busId]);
-    if (!busRows.length) throw new Error("bus_id not found");
+    const outOfScope = await assertBusInScope(conn, auth, busId);
+    if (outOfScope) { await conn.rollback(); return outOfScope; }
 
     const [incomingRows] = await conn.execute(
-      "SELECT tyre_id, tyre_status FROM TYRE WHERE tyre_id=? FOR UPDATE",
+      // tyre_retread_count is selected because the monotonic guard below reads
+      // it. It was missing, so `known` was always retreadBucket(undefined) === 0
+      // and a swap recording a LOWER count than the tyre already carried passed
+      // silently.
+      "SELECT tyre_id, tyre_status, tyre_tread_count, tyre_retread_count FROM TYRE WHERE tyre_id=? FOR UPDATE",
       [incomingTyreId]
     );
     if (!incomingRows.length) throw new Error("incoming_tyre_id not found");
+
+    const incomingThickness = parseThicknessReadings(
+      b.incoming_thickness,
+      "incoming_thickness",
+      Number(incomingRows[0].tyre_tread_count) || null
+    );
+
+    // Retread count as read off the tyre (and off its sticker photo) at
+    // fitment. It can only ever go up — a tyre cannot un-retread — so a lower
+    // figure than what's already recorded is a data-entry error.
+    let incomingRetreadCount = null;
+    if (b.incoming_retread_count != null) {
+      incomingRetreadCount = requireRetreadCount(b.incoming_retread_count, "incoming_retread_count");
+      const known = retreadBucket(incomingRows[0].tyre_retread_count);
+      if (incomingRetreadCount < known) {
+        throw new Error(
+          `Invalid incoming_retread_count — this tyre is already recorded as retreaded ${known === TYRE_MAX_RETREAD_BUCKET ? `${TYRE_MAX_RETREAD_BUCKET}+` : known} time(s)`
+        );
+      }
+    }
     if (TYRE_UNMOUNTABLE_STATUSES.includes(incomingRows[0].tyre_status)) {
       await conn.rollback();
       return json(409, { code: "TYRE_NOT_MOUNTABLE", message: `Tyre is ${incomingRows[0].tyre_status} and cannot be mounted` });
     }
 
-    const [incomingOpenMount] = await conn.execute(
-      "SELECT tyre_mounting_id FROM TYRE_MOUNTING WHERE tyre_id=? AND unmounted_at IS NULL FOR UPDATE",
-      [incomingTyreId]
-    );
-    if (incomingOpenMount.length) {
-      await conn.rollback();
-      return json(409, { code: "TYRE_ALREADY_MOUNTED", message: "Tyre is already mounted elsewhere — unmount it first" });
-    }
-
     const [existingAtPosition] = await conn.execute(
-      `SELECT tyre_mounting_id, tyre_id FROM TYRE_MOUNTING
-       WHERE bus_id=? AND axle_number=? AND axle_side=? AND wheel_position=? AND unmounted_at IS NULL
+      `SELECT m.tyre_mounting_id, m.tyre_id, t.tyre_tread_count
+       FROM TYRE_MOUNTING m JOIN TYRE t ON t.tyre_id = m.tyre_id
+       WHERE m.bus_id=? AND m.axle_number=? AND m.axle_side=? AND m.wheel_position=? AND m.unmounted_at IS NULL
        FOR UPDATE`,
       [busId, axleNumber, axleSide, wheelPosition]
     );
+
+    const outgoingThickness = parseThicknessReadings(
+      b.outgoing_thickness,
+      "outgoing_thickness",
+      existingAtPosition.length ? Number(existingAtPosition[0].tyre_tread_count) || null : null
+    );
+
+    // Refitting the same tyre to the position it is already on is a real
+    // operation, not a mistake: the tyre comes off, goes away for retreading,
+    // and goes back on. It's recorded as a genuine swap — the old mounting is
+    // closed and a new one opened — so the tyre's time off the bus, its
+    // pre-removal readings and its post-retread readings all survive.
+    const isSelfRefit =
+      existingAtPosition.length && Number(existingAtPosition[0].tyre_id) === incomingTyreId;
+
+    if (!isSelfRefit) {
+      const [incomingOpenMount] = await conn.execute(
+        "SELECT tyre_mounting_id FROM TYRE_MOUNTING WHERE tyre_id=? AND unmounted_at IS NULL FOR UPDATE",
+        [incomingTyreId]
+      );
+      if (incomingOpenMount.length) {
+        await conn.rollback();
+        return json(409, {
+          code: "TYRE_ALREADY_MOUNTED",
+          message: "Tyre is already mounted elsewhere — unmount it first",
+        });
+      }
+    }
 
     if (existingAtPosition.length) {
       const outgoing = existingAtPosition[0];
@@ -1774,7 +3194,9 @@ async function swapTyre(conn, auth, b) {
         `UPDATE TYRE_MOUNTING SET unmounted_at=NOW(), unmounted_by=?, unmount_reason='swapped out' WHERE tyre_mounting_id=?`,
         [userId, outgoing.tyre_mounting_id]
       );
-      await conn.execute(`UPDATE TYRE SET tyre_status=? WHERE tyre_id=?`, [outgoingStatus, outgoing.tyre_id]);
+      if (!isSelfRefit) {
+        await conn.execute(`UPDATE TYRE SET tyre_status=? WHERE tyre_id=?`, [outgoingStatus, outgoing.tyre_id]);
+      }
     }
 
     const [mountRes] = await conn.execute(
@@ -1783,6 +3205,51 @@ async function swapTyre(conn, auth, b) {
       [incomingTyreId, busId, axleNumber, axleSide, wheelPosition, userId]
     );
     await conn.execute(`UPDATE TYRE SET tyre_status='mounted' WHERE tyre_id=?`, [incomingTyreId]);
+    if (incomingRetreadCount != null) {
+      await conn.execute(
+        `UPDATE TYRE SET tyre_retread_count=GREATEST(tyre_retread_count, ?) WHERE tyre_id=?`,
+        [incomingRetreadCount, incomingTyreId]
+      );
+    }
+
+    const hasSwapDetail =
+      outgoingThickness || outgoingSidewallCondition || incomingThickness ||
+      incomingTyrePressure != null || installPhotoKey ||
+      incomingSidewallCondition || incomingRetreadCount != null || retreadStickerKey ||
+      outgoingSidewallPhotoKey || incomingSidewallPhotoKey;
+    if (hasSwapDetail) {
+      await conn.execute(
+        `INSERT INTO TYRE_SWAP
+         (tyre_mounting_id, outgoing_tyre_id,
+          outgoing_thickness_1, outgoing_thickness_2, outgoing_thickness_3, outgoing_thickness_4,
+          outgoing_sidewall_condition,
+          outgoing_sidewall_photo_s3_bucket, outgoing_sidewall_photo_s3_key,
+          incoming_thickness_1, incoming_thickness_2, incoming_thickness_3, incoming_thickness_4,
+          incoming_tyre_pressure, incoming_sidewall_condition,
+          incoming_sidewall_photo_s3_bucket, incoming_sidewall_photo_s3_key,
+          incoming_retread_count,
+          retread_sticker_s3_bucket, retread_sticker_s3_key,
+          install_photo_s3_bucket, install_photo_s3_key,
+          performed_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          mountRes.insertId,
+          existingAtPosition.length ? existingAtPosition[0].tyre_id : null,
+          outgoingThickness?.[0] ?? null, outgoingThickness?.[1] ?? null,
+          outgoingThickness?.[2] ?? null, outgoingThickness?.[3] ?? null,
+          outgoingSidewallCondition,
+          outgoingSidewallPhotoKey ? S3_BUCKET : null, outgoingSidewallPhotoKey,
+          incomingThickness?.[0] ?? null, incomingThickness?.[1] ?? null,
+          incomingThickness?.[2] ?? null, incomingThickness?.[3] ?? null,
+          incomingTyrePressure, incomingSidewallCondition,
+          incomingSidewallPhotoKey ? S3_BUCKET : null, incomingSidewallPhotoKey,
+          incomingRetreadCount,
+          retreadStickerKey ? S3_BUCKET : null, retreadStickerKey,
+          installPhotoKey ? S3_BUCKET : null, installPhotoKey,
+          userId,
+        ]
+      );
+    }
 
     await conn.commit();
     return json(200, { success: true, tyre_mounting_id: mountRes.insertId });
@@ -1792,8 +3259,88 @@ async function swapTyre(conn, auth, b) {
   }
 }
 
+// Upload target for the tyre forms' photo steps — requested before the record
+// the photo belongs to exists (there is no tyre_mounting_id or
+// tyre_inspection_id yet), so the key isn't nested under one, unlike job and
+// report media.
+//
+// Three photos come off these forms: the wheel after install and the tyre's
+// retread sticker (Tyre Replacement), and the damage behind a not-OK sidewall
+// (Tyre Inspection). The kind says which is which and picks the key prefix.
+// Sidewall lives under its own prefix rather than tyres/swap/ because it has
+// nothing to do with a swap.
+const TYRE_PHOTO_KINDS = {
+  install: "tyres/swap/install",
+  retread_sticker: "tyres/swap/retread_sticker",
+  sidewall: "tyres/inspection/sidewall",
+};
+
+async function presignTyrePhoto(conn, auth, qs) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const mime = (qs.mime ?? "").toString().trim();
+  if (!mime) throw new Error("mime required");
+
+  const kind = (qs.kind ?? "install").toString().trim();
+  const prefix = TYRE_PHOTO_KINDS[kind];
+  if (!prefix) throw new Error("Invalid kind");
+
+  const ext = extFromMime(mime);
+  const key = `${prefix}/${crypto.randomUUID()}.${ext}`;
+  const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime });
+  const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
+
+  return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
+}
+
+async function listBusTyreSwaps(conn, auth, busId) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const [rows] = await conn.execute(
+    `SELECT s.tyre_swap_id, s.tyre_mounting_id,
+            m.axle_number, m.axle_side, m.wheel_position, m.mounted_at,
+            m.tyre_id AS incoming_tyre_id, tin.tyre_serial_number AS incoming_serial,
+            s.outgoing_tyre_id, tout.tyre_serial_number AS outgoing_serial,
+            s.outgoing_thickness_1, s.outgoing_thickness_2, s.outgoing_thickness_3, s.outgoing_thickness_4,
+            s.outgoing_sidewall_condition,
+            s.outgoing_sidewall_photo_s3_bucket, s.outgoing_sidewall_photo_s3_key,
+            s.incoming_thickness_1, s.incoming_thickness_2, s.incoming_thickness_3, s.incoming_thickness_4,
+            s.incoming_tyre_pressure, s.incoming_sidewall_condition,
+            s.incoming_sidewall_photo_s3_bucket, s.incoming_sidewall_photo_s3_key,
+            s.incoming_retread_count,
+            s.retread_sticker_s3_bucket, s.retread_sticker_s3_key,
+            s.install_photo_s3_bucket, s.install_photo_s3_key,
+            u.user_name AS performed_by_name, s.created_at
+     FROM TYRE_SWAP s
+     JOIN TYRE_MOUNTING m ON m.tyre_mounting_id = s.tyre_mounting_id
+     LEFT JOIN TYRE tin ON tin.tyre_id = m.tyre_id
+     LEFT JOIN TYRE tout ON tout.tyre_id = s.outgoing_tyre_id
+     LEFT JOIN \`USER\` u ON u.user_id = s.performed_by
+     WHERE m.bus_id=?
+     ORDER BY s.created_at DESC, s.tyre_swap_id DESC
+     LIMIT 100`,
+    [busId]
+  );
+
+  const enriched = await Promise.all(
+    (rows || []).map(async (r) => ({
+      ...r,
+      install_photo_view_url: await signS3Url(r.install_photo_s3_bucket, r.install_photo_s3_key),
+      retread_sticker_view_url: await signS3Url(r.retread_sticker_s3_bucket, r.retread_sticker_s3_key),
+      outgoing_sidewall_photo_view_url: await signS3Url(
+        r.outgoing_sidewall_photo_s3_bucket, r.outgoing_sidewall_photo_s3_key),
+      incoming_sidewall_photo_view_url: await signS3Url(
+        r.incoming_sidewall_photo_s3_bucket, r.incoming_sidewall_photo_s3_key),
+    }))
+  );
+
+  return json(200, enriched);
+}
+
 async function unmountTyre(conn, auth, tyreId, b) {
-  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   const newStatus = b.new_status != null ? requireOneOf(b.new_status, TYRE_MANUAL_STATUSES, "new_status") : "spare";
@@ -1824,9 +3371,14 @@ async function unmountTyre(conn, auth, tyreId, b) {
   }
 }
 
-async function getOverdueTyreInspections(conn, auth) {
-  const deny = requireRole(auth, ["admin", "rm_manager"]);
+async function getOverdueTyreInspections(conn, auth, qs) {
+  // Read-only. Changing the interval is a fleet-wide setting and stays with
+  // admin/rm_manager in updateTyreSettings below.
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
+
+  const { projectId, deny: projectDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (projectDeny) return projectDeny;
 
   const intervalDays = await getTyreInspectionIntervalDays(conn);
 
@@ -1834,8 +3386,12 @@ async function getOverdueTyreInspections(conn, auth) {
   // the full list to show each bus card's last-inspection / days-remaining
   // status, while overdue_buses (a filtered view of the same rows) keeps
   // backing the existing overdue banner.
+  const userId = await getOrCreateUserId(conn, auth);
+  const scope = busProjectScope(auth, userId, "b", projectId);
+
   const [rows] = await conn.execute(
-    `SELECT b.bus_id, b.bus_route, b.bus_model, s.last_inspected_at,
+    `SELECT b.bus_id, b.bus_route, b.bus_route_colour, b.bus_route_number, b.bus_ev_no,
+            b.bus_model, b.project_id, s.last_inspected_at,
             CASE WHEN s.last_inspected_at IS NULL THEN NULL ELSE DATEDIFF(NOW(), s.last_inspected_at) END AS days_since_inspection
      FROM BUS b
      LEFT JOIN (
@@ -1843,7 +3399,9 @@ async function getOverdueTyreInspections(conn, auth) {
        FROM TYRE_INSPECTION_SESSION
        GROUP BY bus_id
      ) s ON s.bus_id = b.bus_id
-     ORDER BY (s.last_inspected_at IS NULL) DESC, s.last_inspected_at ASC`
+     WHERE 1=1 ${scope.sql}
+     ORDER BY (s.last_inspected_at IS NULL) DESC, s.last_inspected_at ASC`,
+    scope.vals
   );
 
   const overdueBuses = rows.filter(
@@ -1857,45 +3415,257 @@ async function getOverdueTyreInspections(conn, auth) {
   });
 }
 
-async function getLowTreadTyres(conn, auth) {
-  const deny = requireRole(auth, ["admin", "rm_manager", "fleet_manager", "technician"]);
+async function getLowTreadTyres(conn, auth, qs) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
+
+  const { projectId, deny: projectDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (projectDeny) return projectDeny;
 
   // For each tyre, find its most recent inspection (by session datetime) and
   // the shallowest groove reading recorded in that inspection, then keep only
   // tyres whose latest reading is below the threshold.
+  const userId = await getOrCreateUserId(conn, auth);
+  const scope = mountedTyreProjectScope(auth, userId, "m", projectId);
+
   const [rows] = await conn.execute(
     `SELECT t.tyre_id, t.tyre_serial_number, t.tyre_brand, t.tyre_model, t.tyre_status,
+            t.tyre_tread_count, t.tyre_retread_count,
             m.bus_id AS current_bus_id, m.axle_number, m.axle_side, m.wheel_position,
+            b.bus_route AS current_bus_route, b.bus_route_colour AS current_bus_route_colour,
+            b.bus_route_number AS current_bus_route_number, b.bus_ev_no AS current_bus_ev_no,
+            b.bus_model AS current_bus_model,
+            b.project_id AS current_project_id,
             latest.min_tread_mm, latest.inspection_datetime
      FROM TYRE t
-     JOIN (
-       SELECT x.tyre_id, x.min_tread_mm, x.inspection_datetime
-       FROM (
-         SELECT ti.tyre_id, s.inspection_datetime, MIN(tt.tread_thickness_mm) AS min_tread_mm
-         FROM TYRE_INSPECTION ti
-         JOIN TYRE_INSPECTION_SESSION s ON s.tyre_inspection_session_id = ti.session_id
-         JOIN TYRE_TREAD tt ON tt.tyre_inspection_id = ti.tyre_inspection_id
-         GROUP BY ti.tyre_inspection_id, ti.tyre_id, s.inspection_datetime
-       ) x
-       JOIN (
-         SELECT ti2.tyre_id, MAX(s2.inspection_datetime) AS max_dt
-         FROM TYRE_INSPECTION ti2
-         JOIN TYRE_INSPECTION_SESSION s2 ON s2.tyre_inspection_session_id = ti2.session_id
-         GROUP BY ti2.tyre_id
-       ) d ON d.tyre_id = x.tyre_id AND d.max_dt = x.inspection_datetime
-     ) latest ON latest.tyre_id = t.tyre_id
+     JOIN (${LATEST_TYRE_INSPECTION_SQL}) latest ON latest.tyre_id = t.tyre_id
      LEFT JOIN TYRE_MOUNTING m ON m.tyre_id = t.tyre_id AND m.unmounted_at IS NULL
-     WHERE latest.min_tread_mm < ?
+     LEFT JOIN BUS b ON b.bus_id = m.bus_id
+     WHERE latest.min_tread_mm < ? ${scope.sql}
      ORDER BY latest.min_tread_mm ASC`,
-    [TYRE_LOW_TREAD_THRESHOLD_MM]
+    [TYRE_LOW_TREAD_THRESHOLD_MM, ...scope.vals]
   );
 
   return json(200, { threshold_mm: TYRE_LOW_TREAD_THRESHOLD_MM, low_tread_tyres: rows });
 }
 
+// ===== FLEET TYRE SUMMARY =====
+
+// Tread-depth bands for the fleet summary. The first band is "at or below its
+// max"; every other band is "over the previous max, up to and including its
+// own". Only the key is returned — the human status label ("PAST LIMIT",
+// "NEAR NEW") is i18n on the client so the screen reads in Bahasa Melayu too.
+const TYRE_TREAD_BANDS = [
+  { key: "past_limit", min_mm: null, max_mm: 5 },
+  { key: "critical", min_mm: 5, max_mm: 7 },
+  { key: "watch", min_mm: 7, max_mm: 9 },
+  { key: "mid_life", min_mm: 9, max_mm: 12 },
+  { key: "good", min_mm: 12, max_mm: 16 },
+  { key: "near_new", min_mm: 16, max_mm: null },
+];
+
+function treadBandKey(mm) {
+  for (const b of TYRE_TREAD_BANDS) {
+    if (b.max_mm == null) return b.key;
+    if (mm <= b.max_mm) return b.key;
+  }
+  return TYRE_TREAD_BANDS[TYRE_TREAD_BANDS.length - 1].key;
+}
+
+function median(sorted) {
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  const m = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return Math.round(m * 10) / 10;
+}
+
+function treadStats(values) {
+  if (!values.length) {
+    return { count: 0, shallowest: null, deepest: null, mean: null, median: null };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const sum = sorted.reduce((acc, n) => acc + n, 0);
+  return {
+    count: sorted.length,
+    shallowest: Math.round(sorted[0] * 10) / 10,
+    deepest: Math.round(sorted[sorted.length - 1] * 10) / 10,
+    mean: Math.round((sum / sorted.length) * 100) / 100,
+    median: median(sorted),
+  };
+}
+
+/**
+ * Fleet tyre analytics for the "Tyre Summary and Data" screen.
+ *
+ * Nothing like this existed: GET /tyres carries no tread data at all, and
+ * GET /tyres/low-tread returns only the tyres already past the limit, so there
+ * was no way to ask what the fleet's tread distribution actually looks like.
+ *
+ * One query, one row per tyre currently ON a bus, reduced in JS rather than in
+ * SQL. At fleet size (~500 mounted tyres) that is one cheap round trip, and it
+ * keeps median, "which tyre is shallowest on this bus" and the band buckets as
+ * readable arithmetic instead of three more correlated subqueries.
+ *
+ * CAVEAT, and it is a real one: swap readings are written to the denormalised
+ * TYRE_SWAP.*_thickness_N columns and never reach TYRE_TREAD, so everything
+ * here sees INSPECTIONS ONLY. A tyre measured during a replacement but never
+ * formally inspected has no tread data and counts as unmeasured.
+ */
+async function getTyreSummary(conn, auth, qs) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const { projectId, deny: projectDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (projectDeny) return projectDeny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const scope = busProjectScope(auth, userId, "b", projectId);
+
+  // LEFT JOIN to the latest inspection, not JOIN: a tyre fitted but never yet
+  // inspected must still count as mounted-but-unmeasured rather than silently
+  // vanishing from the fleet total.
+  const [rows] = await conn.execute(
+    `SELECT t.tyre_id, t.tyre_serial_number, t.tyre_brand, t.tyre_model,
+            t.tyre_tread_count, t.tyre_retread_count, t.tyre_status,
+            m.bus_id, m.axle_number, m.axle_side, m.wheel_position, m.mounted_at,
+            b.bus_route, b.bus_route_number, b.bus_ev_no, b.bus_route_colour,
+            b.bus_model, b.project_id,
+            latest.min_tread_mm, latest.max_tread_mm, latest.groove_count,
+            latest.inspection_datetime, latest.inspection_result,
+            latest.sidewall_condition, latest.uneven_wear_type, latest.tread_spread_mm
+     FROM TYRE_MOUNTING m
+     JOIN TYRE t ON t.tyre_id = m.tyre_id
+     JOIN BUS b ON b.bus_id = m.bus_id
+     LEFT JOIN (${LATEST_TYRE_INSPECTION_SQL}) latest ON latest.tyre_id = t.tyre_id
+     WHERE m.unmounted_at IS NULL ${scope.sql}
+     ORDER BY b.bus_id ASC, m.axle_number ASC, m.axle_side ASC, m.wheel_position ASC`,
+    scope.vals
+  );
+
+  const fitted = rows.map((r) => ({
+    ...r,
+    min_tread_mm: r.min_tread_mm == null ? null : Number(r.min_tread_mm),
+    tread_spread_mm: r.tread_spread_mm == null ? null : Number(r.tread_spread_mm),
+  }));
+  const measured = fitted.filter((r) => r.min_tread_mm != null);
+
+  // Axle 1 is the steer axle; everything behind it is drive/rear. This is the
+  // only place the front/rear split is defined.
+  const isFront = (r) => Number(r.axle_number) === 1;
+
+  const bands = TYRE_TREAD_BANDS.map((band) => {
+    const inBand = measured.filter((r) => treadBandKey(r.min_tread_mm) === band.key);
+    const front = inBand.filter(isFront).length;
+    return {
+      key: band.key,
+      min_mm: band.min_mm,
+      max_mm: band.max_mm,
+      front,
+      rear: inBand.length - front,
+      total: inBand.length,
+      pct_of_fleet: measured.length
+        ? Math.round((inBand.length / measured.length) * 1000) / 10
+        : 0,
+    };
+  });
+
+  const stats = {
+    front: treadStats(measured.filter(isFront).map((r) => r.min_tread_mm)),
+    rear: treadStats(measured.filter((r) => !isFront(r)).map((r) => r.min_tread_mm)),
+    fleet: treadStats(measured.map((r) => r.min_tread_mm)),
+  };
+
+  // Per bus, ranked by the bus's own shallowest reading — the user works from
+  // "which bus is worst", not "which tyre is worst", because a bus is what gets
+  // taken off the road.
+  const busMap = new Map();
+  for (const r of fitted) {
+    const key = String(r.bus_id);
+    if (!busMap.has(key)) {
+      busMap.set(key, {
+        bus_id: r.bus_id,
+        bus_route: r.bus_route,
+        bus_route_number: r.bus_route_number,
+        bus_ev_no: r.bus_ev_no,
+        bus_route_colour: r.bus_route_colour,
+        bus_model: r.bus_model,
+        project_id: r.project_id,
+        fitted_count: 0,
+        measured_count: 0,
+        past_limit_count: 0,
+        uneven_wear_count: 0,
+        shallowest_mm: null,
+        shallowest_axle_number: null,
+        shallowest_axle_side: null,
+        shallowest_wheel_position: null,
+        shallowest_tyre_id: null,
+        shallowest_serial: null,
+        last_inspected_at: null,
+      });
+    }
+    const bus = busMap.get(key);
+    bus.fitted_count += 1;
+    if (r.uneven_wear_type) bus.uneven_wear_count += 1;
+    if (r.inspection_datetime && (!bus.last_inspected_at || r.inspection_datetime > bus.last_inspected_at)) {
+      bus.last_inspected_at = r.inspection_datetime;
+    }
+    if (r.min_tread_mm == null) continue;
+    bus.measured_count += 1;
+    if (r.min_tread_mm < TYRE_LOW_TREAD_THRESHOLD_MM) bus.past_limit_count += 1;
+    if (bus.shallowest_mm == null || r.min_tread_mm < bus.shallowest_mm) {
+      bus.shallowest_mm = r.min_tread_mm;
+      bus.shallowest_axle_number = r.axle_number;
+      bus.shallowest_axle_side = r.axle_side;
+      bus.shallowest_wheel_position = r.wheel_position;
+      bus.shallowest_tyre_id = r.tyre_id;
+      bus.shallowest_serial = r.tyre_serial_number;
+    }
+  }
+
+  // Shallowest first; buses with no readings at all sort last rather than
+  // masquerading as healthy.
+  const buses = [...busMap.values()].sort((a, b) => {
+    if (a.shallowest_mm == null && b.shallowest_mm == null) return String(a.bus_id).localeCompare(String(b.bus_id));
+    if (a.shallowest_mm == null) return 1;
+    if (b.shallowest_mm == null) return -1;
+    return a.shallowest_mm - b.shallowest_mm;
+  });
+
+  const unevenWear = measured
+    .filter((r) => r.uneven_wear_type)
+    .map((r) => ({
+      tyre_id: r.tyre_id,
+      tyre_serial_number: r.tyre_serial_number,
+      bus_id: r.bus_id,
+      bus_route: r.bus_route,
+      bus_route_number: r.bus_route_number,
+      bus_ev_no: r.bus_ev_no,
+      axle_number: r.axle_number,
+      axle_side: r.axle_side,
+      wheel_position: r.wheel_position,
+      uneven_wear_type: r.uneven_wear_type,
+      tread_spread_mm: r.tread_spread_mm,
+      min_tread_mm: r.min_tread_mm,
+    }))
+    .sort((a, b) => (b.tread_spread_mm ?? 0) - (a.tread_spread_mm ?? 0));
+
+  return json(200, {
+    threshold_mm: TYRE_LOW_TREAD_THRESHOLD_MM,
+    fitted_count: fitted.length,
+    measured_count: measured.length,
+    // Fitted but never inspected. Surfaced rather than hidden, so a small
+    // denominator is visible instead of quietly flattering the percentages.
+    unmeasured_count: fitted.length - measured.length,
+    bus_count: buses.length,
+    bands,
+    stats,
+    buses,
+    uneven_wear: unevenWear,
+  });
+}
+
 async function getTyreSettings(conn, auth) {
-  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   const days = await getTyreInspectionIntervalDays(conn);
@@ -1919,7 +3689,7 @@ async function updateTyreSettings(conn, auth, b) {
 }
 
 async function createTyreInspectionSession(conn, auth, busId, b) {
-  const deny = requireRole(auth, ["admin", "technician"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   const tyres = Array.isArray(b.tyres) ? b.tyres : [];
@@ -1930,14 +3700,21 @@ async function createTyreInspectionSession(conn, auth, busId, b) {
 
   await conn.beginTransaction();
   try {
-    const [busRows] = await conn.execute("SELECT bus_id FROM BUS WHERE bus_id=? LIMIT 1", [busId]);
-    if (!busRows.length) throw new Error("bus_id not found");
+    const outOfScope = await assertBusInScope(conn, auth, busId);
+    if (outOfScope) { await conn.rollback(); return outOfScope; }
 
+    // axle_side comes back too: tread_position 1 is a fixed edge of the BUS, so
+    // which side the wheel is on is what decides whether that is the outboard or
+    // the inboard shoulder — and therefore whether a gradient is toe-in or
+    // toe-out. Read from TYRE_MOUNTING rather than trusted from the request, so
+    // a client cannot hand the server a side that disagrees with where the tyre
+    // is actually fitted.
     const [mountedRows] = await conn.execute(
-      `SELECT tyre_id FROM TYRE_MOUNTING WHERE bus_id=? AND unmounted_at IS NULL`,
+      `SELECT tyre_id, axle_side FROM TYRE_MOUNTING WHERE bus_id=? AND unmounted_at IS NULL`,
       [busId]
     );
     const mountedTyreIds = new Set(mountedRows.map((r) => Number(r.tyre_id)));
+    const axleSideByTyre = new Map(mountedRows.map((r) => [Number(r.tyre_id), r.axle_side]));
 
     const [sessionRes] = await conn.execute(
       `INSERT INTO TYRE_INSPECTION_SESSION (bus_id, technician_user_id, odometer_reading) VALUES (?,?,?)`,
@@ -1949,49 +3726,132 @@ async function createTyreInspectionSession(conn, auth, busId, b) {
       const tyreId = toId(entry.tyre_id, "tyre_id");
       if (!mountedTyreIds.has(tyreId)) throw new Error(`tyre_id ${tyreId} is not currently mounted on this bus`);
 
-      const result = entry.inspection_result != null ? requireOneOf(entry.inspection_result, TYRE_INSPECTION_RESULTS, "inspection_result") : "pass";
       const pressure = entry.tyre_pressure != null ? Number(entry.tyre_pressure) : null;
       if (pressure != null && !Number.isFinite(pressure)) throw new Error("Invalid tyre_pressure");
       const retreadCountObserved = entry.retread_count_observed != null
-        ? toWholeNumber(entry.retread_count_observed, "retread_count_observed")
+        ? requireRetreadCount(entry.retread_count_observed, "retread_count_observed")
+        : null;
+      const retreadStickerKey = retreadStickerKeyFor(
+        entry.retread_sticker_s3_key, retreadCountObserved, "retread_sticker_s3_key");
+
+      const sidewallCondition = entry.sidewall_condition != null
+        ? requireOneOf(entry.sidewall_condition, TYRE_SIDEWALL_CONDITIONS, "sidewall_condition")
         : null;
 
+      // A sidewall marked not-OK has to say what was seen AND show it. "NC" on
+      // its own told a reviewer nothing, and a note on its own is one person's
+      // word about a casing that may be scrapped before anyone else sees it.
+      //
+      // The photo used to be optional here, on the reasoning that a failed S3
+      // upload must not stop a safety finding being filed. That is now enforced
+      // the other way round on purpose: the form will not let a technician reach
+      // submit without a photo attached, so an upload failure surfaces at the
+      // moment it happens and can be retried, instead of silently producing a
+      // finding nobody can verify later.
+      let sidewallNote = null;
+      let sidewallPhotoKey = null;
+      if (sidewallCondition === "not_ok") {
+        sidewallNote = entry.sidewall_note ? String(entry.sidewall_note).trim() : "";
+        if (!sidewallNote) throw new Error("sidewall_note is required when sidewall_condition is not_ok");
+        sidewallNote = sidewallNote.slice(0, 500);
+        sidewallPhotoKey = entry.sidewall_photo_s3_key ? String(entry.sidewall_photo_s3_key).trim() : null;
+        if (!sidewallPhotoKey) {
+          throw new Error("sidewall_photo_s3_key is required when sidewall_condition is not_ok");
+        }
+      }
+
+      // Readings are parsed BEFORE the inspection row is written, because the
+      // verdict is derived from them. They used to be inserted afterwards.
+      const treads = Array.isArray(entry.treads) ? entry.treads : [];
+      const parsedTreads = treads
+        .map((tread) => {
+          const pos = toWholeNumber(tread.tread_position, "tread_position");
+          if (pos < 1 || pos > 4) throw new Error("tread_position must be between 1 and 4");
+          const thickness = Number(tread.tread_thickness_mm);
+          if (!Number.isFinite(thickness) || thickness < 0) throw new Error("Invalid tread_thickness_mm");
+          return { pos, thickness };
+        })
+        .sort((a, b2) => a.pos - b2.pos);
+
+      const readings = parsedTreads.map((x) => x.thickness);
+      const minTread = readings.length ? Math.min(...readings) : null;
+      const { type: unevenWearType, spread } = classifyUnevenWear(
+        readings,
+        axleSideByTyre.get(tyreId) ?? null,
+      );
+
+      // inspection_result is DERIVED, never taken from the request — the
+      // technician no longer picks it. Any inspection_result / reject_reason an
+      // older app build still sends is ignored rather than rejected, so a phone
+      // that hasn't updated keeps working.
+      const result = deriveInspectionResult({ minTread, sidewallCondition, unevenWearType });
+      const resultReason = describeInspectionResult({ minTread, sidewallCondition, unevenWearType, spread });
+
       const [inspRes] = await conn.execute(
-        `INSERT INTO TYRE_INSPECTION (session_id, tyre_id, tyre_pressure, retread_count_observed, inspection_result, reject_reason)
-         VALUES (?,?,?,?,?,?)`,
+        `INSERT INTO TYRE_INSPECTION
+           (session_id, tyre_id, tyre_pressure, sidewall_condition, sidewall_note,
+            sidewall_photo_s3_bucket, sidewall_photo_s3_key,
+            retread_count_observed, retread_sticker_s3_bucket, retread_sticker_s3_key,
+            uneven_wear_type, tread_spread_mm,
+            inspection_result, result_source, reject_reason)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'derived',?)`,
         [
           sessionId,
           tyreId,
           pressure,
+          sidewallCondition,
+          sidewallNote,
+          sidewallPhotoKey ? S3_BUCKET : null,
+          sidewallPhotoKey,
           retreadCountObserved,
+          retreadStickerKey ? S3_BUCKET : null,
+          retreadStickerKey,
+          unevenWearType,
+          spread,
           result,
-          result === "reject" ? (entry.reject_reason ? String(entry.reject_reason).trim() : null) : null,
+          resultReason,
         ]
       );
       const inspectionId = inspRes.insertId;
 
       // The technician's observed retread count during a routine inspection is
-      // the most up-to-date read on the physical tyre — keep TYRE in sync with
-      // it the same way a "reject" result updates tyre_status below.
+      // the most up-to-date read on the physical tyre, so keep TYRE in step with
+      // it. GREATEST means a casing's recorded history can only ever go up.
       if (retreadCountObserved != null) {
-        await conn.execute(`UPDATE TYRE SET tyre_retread_count=? WHERE tyre_id=?`, [retreadCountObserved, tyreId]);
+        await conn.execute(
+          `UPDATE TYRE SET tyre_retread_count=GREATEST(tyre_retread_count, ?) WHERE tyre_id=?`,
+          [retreadCountObserved, tyreId]
+        );
+        // And carry the sticker across, so TYRE always holds the photo backing
+        // the count it currently shows. Guarded on the same GREATEST comparison
+        // as the count itself: a lower observation does not move the count, so
+        // it must not replace the photo either.
+        if (retreadStickerKey) {
+          await conn.execute(
+            `UPDATE TYRE SET retread_sticker_s3_bucket=?, retread_sticker_s3_key=?
+             WHERE tyre_id=? AND tyre_retread_count <= ?`,
+            [S3_BUCKET, retreadStickerKey, tyreId, retreadCountObserved]
+          );
+        }
       }
 
-      const treads = Array.isArray(entry.treads) ? entry.treads : [];
-      for (const tread of treads) {
-        const pos = toWholeNumber(tread.tread_position, "tread_position");
-        if (pos < 1 || pos > 4) throw new Error("tread_position must be between 1 and 4");
-        const thickness = Number(tread.tread_thickness_mm);
-        if (!Number.isFinite(thickness) || thickness < 0) throw new Error("Invalid tread_thickness_mm");
+      for (const x of parsedTreads) {
         await conn.execute(
           `INSERT INTO TYRE_TREAD (tyre_inspection_id, tread_position, tread_thickness_mm) VALUES (?,?,?)`,
-          [inspectionId, pos, thickness]
+          [inspectionId, x.pos, x.thickness]
         );
       }
 
-      if (result === "reject") {
-        await conn.execute(`UPDATE TYRE SET tyre_status='rejected' WHERE tyre_id=?`, [tyreId]);
-      }
+      // NOTE: a derived 'reject' deliberately does NOT retire the tyre.
+      //
+      // The old code set tyre_status='rejected' here off the technician's manual
+      // dropdown. Doing the same off an automatic threshold would take every
+      // tyre under 5mm out of service on its next inspection — roughly a quarter
+      // of the fleet — and 'rejected' is one of TYRE_UNMOUNTABLE_STATUSES, so
+      // they could not be refitted afterwards. Retiring a casing stays a human
+      // decision, made through the replacement flow's outgoing_status.
+      //
+      // Do not "restore" the UPDATE that used to live here.
     }
 
     await conn.commit();
@@ -2003,13 +3863,15 @@ async function createTyreInspectionSession(conn, auth, busId, b) {
 }
 
 async function listBusTyreInspections(conn, auth, busId) {
-  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   const [rows] = await conn.execute(
-    `SELECT s.*, u.user_name AS technician_name
+    `SELECT s.*, u.user_name AS technician_name,
+            b.bus_route, b.bus_route_colour, b.bus_route_number, b.bus_ev_no, b.bus_model, b.project_id
      FROM TYRE_INSPECTION_SESSION s
      LEFT JOIN \`USER\` u ON u.user_id = s.technician_user_id
+     LEFT JOIN BUS b ON b.bus_id = s.bus_id
      WHERE s.bus_id=?
      ORDER BY s.inspection_datetime DESC, s.tyre_inspection_session_id DESC`,
     [busId]
@@ -2018,11 +3880,12 @@ async function listBusTyreInspections(conn, auth, busId) {
 }
 
 async function getTyreInspectionSession(conn, auth, sessionId) {
-  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  const deny = requireRole(auth, ["admin", "rm_manager", "technician"]);
   if (deny) return deny;
 
   const [sessionRows] = await conn.execute(
-    `SELECT s.*, u.user_name AS technician_name, b.bus_route, b.bus_model
+    `SELECT s.*, u.user_name AS technician_name,
+            b.bus_route, b.bus_route_colour, b.bus_route_number, b.bus_ev_no, b.bus_model, b.project_id
      FROM TYRE_INSPECTION_SESSION s
      LEFT JOIN \`USER\` u ON u.user_id = s.technician_user_id
      LEFT JOIN BUS b ON b.bus_id = s.bus_id
@@ -2031,10 +3894,21 @@ async function getTyreInspectionSession(conn, auth, sessionId) {
   );
   if (!sessionRows.length) return json(404, { message: "Inspection session not found" });
 
+  // axle_side rides along so the report screen can put a toe finding the right
+  // way round: tread_position 1 is a fixed edge of the BUS, so which side the
+  // wheel is on decides whether that is the outboard or inboard shoulder.
+  //
+  // Taken from where the tyre is fitted NOW, not where it was at inspection
+  // time, which the schema does not record per inspection. It is only ever used
+  // to re-derive a classification the row does not already carry — a pre-014
+  // import — and a tyre that has since moved to the other side of the bus is
+  // rare enough to be worth the simpler query.
   const [tyreRows] = await conn.execute(
-    `SELECT ti.*, t.tyre_serial_number, t.tyre_brand, t.tyre_model
+    `SELECT ti.*, t.tyre_serial_number, t.tyre_brand, t.tyre_model,
+            m.axle_number, m.axle_side, m.wheel_position
      FROM TYRE_INSPECTION ti
      JOIN TYRE t ON t.tyre_id = ti.tyre_id
+     LEFT JOIN TYRE_MOUNTING m ON m.tyre_id = ti.tyre_id AND m.unmounted_at IS NULL
      WHERE ti.session_id=?`,
     [sessionId]
   );
@@ -2062,6 +3936,170 @@ async function getTyreInspectionSession(conn, auth, sessionId) {
   return json(200, { ...sessionRows[0], tyres });
 }
 
+// ===================== SCHEDULED TASKS =====================
+
+// Invoked by EventBridge, not by a user. There is no auth context here, so
+// every query runs fleet-wide and results are grouped by project before
+// notifying — the per-project recipients are then resolved the same way an
+// HTTP-triggered notification resolves them.
+
+const TYRE_DIGEST_QUIET_DAYS = 7;
+
+/**
+ * Has this exact alerting set already gone out recently?
+ *
+ * Returns true (and records the send) when it should be sent. An unchanged set
+ * produces the same key and stays quiet; any change produces a new key and
+ * alerts immediately.
+ */
+async function shouldSendDigest(conn, dedupeKey) {
+  try {
+    const [rows] = await conn.execute(
+      `SELECT last_sent_at FROM NOTIFICATION_DEDUPE
+       WHERE dedupe_key=? AND last_sent_at > (NOW() - INTERVAL ? DAY) LIMIT 1`,
+      [dedupeKey, TYRE_DIGEST_QUIET_DAYS]
+    );
+    if (rows.length) return false;
+
+    await conn.execute(
+      `INSERT INTO NOTIFICATION_DEDUPE (dedupe_key, last_sent_at) VALUES (?, NOW())
+       ON DUPLICATE KEY UPDATE last_sent_at = NOW()`,
+      [dedupeKey]
+    );
+    return true;
+  } catch (e) {
+    // A dedupe failure must not suppress a genuine alert, so fail open.
+    plog("digest.dedupe.fail", { dedupeKey, ...errFields(e) });
+    return true;
+  }
+}
+
+async function runTyreDigest(conn) {
+  const intervalDays = await getTyreInspectionIntervalDays(conn);
+
+  const [overdueRows] = await conn.execute(
+    `SELECT b.bus_id, b.project_id, b.bus_route,
+            DATEDIFF(NOW(), s.last_inspected_at) AS days_since_inspection
+     FROM BUS b
+     LEFT JOIN (
+       SELECT bus_id, MAX(inspection_datetime) AS last_inspected_at
+       FROM TYRE_INSPECTION_SESSION GROUP BY bus_id
+     ) s ON s.bus_id = b.bus_id
+     WHERE s.last_inspected_at IS NULL OR DATEDIFF(NOW(), s.last_inspected_at) > ?`,
+    [intervalDays]
+  );
+
+  const [lowRows] = await conn.execute(
+    `SELECT t.tyre_id, t.tyre_serial_number, m.bus_id, b.project_id, latest.min_tread_mm
+     FROM TYRE t
+     JOIN (${LATEST_TYRE_INSPECTION_SQL}) latest ON latest.tyre_id = t.tyre_id
+     JOIN TYRE_MOUNTING m ON m.tyre_id = t.tyre_id AND m.unmounted_at IS NULL
+     LEFT JOIN BUS b ON b.bus_id = m.bus_id
+     WHERE latest.min_tread_mm < ?`,
+    [TYRE_LOW_TREAD_THRESHOLD_MM]
+  );
+
+  // Group both findings by project so each manager hears only about their own.
+  const byProject = new Map();
+  const bucket = (projectId) => {
+    const key = projectId ?? "__none__";
+    if (!byProject.has(key)) byProject.set(key, { projectId: projectId ?? null, buses: [], tyres: [] });
+    return byProject.get(key);
+  };
+  for (const r of overdueRows) bucket(r.project_id).buses.push(r);
+  for (const r of lowRows) bucket(r.project_id).tyres.push(r);
+
+  plog("digest.scan", {
+    intervalDays,
+    overdueBuses: overdueRows.length,
+    lowTreadTyres: lowRows.length,
+    projects: byProject.size,
+  });
+
+  let sent = 0;
+  let skipped = 0;
+
+  for (const group of byProject.values()) {
+    if (!group.buses.length && !group.tyres.length) continue;
+
+    const busIds = group.buses.map((b) => String(b.bus_id)).sort();
+    const tyreIds = group.tyres.map((t) => String(t.tyre_id)).sort();
+    const fingerprint = crypto
+      .createHash("sha1")
+      .update(`${busIds.join(",")}|${tyreIds.join(",")}`)
+      .digest("hex");
+    const dedupeKey = `tyre_digest:${group.projectId ?? "none"}:${fingerprint}`;
+
+    if (!(await shouldSendDigest(conn, dedupeKey))) {
+      skipped += 1;
+      plog("digest.skip", { projectId: group.projectId, reason: "unchanged", dedupeKey });
+      continue;
+    }
+
+    const parts = [];
+    if (group.buses.length) {
+      parts.push(`${group.buses.length} bus${group.buses.length === 1 ? "" : "es"} overdue for tyre inspection`);
+    }
+    if (group.tyres.length) {
+      const worst = Math.min(...group.tyres.map((t) => Number(t.min_tread_mm)));
+      parts.push(
+        `${group.tyres.length} tyre${group.tyres.length === 1 ? "" : "s"} below ${TYRE_LOW_TREAD_THRESHOLD_MM}mm (lowest ${worst}mm)`
+      );
+    }
+
+    const busList = group.buses.slice(0, 5).map((b) => b.bus_id).join(", ");
+    await notifyUsersByRole(conn, {
+      roles: ["admin", "rm_manager", "fleet_manager"],
+      projectId: group.projectId,
+      type: "tyre_digest",
+      title: "Tyre attention needed",
+      body:
+        parts.join(" · ") +
+        (busList ? `. Buses: ${busList}${group.buses.length > 5 ? "…" : ""}` : ""),
+    });
+    sent += 1;
+  }
+
+  // Keep the dedupe table from growing without bound.
+  try {
+    await conn.execute("DELETE FROM NOTIFICATION_DEDUPE WHERE last_sent_at < (NOW() - INTERVAL 90 DAY)");
+  } catch (e) {
+    plog("digest.prune.fail", errFields(e));
+  }
+
+  plog("digest.done", { sent, skipped });
+  return { sent, skipped, overdueBuses: overdueRows.length, lowTreadTyres: lowRows.length };
+}
+
+async function runScheduledTask(conn, event) {
+  const task = event?.task ?? "tyre_daily";
+  plog("scheduled.start", { task });
+  try {
+    // Queued by dispatchPush(). Only reachable from an async self-invoke: the
+    // handler's requestContext guard keeps this branch off the HTTP API.
+    if (task === "push") {
+      const p = event?.push ?? {};
+      const userIds = Array.isArray(p.userIds) ? p.userIds.map(Number).filter(Number.isInteger) : [];
+      await sendExpoPushNotifications(conn, {
+        userIds,
+        title: p.title,
+        body: p.body ?? null,
+        data: p.data ?? {},
+      });
+      return json(200, { task, userIds: userIds.length });
+    }
+    if (task === "tyre_daily") {
+      const result = await runTyreDigest(conn);
+      return json(200, { task, ...result });
+    }
+    plog("scheduled.unknown", { task });
+    return json(400, { message: `Unknown scheduled task: ${task}` });
+  } catch (e) {
+    plog("scheduled.fail", { task, ...errFields(e) });
+    return json(500, { message: e?.message ?? "Scheduled task failed" });
+  }
+}
+
 // ===================== REPORT MEDIA =====================
 
 async function listReportMedia(conn, auth, reportId) {
@@ -2085,7 +4123,7 @@ async function listReportMedia(conn, auth, reportId) {
     (rows || []).map(async (m) => {
       try {
         const cmd = new GetObjectCommand({ Bucket: m.s3_bucket || S3_BUCKET, Key: m.s3_key });
-        const viewUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
+        const viewUrl = await getSignedUrl(s3, cmd, { expiresIn: VIEW_URL_TTL_S });
         return { ...m, viewUrl };
       } catch (e) {
         console.error("Failed signing media", m?.s3_key, e);
@@ -2109,11 +4147,15 @@ function extFromMime(mime) {
 // Signing is a local crypto computation (no network call), so this is cheap
 // to run per-row even across a 200-row list — same reasoning behind the
 // existing per-media-item Promise.all signing below.
+// How long a photo/selfie link stays valid. It was 5 minutes, so a screen
+// left open while walking to the bus showed broken images on return.
+const VIEW_URL_TTL_S = 3600;
+
 async function signS3Url(bucket, key) {
   if (!bucket || !key) return null;
   try {
     const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
-    return await getSignedUrl(s3, cmd, { expiresIn: 300 });
+    return await getSignedUrl(s3, cmd, { expiresIn: VIEW_URL_TTL_S });
   } catch (e) {
     console.error("Failed signing selfie url", key, e);
     return null;
@@ -2204,7 +4246,9 @@ async function confirmReportSelfie(conn, auth, reportId, b) {
   const [rows] = await conn.execute("SELECT report_id, user_id FROM REPORT WHERE report_id=?", [reportId]);
   if (!rows?.length) throw new Error("report_id not found");
 
-  if (auth.role === "driver") {
+  // The submission sign-off belongs to whoever filed the report — any other
+  // account could previously replace it.
+  if (auth.role !== "admin") {
     const userId = await getOrCreateUserId(conn, auth);
     if (Number(rows[0].user_id) !== userId) return json(403, { message: "Forbidden" });
   }
@@ -2241,7 +4285,7 @@ async function listJobMedia(conn, auth, jobId, qs) {
     (rows || []).map(async (m) => {
       try {
         const cmd = new GetObjectCommand({ Bucket: m.s3_bucket || S3_BUCKET, Key: m.s3_key });
-        const viewUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
+        const viewUrl = await getSignedUrl(s3, cmd, { expiresIn: VIEW_URL_TTL_S });
         return { ...m, viewUrl };
       } catch (e) {
         console.error("Failed signing media", m?.s3_key, e);
@@ -2347,6 +4391,45 @@ async function confirmJobSelfie(conn, auth, jobId, b) {
     [verifiedName, S3_BUCKET, b.s3_key, jobId]
   );
   return json(200, { success: true });
+}
+
+// Selfie upload for the two sign-offs that happen *as part of* another call:
+// approving a report (kind=report-review) and accepting a job
+// (kind=job-accept). Only the upload URL is issued here; the returned key is
+// sent with the approve/accept request, which stores it together with the
+// typed name in the same write as the action itself.
+async function presignVerificationSelfie(conn, auth, qs) {
+  const kind = (qs.kind ?? "").toString().trim();
+  const id = toId(qs.id, "id");
+  const mime = (qs.mime ?? "").toString().trim();
+  if (!mime) throw new Error("mime required");
+
+  let key;
+  if (kind === "report-review") {
+    const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager"]);
+    if (deny) return deny;
+    const [r] = await conn.execute("SELECT report_id FROM REPORT WHERE report_id=?", [id]);
+    if (!r?.length) return json(404, { message: "Report not found" });
+    key = `reports/${id}/review-selfie/${crypto.randomUUID()}.${extFromMime(mime)}`;
+  } else if (kind === "job-accept") {
+    const deny = requireRole(auth, ["admin", "technician"]);
+    if (deny) return deny;
+    const [j] = await conn.execute("SELECT technician_user_id FROM JOB WHERE job_id=?", [id]);
+    if (!j?.length) return json(404, { message: "Job not found" });
+    if (j[0].technician_user_id != null) {
+      const me = await getOrCreateUserId(conn, auth);
+      if (Number(j[0].technician_user_id) !== me) {
+        return json(409, { code: "JOB_TAKEN", message: "This job was already accepted by another technician." });
+      }
+    }
+    key = `jobs/${id}/accept-selfie/${crypto.randomUUID()}.${extFromMime(mime)}`;
+  } else {
+    return json(400, { message: "kind must be report-review or job-accept" });
+  }
+
+  const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime });
+  const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
+  return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
 }
 
 // ===================== NOTIFICATIONS =====================

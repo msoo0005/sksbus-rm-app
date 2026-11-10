@@ -1,5 +1,6 @@
 // app/(app)/fleet-manager-history.tsx
 import { FontAwesome5 } from "@expo/vector-icons";
+import { useI18n } from "@/i18n/i18n-ctx";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -14,12 +15,13 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { api } from "../api/client";
-import JobDetailsView from "../components/JobDetailsView";
-import ReportCard from "../components/ReportCard";
-import SegmentedTabs from "../components/SegmentedTabs";
-import { useSession } from "../ctx";
-import { Report } from "../types/report";
+import { api } from "@/api/client";
+import JobDetailsView from "@/components/JobDetailsView";
+import ReportCard from "@/components/ReportCard";
+import SegmentedTabs from "@/components/SegmentedTabs";
+import { useSession } from "@/ctx";
+import { Report } from "@/types/report";
+import { useProjectFilter } from "@/hooks/useProjectFilter";
 
 type Tab = "submitted" | "open" | "closed";
 
@@ -86,11 +88,30 @@ function mapApiRowToReport(r: any): FleetReport {
         by: r.report_review_by ?? undefined,
         at: r.report_review_at ?? undefined,
         reason: r.report_review_reason ?? undefined,
+        person: {
+          name: r.report_review_verified_name ?? null,
+          username: r.report_review_by ?? null,
+          selfieUrl: r.report_review_selfie_view_url ?? null,
+        },
       }
     : undefined;
 
   return {
     id: safeId,
+    reporter: {
+      name: r?.report_verified_name ?? null,
+      username: r?.reporter_name ?? null,
+      selfieUrl: r?.report_selfie_view_url ?? null,
+    },
+    assigned: r?.technician_name ?? undefined,
+    assignee:
+      r?.technician_user_id != null
+        ? {
+            name: r?.job_accept_verified_name ?? null,
+            username: r?.technician_name ?? null,
+            selfieUrl: r?.job_accept_selfie_view_url ?? null,
+          }
+        : undefined,
     job_id: safeJobId,
     type: normaliseType(r?.report_type),
     severity: normaliseSeverity(r?.report_priority),
@@ -101,7 +122,7 @@ function mapApiRowToReport(r: any): FleetReport {
     description: String(r?.report_desc ?? "—"),
     date: formatDate(r?.report_uploaded_at),
     dateIso: r?.report_uploaded_at ?? null,
-    closedAt: r?.report_review_at ?? null,
+    closedAt: r?.job_completed_at ?? r?.report_review_at ?? null,
     status: normaliseStatusToUi(r?.report_status),
     reportedBy,
     audit,
@@ -109,6 +130,8 @@ function mapApiRowToReport(r: any): FleetReport {
 }
 
 export default function FleetManagerHistoryScreen() {
+  const { t } = useI18n();
+  const projectId = useProjectFilter();
   const { dbUser } = useSession() as any;
   const name = dbUser?.user_name ?? "Fleet Manager";
   const insets = useSafeAreaInsets();
@@ -139,22 +162,23 @@ export default function FleetManagerHistoryScreen() {
       const rows = await api.listReports({
         mine: true,
         status: statusParam as any,
+        project_id: projectId ?? undefined,
       });
 
       const mapped = Array.isArray(rows) ? rows.map(mapApiRowToReport) : [];
       setReports(mapped.filter((r) => r.id > 0));
     } catch (e: any) {
       console.log(e);
-      Alert.alert("Couldn’t load your reports", e?.message ?? "Unknown error");
+      Alert.alert(t("fleetManagerHistory.loadFailed"), e?.message ?? t("common.unknownError"));
       setReports([]);
     } finally {
       setLoading(false);
     }
-  }, [statusParam]);
+  }, [statusParam, t, projectId]);
 
   const loadCounts = useCallback(async () => {
     try {
-      const rows = await api.listReports({ mine: true });
+      const rows = await api.listReports({ mine: true, project_id: projectId ?? undefined });
       const mapped = Array.isArray(rows) ? rows.map(mapApiRowToReport) : [];
 
       setCounts({
@@ -165,7 +189,7 @@ export default function FleetManagerHistoryScreen() {
     } catch {
       // ignore count errors
     }
-  }, []);
+  }, [projectId]);
 
   useEffect(() => {
     loadReports();
@@ -186,7 +210,7 @@ export default function FleetManagerHistoryScreen() {
 
     if (!Number.isFinite(jobId) || jobId <= 0) {
       Alert.alert(
-        "No job created yet",
+        t("fleetManagerHistory.noJobYet"),
         "This report has not been approved or linked to a job yet.",
       );
       return;
@@ -194,7 +218,7 @@ export default function FleetManagerHistoryScreen() {
 
     setSelectedJobId(jobId);
     setJobModalVisible(true);
-  }, []);
+  }, [t]);
 
   const closeModal = useCallback(() => {
     setJobModalVisible(false);
@@ -216,7 +240,7 @@ export default function FleetManagerHistoryScreen() {
         }
       >
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>My Report History</Text>
+          <Text style={styles.headerTitle}>{t("fleetManagerHistory.title")}</Text>
           <Text style={styles.headerSubtitle}>Logged in as {name}</Text>
         </View>
 
@@ -249,7 +273,7 @@ export default function FleetManagerHistoryScreen() {
         ) : (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyText}>
-              No reports found in this category yet.
+              {t("fleetManagerHistory.noReports")}
             </Text>
           </View>
         )}
@@ -282,7 +306,7 @@ export default function FleetManagerHistoryScreen() {
             />
           ) : (
             <View style={styles.emptyWrap}>
-              <Text style={styles.emptyText}>No job selected.</Text>
+              <Text style={styles.emptyText}>{t("fleetManagerHistory.noJobSelected")}</Text>
             </View>
           )}
         </View>
@@ -294,7 +318,7 @@ export default function FleetManagerHistoryScreen() {
 const styles = StyleSheet.create({
   page: {
     flex: 1,
-    backgroundColor: "#f9f9f9",
+    backgroundColor: "#F9FAFB",
   },
 
   header: {

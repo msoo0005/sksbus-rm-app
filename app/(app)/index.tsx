@@ -9,25 +9,12 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import HomeHeader from "../components/HomeHeader";
-import { useSession } from "../ctx";
-import { useI18n } from "../i18n/i18n-ctx";
+import HomeHeader from "@/components/HomeHeader";
+import { useSession } from "@/ctx";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { ROLE_HOME, type RoleKey } from "@/utils/roles";
 
-type RoleKey =
-  | "admin"
-  | "driver"
-  | "fleet_manager"
-  | "rm_manager"
-  | "technician"
-  | "inventory_manager";
 
-const ROLE_REDIRECT: Partial<Record<RoleKey, string>> = {
-  fleet_manager: "/fleet-manager-home",
-  rm_manager: "/rm-manager-home",
-  technician: "/technician-home",
-  inventory_manager: "/inventory",
-  driver: "/project-selector",
-};
 
 const ADMIN_ACCENT = "#4338CA";
 const ADMIN_ACCENT_LIGHT = "#EEF2FF";
@@ -74,7 +61,7 @@ const MODULE_DEFS = [
     accentLight: "#F0F9FF",
   },
   {
-    id: "rm-manager/tyres",
+    id: "tyres",
     titleKey: "adminHome.tyresTitle",
     descKey: "adminHome.tyresDesc",
     icon: "dot-circle",
@@ -100,7 +87,8 @@ export default function HomeScreen() {
   }));
 
   const role = (dbUser?.user_role ?? "driver") as RoleKey;
-  const redirect = ROLE_REDIRECT[role];
+  // Admin's home IS this screen, so it alone has nowhere to be sent.
+  const redirect = role === "admin" ? undefined : ROLE_HOME[role];
 
   React.useEffect(() => {
     if (redirect) router.replace(redirect as any);
@@ -110,7 +98,11 @@ export default function HomeScreen() {
 
   const handlePress = (moduleId: string) => {
     if (moduleId === "fleet-manager") {
-      router.push("./project-selector");
+      // Straight to the module. This card used to open the project selector
+      // first, from when that was the only thing guaranteeing a project was
+      // chosen; the gate does that now, and admin has already passed it to be
+      // looking at this console at all.
+      router.push("/fleet-manager" as any);
     } else if (moduleId === "rm-manager") {
       router.push("/rm-manager-home" as any);
     } else if (moduleId === "technician") {

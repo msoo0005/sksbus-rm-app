@@ -11,15 +11,18 @@ import {
   View,
 } from "react-native";
 
-import { api } from "../../api/client";
-import ConfirmActionModal from "../../components/ConfirmActionModal";
-import JobDetailsModal from "../../components/JobDetailsModal";
-import ReportCard from "../../components/ReportCard";
-import SegmentedTabs from "../../components/SegmentedTabs";
-import { useSession } from "../../ctx";
-import { useI18n } from "../../i18n/i18n-ctx";
+import { api } from "@/api/client";
+import { uploadVerificationSelfie } from "@/api/media";
+import type { LocalMedia } from "@/components/ImagePicker";
+import VerificationModal from "@/components/VerificationModal";
+import JobDetailsModal from "@/components/JobDetailsModal";
+import ReportCard from "@/components/ReportCard";
+import SegmentedTabs from "@/components/SegmentedTabs";
+import { useSession } from "@/ctx";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { useProjectFilter } from "@/hooks/useProjectFilter";
 
-type Tab = "available" | "myJobs" | "completed";
+type Tab = "available" | "myJobs" | "assigned" | "completed";
 
 type JobListItem = {
   job_id: number;
@@ -43,7 +46,21 @@ type JobListItem = {
   bus_id: string | null;
   reporter_name: string | null;
   reporter_email?: string | null;
+  report_verified_name?: string | null;
+  report_selfie_view_url?: string | null;
+  job_accept_verified_name?: string | null;
+  job_accept_selfie_view_url?: string | null;
 };
+
+// The technician who took a job, as signed off at acceptance.
+function assigneeOf(job: JobListItem) {
+  if (job.technician_user_id == null) return undefined;
+  return {
+    name: job.job_accept_verified_name ?? null,
+    username: job.technician_name ?? null,
+    selfieUrl: job.job_accept_selfie_view_url ?? null,
+  };
+}
 
 function formatDate(isoLike?: string | null) {
   if (!isoLike) return "—";
@@ -56,6 +73,7 @@ export default function TechnicianScreen() {
   const router = useRouter();
   const { dbUser } = useSession() as any;
   const { t } = useI18n();
+  const projectId = useProjectFilter();
 
   const myUserId = dbUser?.user_id ? Number(dbUser.user_id) : null;
 
@@ -69,6 +87,7 @@ export default function TechnicianScreen() {
 
   const [acceptTarget, setAcceptTarget] = useState<JobListItem | null>(null);
   const [acceptVisible, setAcceptVisible] = useState(false);
+  const [accepting, setAccepting] = useState(false);
 
   const fetchJobs = async (isRefresh = false) => {
     if (isRefresh) {
@@ -78,7 +97,7 @@ export default function TechnicianScreen() {
     }
 
     try {
-      const rows = await api.listJobs();
+      const rows = await api.listJobs(projectId ? { project_id: projectId } : undefined);
 
       setJobs(Array.isArray(rows) ? rows : []);
     } catch (e: any) {
@@ -110,6 +129,19 @@ export default function TechnicianScreen() {
     );
   }, [jobs, myUserId]);
 
+  // Open jobs another technician has taken — view-only, so the team can see
+  // who is working on what.
+  const othersJobs = useMemo(
+    () =>
+      jobs.filter(
+        (j) =>
+          j.job_status === "open" &&
+          j.technician_user_id != null &&
+          j.technician_user_id !== myUserId,
+      ),
+    [jobs, myUserId],
+  );
+
   const myClosedJobs = useMemo(() => {
     if (!myUserId) return [];
 
@@ -122,36 +154,51 @@ export default function TechnicianScreen() {
     () => ({
       available: availableJobs.length,
       myJobs: myOpenJobs.length,
+      assigned: othersJobs.length,
       completed: myClosedJobs.length,
     }),
-    [availableJobs.length, myOpenJobs.length, myClosedJobs.length],
+    [availableJobs.length, myOpenJobs.length, othersJobs.length, myClosedJobs.length],
   );
 
   const filtered = useMemo(() => {
     if (tab === "available") return availableJobs;
     if (tab === "myJobs") return myOpenJobs;
+    if (tab === "assigned") return othersJobs;
     return myClosedJobs;
-  }, [tab, availableJobs, myOpenJobs, myClosedJobs]);
+  }, [tab, availableJobs, myOpenJobs, othersJobs, myClosedJobs]);
 
   const requestAccept = (job: JobListItem) => {
     setAcceptTarget(job);
     setAcceptVisible(true);
   };
 
-  const confirmAccept = async () => {
-    if (!acceptTarget) return;
+  // Accepting is a sign-off (typed name + selfie). The `accepting` guard
+  // matters: a second tap used to send a second accept, which failed with
+  // "already assigned" after the first had succeeded — the error the
+  // technician saw while the job quietly moved to My Jobs.
+  const confirmAccept = async ({ selfie, name }: { selfie: LocalMedia; name: string }) => {
+    if (!acceptTarget || accepting) return;
+    const jobId = acceptTarget.job_id;
 
+    setAccepting(true);
     try {
-      await api.assignJob(acceptTarget.job_id);
-
-      setAcceptVisible(false);
-      setAcceptTarget(null);
-      setTab("myJobs");
-
-      await fetchJobs(true);
+      const selfieKey = await uploadVerificationSelfie("job-accept", jobId, selfie);
+      await api.assignJob(jobId, { verified_name: name, selfie_s3_key: selfieKey });
     } catch (e: any) {
       Alert.alert(t("jobsList.acceptFailedTitle"), e?.message ?? t("common.unknownError"));
+      setAccepting(false);
+      // The list may be stale (e.g. someone else took the job) — refresh it.
+      fetchJobs(true);
+      return;
     }
+
+    setAccepting(false);
+    setAcceptVisible(false);
+    setAcceptTarget(null);
+    setTab("myJobs");
+    // Outside the try: a failed refresh is reported by fetchJobs itself and
+    // must not read as a failed accept.
+    fetchJobs(true);
   };
 
   const goToJobScreen = (job: JobListItem) => {
@@ -171,7 +218,7 @@ export default function TechnicianScreen() {
   return (
     <>
       <ScrollView
-        style={{ flex: 1, backgroundColor: "#f9f9f9" }}
+        style={{ flex: 1, backgroundColor: "#F9FAFB" }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -183,8 +230,9 @@ export default function TechnicianScreen() {
           value={tab}
           onChange={setTab}
           tabs={[
-            { key: "available", label: `${t("jobsList.tabAvailable")} (${tabCounts.available})` },
-            { key: "myJobs", label: `${t("jobsList.tabMyJobs")} (${tabCounts.myJobs})` },
+            { key: "available", label: t("jobsList.tabAvailable"), alertCount: tabCounts.available },
+            { key: "myJobs", label: t("jobsList.tabMyJobs"), alertCount: tabCounts.myJobs },
+            { key: "assigned", label: `${t("jobsList.tabAssigned")} (${tabCounts.assigned})` },
             { key: "completed", label: `${t("jobsList.tabCompleted")} (${tabCounts.completed})` },
           ]}
         />
@@ -223,7 +271,13 @@ export default function TechnicianScreen() {
               closedAt: job.job_completed_at ?? null,
               status: job.job_status === "closed" ? "closed" : "open",
               reportedBy: job.reporter_name ?? "—",
+              reporter: {
+                name: job.report_verified_name ?? null,
+                username: job.reporter_name ?? null,
+                selfieUrl: job.report_selfie_view_url ?? null,
+              },
               assigned: job.technician_name ?? undefined,
+              assignee: assigneeOf(job),
             };
 
             return (
@@ -261,20 +315,29 @@ export default function TechnicianScreen() {
                 ),
                 status: selectedJob.job_status === "closed" ? "closed" : "open",
                 reportedBy: selectedJob.reporter_name ?? "—",
+                reporter: {
+                  name: selectedJob.report_verified_name ?? null,
+                  username: selectedJob.reporter_name ?? null,
+                  selfieUrl: selectedJob.report_selfie_view_url ?? null,
+                },
                 assigned: selectedJob.technician_name ?? undefined,
+                assignee: assigneeOf(selectedJob),
               } as any)
             : null
         }
         onClose={() => setDetailsVisible(false)}
       />
 
-      <ConfirmActionModal
+      <VerificationModal
         visible={acceptVisible}
         title={t("jobsList.acceptTitle")}
-        message={t("jobsList.acceptMessage")}
+        message={t("verification.acceptJobMessage")}
         confirmLabel={t("jobsList.acceptConfirm")}
-        confirmColor="#4CAF50"
-        onCancel={() => setAcceptVisible(false)}
+        submitting={accepting}
+        onCancel={() => {
+          if (accepting) return;
+          setAcceptVisible(false);
+        }}
         onConfirm={confirmAccept}
       />
     </>

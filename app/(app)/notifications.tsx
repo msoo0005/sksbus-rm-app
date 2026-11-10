@@ -10,10 +10,14 @@ import {
   Text,
   View,
 } from "react-native";
-import type { AppNotification, NotificationType } from "../api/client";
-import { api } from "../api/client";
-import { useSession } from "../ctx";
-import { useI18n } from "../i18n/i18n-ctx";
+import type { AppNotification, NotificationType } from "@/api/client";
+import { api } from "@/api/client";
+import { useSession } from "@/ctx";
+import {
+  readPushDiagnostic,
+  type PushDiagnostic,
+} from "@/notifications/usePushRegistration";
+import { useI18n } from "@/i18n/i18n-ctx";
 
 const TYPE_CONFIG: Record<
   NotificationType,
@@ -22,6 +26,8 @@ const TYPE_CONFIG: Record<
   new_report: { icon: "file-alt", color: "#2563EB", colorLight: "#EFF6FF" },
   new_job: { icon: "clipboard-list", color: "#EA580C", colorLight: "#FFF7ED" },
   job_progress: { icon: "chart-line", color: "#16A34A", colorLight: "#F0FDF4" },
+  report_reviewed: { icon: "clipboard-check", color: "#7C3AED", colorLight: "#F5F3FF" },
+  tyre_digest: { icon: "dot-circle", color: "#D97706", colorLight: "#FFFBEB" },
 };
 
 function formatWhen(iso: string) {
@@ -68,6 +74,16 @@ export default function NotificationsScreen() {
     }
   };
 
+  // Push registration is invisible by design — it must never interrupt the
+  // user — which historically meant a device that failed to register looked
+  // identical to one that worked. Surfacing the last outcome to admins makes a
+  // broken device diagnosable over the phone, with no extra endpoint.
+  const [pushDiag, setPushDiag] = React.useState<PushDiagnostic | null>(null);
+  React.useEffect(() => {
+    if (dbUser?.user_role !== "admin") return;
+    readPushDiagnostic().then(setPushDiag);
+  }, [dbUser?.user_role]);
+
   const openNotification = async (n: AppNotification) => {
     if (!n.is_read) {
       setNotifications((prev) =>
@@ -79,6 +95,25 @@ export default function NotificationsScreen() {
     }
 
     const role = dbUser?.user_role;
+
+    // The tyre digest is fleet-wide; drop into tyre management rather than a
+    // single bus, since it summarises several.
+    if (n.notification_type === "tyre_digest") {
+      router.push("/tyres" as any);
+      return;
+    }
+
+    // A reviewed report belongs to whoever filed it. Only admins and fleet
+    // managers have a screen listing their own reports; a driver's route
+    // allowlist covers just /form and /project-selector, so there is nowhere
+    // to send them. The notification body carries the outcome and the decline
+    // reason in full, so staying put is better than a dead-end navigation.
+    if (n.notification_type === "report_reviewed") {
+      if (role === "admin" || role === "fleet_manager") {
+        router.push("/fleet-manager-history" as any);
+      }
+      return;
+    }
 
     if (n.notification_type === "new_job" && role === "technician") {
       router.push("/technician");
@@ -112,6 +147,17 @@ export default function NotificationsScreen() {
         />
       }
     >
+      {dbUser?.user_role === "admin" && (
+        <View style={[styles.diagRow, pushDiag?.ok ? styles.diagOk : styles.diagBad]}>
+          <Text style={styles.diagText}>
+            {pushDiag
+              ? `Push: ${pushDiag.ok ? "registered" : `blocked — ${pushDiag.gate}`}` +
+                (pushDiag.detail ? ` (${pushDiag.detail})` : "")
+              : "Push: no registration attempt recorded on this device"}
+          </Text>
+        </View>
+      )}
+
       {notifications.length > 0 && (
         <View style={styles.headerRow}>
           <Text style={styles.headerCount}>
@@ -179,6 +225,10 @@ export default function NotificationsScreen() {
 }
 
 const styles = StyleSheet.create({
+  diagRow: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 12 },
+  diagOk: { backgroundColor: "#F0FDF4", borderColor: "#BBF7D0" },
+  diagBad: { backgroundColor: "#FFFBEB", borderColor: "#FDE68A" },
+  diagText: { fontSize: 11, fontWeight: "700", color: "#374151" },
   page: { flex: 1, backgroundColor: "#F9FAFB" },
   content: { padding: 16, paddingBottom: 32 },
 

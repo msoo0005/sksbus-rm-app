@@ -10,63 +10,38 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { api } from "../api/client";
-import { useSession } from "../ctx";
-import { useI18n } from "../i18n/i18n-ctx";
-import { LANGUAGE_LABELS, Language } from "../i18n/translations";
+import { api } from "@/api/client";
+import { useSession } from "@/ctx";
+import { useProject } from "@/project-ctx";
+import {
+  DEFAULT_ROLE_COLOR,
+  ROLE_COLORS,
+  ROLE_HOME,
+  ROLE_LABEL,
+  type RoleKey,
+} from "@/utils/roles";
+import { useI18n } from "@/i18n/i18n-ctx";
+import { LANGUAGE_LABELS, Language } from "@/i18n/translations";
 
 // Native stack header height when no large title is used.
 const HEADER_HEIGHT = Platform.OS === "ios" ? 44 : 56;
+// Leaves room for the floating controls overlaying the right of the header.
+const HEADER_TITLE_MAX_WIDTH = 190;
 
-type RoleKey =
-  | "admin"
-  | "driver"
-  | "fleet_manager"
-  | "rm_manager"
-  | "technician"
-  | "inventory_manager";
 
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
-  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications"],
+  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres"],
   fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector"],
-  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector"],
-  technician: ["/technician-home", "/technician", "/notifications"],
-  inventory_manager: ["/inventory"],
+  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory"],
+  technician: ["/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres"],
+  inventory_manager: ["/inventory", "/project-selector"],
   driver: ["/form", "/project-selector"],
 };
 
 // Roles that receive in-app notifications (per the feature's scope).
 const NOTIFIABLE_ROLES = new Set(["admin", "rm_manager", "technician"]);
 
-const ROLE_HOME: Record<RoleKey, string> = {
-  admin: "/",
-  fleet_manager: "/fleet-manager-home",
-  rm_manager: "/rm-manager-home",
-  technician: "/technician-home",
-  inventory_manager: "/inventory",
-  driver: "/project-selector",
-};
 
-const ROLE_LABEL: Record<string, string> = {
-  admin: "Administrator",
-  fleet_manager: "Fleet Manager",
-  rm_manager: "R&M Manager",
-  technician: "Technician",
-  inventory_manager: "Inventory Manager",
-  driver: "Driver",
-};
-
-// Same accent system used across HomeHeader / the home-screen module cards,
-// so the avatar reads as one consistent identity color for a given role.
-const ROLE_COLORS: Record<string, { accent: string; light: string }> = {
-  admin: { accent: "#4338CA", light: "#EEF2FF" },
-  fleet_manager: { accent: "#2563EB", light: "#EFF6FF" },
-  rm_manager: { accent: "#16A34A", light: "#F0FDF4" },
-  technician: { accent: "#EA580C", light: "#FFF7ED" },
-  inventory_manager: { accent: "#7C3AED", light: "#F5F3FF" },
-  driver: { accent: "#2563EB", light: "#EFF6FF" },
-};
-const DEFAULT_ROLE_COLOR = ROLE_COLORS.driver;
 
 function getInitials(name: string) {
   return name
@@ -77,23 +52,52 @@ function getInitials(name: string) {
     .join("");
 }
 
+// EVERY role picks a project before it can reach anything else. The screens
+// below are all scoped to one, so landing on them without a selection would show
+// either nothing or the wrong fleet.
+//
+// Admin used to be exempt, on the grounds that its home is the cross-project
+// console. It is gated now like everyone else and keeps that console by choosing
+// "All projects" on the selector, which is a real choice that happens to apply no
+// filter — see ALL_PROJECTS in project-ctx.
+const PROJECT_SELECTOR = "/project-selector";
+
 function RouteGuard() {
   const { dbUser } = useSession();
+  const { hasChosen, loading: projectLoading } = useProject();
   const pathname = usePathname();
   const router = useRouter();
 
   React.useEffect(() => {
     if (!dbUser) return;
-    if (pathname === "/" || pathname === "") return;
 
     const role = (dbUser.user_role ?? "driver") as RoleKey;
+
+    // The project gate runs FIRST and covers "/" too, which the role check
+    // below skips — otherwise a user would sit on their home screen with
+    // unscoped data until they happened to navigate somewhere.
+    //
+    // Keyed on hasChosen, not on the project id: an admin who chose "All
+    // projects" has chosen, even though that applies no filter.
+    //
+    // Waits for the stored selection to load, or it would bounce a user who
+    // already has a project straight back to the selector on every cold start.
+    if (!projectLoading && !hasChosen) {
+      if (!pathname.startsWith(PROJECT_SELECTOR)) {
+        router.replace(PROJECT_SELECTOR as any);
+      }
+      return;
+    }
+
+    if (pathname === "/" || pathname === "") return;
+
     const allowed = ROLE_ALLOWED_PREFIXES[role] ?? [];
     const isAllowed = allowed.some((prefix) => pathname.startsWith(prefix));
 
     if (!isAllowed) {
       router.replace(ROLE_HOME[role] as any);
     }
-  }, [pathname, dbUser]);
+  }, [pathname, dbUser, hasChosen, projectLoading, router]);
 
   return null;
 }
@@ -342,7 +346,26 @@ export default function RootLayout() {
         visible={languageVisible}
         onClose={() => setLanguageVisible(false)}
       />
-      <Stack>
+      <Stack
+        screenOptions={{
+          // Keep the native title clear of FloatingHeaderButtons.
+          //
+          // Those three controls are absolutely positioned over the header at
+          // right: 16 with zIndex 20, because native headerRight gets wrapped in
+          // a "Liquid Glass" pill on iOS 26 with no opt-out (see the note on
+          // FloatingHeaderButtons). The cost is that the native title lays out at
+          // full width underneath them, so a long one — "Tyre Summary and Data",
+          // "Bus Inspection Record" — renders straight through the buttons.
+          //
+          // Constraining the title's own width makes it ellipsise before it gets
+          // there, without handing anything back to headerRight.
+          headerTitle: ({ children }) => (
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {children}
+            </Text>
+          ),
+        }}
+      >
         <Stack.Screen name="index" options={{ title: "Home" }} />
         <Stack.Screen name="fleet-manager-home" options={{ title: "Home" }} />
         <Stack.Screen name="fleet-manager" options={{ title: t("adminHome.fleetManagerTitle") }} />
@@ -357,20 +380,18 @@ export default function RootLayout() {
         <Stack.Screen name="rm-manager-home" options={{ title: "Home" }} />
         <Stack.Screen name="rm-manager" options={{ title: "R&M Manager" }} />
         <Stack.Screen name="rm-manager/job/[id]" options={{ title: "Job Details" }} />
-        <Stack.Screen name="rm-manager/tyres" options={{ title: "Tyre Management" }} />
-        <Stack.Screen name="rm-manager/tyres/[busId]" options={{ title: "Bus Tyres" }} />
-        <Stack.Screen
-          name="rm-manager/tyres/inspection/[sessionId]"
-          options={{ title: "Inspection Details" }}
-        />
+        <Stack.Screen name="tyres/index" options={{ title: t("tyres.nav.hub") }} />
+        {/* These two set their own titles from the bus they are showing — a
+            static "Bus Tyres" three levels down says nothing about which bus
+            you are on. The tyre record below keeps a static title as its
+            pre-load fallback and swaps in the serial once it has one. */}
+        <Stack.Screen name="tyres/buses/[busId]/index" />
+        <Stack.Screen name="tyres/buses/[busId]/inspect" />
+        <Stack.Screen name="tyres/tyre/[tyreId]" options={{ title: t("tyres.nav.tyreDetails") }} />
+        <Stack.Screen name="inspection-record/[sessionId]" options={{ title: "Inspection Record" }} />
         <Stack.Screen name="technician-home" options={{ title: "Home" }} />
         <Stack.Screen name="technician/index" options={{ title: "Technician" }} />
         <Stack.Screen name="technician/job/[id]" options={{ title: "Job Details" }} />
-        <Stack.Screen name="technician/tyres" options={{ title: "Tyre Inspections" }} />
-        <Stack.Screen
-          name="technician/tyre-inspection/[busId]"
-          options={{ title: "Tyre Inspection" }}
-        />
         <Stack.Screen name="inventory" options={{ title: t("inventory.navTitle") }} />
         <Stack.Screen name="form" options={{ title: t("reportForm.title") }} />
         <Stack.Screen name="buses" options={{ title: t("buses.navTitle") }} />
@@ -387,6 +408,14 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+  },
+  // Width reserved for the three floating controls, plus breathing room:
+  // 3 x 34px + 2 x 10px gap + 16px inset, rounded up.
+  headerTitle: {
+    maxWidth: HEADER_TITLE_MAX_WIDTH,
+    fontSize: 17,
+    fontWeight: "600",
+    color: "#111827",
   },
   floatingWrap: {
     position: "absolute",
