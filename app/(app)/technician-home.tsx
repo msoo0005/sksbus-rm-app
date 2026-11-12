@@ -1,6 +1,8 @@
 import { useRouter } from "expo-router";
 import RoleHomeScreen from "@/components/RoleHomeScreen";
 import TyreIcon from "@/components/icons/TyreIcon";
+import PuspakomMark from "@/components/puspakom/PuspakomMark";
+import { usePuspakomCount } from "@/hooks/usePuspakomCount";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useOutstandingCount } from "@/hooks/useOutstandingCount";
 import { useTyreAttention } from "@/hooks/useTyreAttention";
@@ -19,6 +21,8 @@ export default function TechnicianHomeScreen() {
   const waiting = overdueBuses.length + lowTread.length;
   // Open jobs (available + mine) — the red bubble on the jobs card.
   const outstanding = useOutstandingCount("technician", projectId);
+  // Pre-inspections and re-checks not yet submitted: "n to do".
+  const puspakomTodo = usePuspakomCount("technician", projectId);
 
   return (
     <RoleHomeScreen
@@ -48,6 +52,17 @@ export default function TechnicianHomeScreen() {
         onPress: () => router.push("/technician/job-order" as any),
       }}
       extraActions={[
+        {
+          title: t("puspakom.home.techTitle"),
+          description: t("puspakom.home.techDesc"),
+          icon: "clipboard-check",
+          iconElement: <PuspakomMark size={20} withText={false} />,
+          accent,
+          accentLight: light,
+          prominent: true,
+          badge: puspakomTodo > 0 ? t("puspakom.home.toDo", { count: puspakomTodo }) : null,
+          onPress: () => router.push("/puspakom/tech" as any),
+        },
         {
           title: t("technicianHome.secondaryTitle"),
           description: t("technicianHome.secondaryDescription"),

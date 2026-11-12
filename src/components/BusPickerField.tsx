@@ -12,6 +12,12 @@ type Props = {
   onChange: (busId: string, bus: Bus) => void;
   disabled?: boolean;
   accent?: string;
+  /**
+   * Buses that can't be picked, with the reason shown on their row (e.g.
+   * "Already booked"). They stay in the list so the user sees why a bus is
+   * missing from their choice rather than wondering where it went.
+   */
+  disabledReasons?: Record<string, string>;
 };
 
 /**
@@ -19,7 +25,7 @@ type Props = {
  * each named plate (EV no.) with its route underneath. Search matches plate,
  * EV number and route.
  */
-export default function BusPickerField({ value, onChange, disabled, accent = "#4338CA" }: Props) {
+export default function BusPickerField({ value, onChange, disabled, accent = "#4338CA", disabledReasons }: Props) {
   const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const { buses, byId, loading } = useBusDirectory();
@@ -86,9 +92,16 @@ export default function BusPickerField({ value, onChange, disabled, accent = "#4
             }
             renderItem={({ item }) => {
               const active = String(item.bus_id) === String(value);
+              const blocked = disabledReasons?.[String(item.bus_id)];
               return (
                 <Pressable
-                  style={({ pressed }) => [s.row, active && { backgroundColor: `${accent}12` }, pressed && { opacity: 0.7 }]}
+                  disabled={!!blocked}
+                  style={({ pressed }) => [
+                    s.row,
+                    active && { backgroundColor: `${accent}12` },
+                    !!blocked && s.rowBlocked,
+                    pressed && { opacity: 0.7 },
+                  ]}
                   onPress={() => {
                     onChange(String(item.bus_id), item);
                     setOpen(false);
@@ -103,6 +116,7 @@ export default function BusPickerField({ value, onChange, disabled, accent = "#4
                       </Text>
                     )}
                   </View>
+                  {!!blocked && <Text style={s.blockedText}>{blocked}</Text>}
                   {active && <FontAwesome5 name="check" size={14} color={accent} />}
                 </Pressable>
               );
@@ -152,5 +166,7 @@ const s = StyleSheet.create({
   },
   rowTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
   rowMeta: { fontSize: 12, color: "#6B7280", marginTop: 2 },
+  rowBlocked: { opacity: 0.5 },
+  blockedText: { fontSize: 12, fontWeight: "700", color: "#6B7280", marginLeft: 8 },
   empty: { textAlign: "center", color: "#6B7280", marginTop: 24 },
 });

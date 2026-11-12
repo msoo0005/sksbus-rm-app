@@ -1,6 +1,7 @@
 import { useRouter } from "expo-router";
 import RoleHomeScreen from "@/components/RoleHomeScreen";
 import TyreIcon from "@/components/icons/TyreIcon";
+import PuspakomMark from "@/components/puspakom/PuspakomMark";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useOutstandingCount } from "@/hooks/useOutstandingCount";
 import { useTyreAttention } from "@/hooks/useTyreAttention";
@@ -60,6 +61,17 @@ export default function RmManagerHomeScreen() {
           prominent: true,
           badge: waiting > 0 ? t("tyres.section.homeBadge", { count: waiting }) : null,
           onPress: () => router.push("/tyres" as any),
+        },
+        {
+          // View only: nothing for this role to act on, so no count (spec p.59).
+          title: t("puspakom.home.rmTitle"),
+          description: t("puspakom.home.rmDesc"),
+          icon: "clipboard-check",
+          iconElement: <PuspakomMark size={20} withText={false} />,
+          accent,
+          accentLight: light,
+          prominent: true,
+          onPress: () => router.push("/puspakom" as any),
         },
         {
           title: t("rmManagerHome.partsTitle"),

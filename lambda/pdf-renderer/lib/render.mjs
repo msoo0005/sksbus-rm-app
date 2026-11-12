@@ -51,6 +51,67 @@ async function browser() {
   return _browser;
 }
 
+// ── Keeping PDFs small ────────────────────────────────────────────────────
+// Photos arrive at upload size (1600 px, ~250 KB each), but print at most
+// 345 × 259 px. Embedding them as-is made a 13-photo report several MB. Each
+// raster photo is redrawn at 2× its printed box (about 190 dpi on paper, still
+// sharp when zoomed), cropped the way object-fit: cover shows it, and
+// re-encoded as JPEG. Chrome then embeds that small JPEG in the PDF as it is.
+const PHOTO_SCALE = 2;
+const PHOTO_QUALITY = 0.72;
+
+async function compressPhotos(page) {
+  return page.evaluate(
+    async (scale, quality) => {
+      const imgs = Array.from(document.querySelectorAll("img")).filter((img) =>
+        /^data:image\/(jpeg|jpg|png|webp)/i.test(img.getAttribute("src") || "")
+      );
+      let before = 0;
+      let after = 0;
+      for (const img of imgs) {
+        try {
+          if (!img.complete) await img.decode();
+          const box = img.getBoundingClientRect();
+          const bw = Math.round(box.width * scale);
+          const bh = Math.round(box.height * scale);
+          const nw = img.naturalWidth;
+          const nh = img.naturalHeight;
+          if (!bw || !bh || !nw || !nh) continue;
+          // Crop like object-fit: cover, then scale down (never up).
+          const target = bw / bh;
+          let sw = nw;
+          let sh = nh;
+          if (nw / nh > target) sw = Math.round(nh * target);
+          else sh = Math.round(nw / target);
+          const sx = Math.round((nw - sw) / 2);
+          const sy = Math.round((nh - sh) / 2);
+          const w = Math.min(bw, sw);
+          const h = Math.min(bh, sh);
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
+          const src = img.getAttribute("src");
+          const out = canvas.toDataURL("image/jpeg", quality);
+          before += src.length;
+          if (out.length < src.length) {
+            img.setAttribute("src", out);
+            after += out.length;
+            if (!img.complete) await img.decode();
+          } else after += src.length;
+        } catch (e) {
+          // Leave a photo that can't be redrawn as it was.
+        }
+      }
+      return { photos: imgs.length, before, after };
+    },
+    PHOTO_SCALE,
+    PHOTO_QUALITY
+  );
+}
+
 /** HTML → PDF bytes, running the page engine (lib/layout.mjs) first. */
 export async function renderPdf(html, launch = browser) {
   const b = await launch();
@@ -58,9 +119,18 @@ export async function renderPdf(html, launch = browser) {
   try {
     await page.setContent(html, { waitUntil: "load", timeout: 30000 });
     await page.evaluate(() => document.fonts && document.fonts.ready);
+    // Photos are measured inside #source, before the page engine moves them.
+    const photoBytes = await compressPhotos(page);
     const pages = await page.evaluate(() => window.__paginate());
-    const pdf = await page.pdf({ printBackground: true, preferCSSPageSize: true, timeout: 60000 });
-    return { pdf: Buffer.from(pdf), pages };
+    const pdf = await page.pdf({
+      printBackground: true,
+      preferCSSPageSize: true,
+      timeout: 60000,
+      // No accessibility tree or outline: they only add size to a print report.
+      tagged: false,
+      outline: false,
+    });
+    return { pdf: Buffer.from(pdf), pages, photoBytes };
   } finally {
     await page.close().catch(() => {});
   }

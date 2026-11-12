@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 #
-# Creates the daily EventBridge schedule that drives the tyre digest.
+# Creates an EventBridge schedule that invokes the Lambda with {"task": TASK}.
+#
+#   Tyre digest (daily 09:00 MYT, the default):
+#     FN=<lambda-name> ./add_scheduled_trigger.sh
+#   PUSPAKOM reminders and alerts (hourly; each alert is sent once):
+#     FN=<lambda-name> TASK=puspakom_tick RULE=sksbus-puspakom-hourly \
+#       SCHEDULE='cron(5 * * * ? *)' ./add_scheduled_trigger.sh
 #
 # ⚠️ This is NOT an API Gateway route. add_missing_apigw_routes.sh cannot do
 # this and this cannot do that — they are different integrations. An HTTP route
@@ -20,6 +26,7 @@ set -euo pipefail
 FN="${FN:?Set FN to the Lambda function name}"
 REGION="${AWS_REGION:-ap-southeast-1}"
 RULE="${RULE:-sksbus-tyre-daily}"
+TASK="${TASK:-tyre_daily}"
 SCHEDULE="${SCHEDULE:-cron(0 1 * * ? *)}"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -34,7 +41,7 @@ echo
 
 aws events put-rule --name "$RULE" --region "$REGION" \
   --schedule-expression "$SCHEDULE" \
-  --description "Daily tyre digest: overdue inspections and low tread" >/dev/null
+  --description "Scheduled task: ${TASK}" >/dev/null
 echo "  rule created/updated"
 
 # Idempotent: a repeated statement id is an error we can safely ignore.
@@ -48,14 +55,14 @@ else
 fi
 
 aws events put-targets --rule "$RULE" --region "$REGION" \
-  --targets "Id=1,Arn=${LAMBDA_ARN},Input='{\"task\":\"tyre_daily\"}'" >/dev/null
+  --targets "Id=1,Arn=${LAMBDA_ARN},Input='{\"task\":\"${TASK}\"}'" >/dev/null
 echo "  target set"
 
 echo
 echo "Test it WITHOUT waiting for the schedule:"
 echo "  aws lambda invoke --function-name $FN --region $REGION \\"
 echo "    --cli-binary-format raw-in-base64-out \\"
-echo "    --payload '{\"task\":\"tyre_daily\"}' /dev/stdout"
+echo "    --payload '{\"task\":\"${TASK}\"}' /dev/stdout"
 echo
 echo "Run it twice — the second run should report skipped>0 and insert nothing,"
 echo "which proves the dedupe table is working."

@@ -30,17 +30,19 @@ const HEADER_TITLE_MAX_WIDTH = 190;
 
 
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
-  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres", "/performance"],
+  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres", "/performance", "/puspakom"],
   // /rm-manager/job: "View report" from a bus history opens the job (read-only).
-  fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector", "/performance", "/rm-manager/job"],
-  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory", "/performance"],
-  technician: ["/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres"],
+  fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector", "/performance", "/rm-manager/job", "/puspakom", "/notifications"],
+  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory", "/performance", "/puspakom"],
+  technician: ["/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/puspakom"],
   inventory_manager: ["/inventory", "/project-selector"],
   driver: ["/form", "/project-selector"],
 };
 
 // Roles that receive in-app notifications (per the feature's scope).
-const NOTIFIABLE_ROLES = new Set(["admin", "rm_manager", "technician"]);
+// fleet_manager joined with PUSPAKOM (v2.0.0): pre-inspection submitted, a bus
+// turning Not booked / Overdue, and inspections waiting for a result.
+const NOTIFIABLE_ROLES = new Set(["admin", "rm_manager", "technician", "fleet_manager"]);
 
 
 
@@ -401,6 +403,19 @@ export default function RootLayout() {
         <Stack.Screen name="form" options={{ title: t("reportForm.title") }} />
         <Stack.Screen name="buses" options={{ title: t("buses.navTitle") }} />
         <Stack.Screen name="notifications" options={{ title: t("notifications.navTitle") }} />
+        <Stack.Screen name="puspakom/index" options={{ title: t("puspakom.title") }} />
+        <Stack.Screen name="puspakom/register" options={{ title: t("puspakom.form.title") }} />
+        <Stack.Screen name="puspakom/bus/[busId]" options={{ title: t("puspakom.bus.screenTitle") }} />
+        <Stack.Screen name="puspakom/inspection/[id]" options={{ title: t("puspakom.bus.screenTitle") }} />
+        <Stack.Screen name="puspakom/checklist/[id]" options={{ title: t("puspakom.checklist.title") }} />
+        <Stack.Screen name="puspakom/reports" options={{ title: t("puspakom.reportsKpis") }} />
+        <Stack.Screen name="puspakom/report/[id]" options={{ title: t("puspakom.reports.reportTitle") }} />
+        <Stack.Screen name="puspakom/tech/index" options={{ title: t("puspakom.tech.navList") }} />
+        <Stack.Screen name="puspakom/tech/[id]/index" options={{ title: t("puspakom.tech.navList") }} />
+        <Stack.Screen name="puspakom/tech/[id]/route" options={{ title: t("puspakom.tech.navList") }} />
+        <Stack.Screen name="puspakom/tech/[id]/stop/[no]" options={{ title: t("puspakom.tech.navList") }} />
+        <Stack.Screen name="puspakom/tech/[id]/review" options={{ title: t("puspakom.tech.navReview") }} />
+        <Stack.Screen name="puspakom/tech/[id]/recheck" options={{ title: t("puspakom.tech.navRecheck") }} />
       </Stack>
       <FloatingHeaderButtons
         onAvatarPress={() => setProfileVisible(true)}

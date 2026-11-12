@@ -496,7 +496,17 @@ export type NotificationType =
   // The outcome of a report, sent to whoever filed it.
   | "report_reviewed"
   // Scheduled daily digest of overdue inspections / low tread.
-  | "tyre_digest";
+  | "tyre_digest"
+  // PUSPAKOM (migration 024); puspakom_inspection_id says which inspection.
+  | "puspakom_registered"
+  | "puspakom_booking_changed"
+  | "puspakom_reinspection"
+  | "puspakom_reminder"
+  | "puspakom_precheck_submitted"
+  | "puspakom_recheck_submitted"
+  | "puspakom_not_booked"
+  | "puspakom_overdue"
+  | "puspakom_result_needed";
 
 export type AppNotification = {
   notification_id: number;
@@ -505,6 +515,7 @@ export type AppNotification = {
   notification_body?: string | null;
   report_id?: number | null;
   job_id?: number | null;
+  puspakom_inspection_id?: number | null;
   is_read: number | boolean;
   created_at: string;
 };
@@ -739,7 +750,7 @@ export async function request<T = any>(
  * ID-token request (your authoriser expects this right now).
  * Use this for all protected endpoints.
  */
-async function requestWithIdToken<T = any>(
+export async function requestWithIdToken<T = any>(
   path: string,
   init: RequestInit = {},
   _isRetry = false,
@@ -777,10 +788,29 @@ async function requestWithIdToken<T = any>(
       text ||
       res.statusText ||
       "Request failed";
-    throw new Error(msg);
+    throw new ApiError(msg, res.status, data?.code ?? null, data);
   }
 
   return data as T;
+}
+
+/**
+ * An HTTP error from the API. Still an Error with the server's message, so
+ * existing `catch (e) { e.message }` code is unchanged; `status` and `code`
+ * let callers tell "the server said no" (4xx, keep the data) from "no
+ * connection" (a plain TypeError from fetch, retry later).
+ */
+export class ApiError extends Error {
+  status: number;
+  code: string | null;
+  body: any;
+  constructor(message: string, status: number, code: string | null, body: any) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.body = body;
+  }
 }
 
 export type DbMe = {

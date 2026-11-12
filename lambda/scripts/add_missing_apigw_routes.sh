@@ -87,6 +87,25 @@ ROUTES=(
   "GET /jobs/{job_id}/report-pdf"
   "POST /exports"
   "GET /exports/{export_id}"
+
+  # Migration 024: PUSPAKOM inspections.
+  "GET /puspakom/schedule"
+  "GET /puspakom/counts"
+  "GET /puspakom/check-defs"
+  "GET /puspakom/prechecks"
+  "GET /puspakom/media/presign"
+  "GET /puspakom/buses/{bus_id}"
+  "GET /puspakom/reports"
+  "GET /puspakom/kpis"
+  "GET /puspakom/inspections/{inspection_id}/report-pdf"
+  "POST /puspakom/inspections"
+  "GET /puspakom/inspections/{inspection_id}"
+  "PATCH /puspakom/inspections/{inspection_id}"
+  "POST /puspakom/inspections/{inspection_id}/result"
+  "POST /puspakom/inspections/{inspection_id}/answers"
+  "POST /puspakom/inspections/{inspection_id}/precheck/submit"
+  "POST /puspakom/inspections/{inspection_id}/recheck"
+  "POST /puspakom/inspections/{inspection_id}/recheck/submit"
 )
 
 EXISTING="$(aws apigatewayv2 get-routes --api-id "$API_ID" --region "$REGION" \

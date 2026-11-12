@@ -455,6 +455,53 @@ export const handler = async (event) => {
       return await withConn((c) => markAllNotificationsRead(c, auth));
     }
 
+    // ===== PUSPAKOM =====
+    if (path.startsWith("/puspakom/")) {
+      if (method === "GET" && path === "/puspakom/schedule") return await withConn((c) => pspGetSchedule(c, auth, qs));
+      if (method === "GET" && path === "/puspakom/counts") return await withConn((c) => pspGetCounts(c, auth, qs));
+      if (method === "GET" && path === "/puspakom/check-defs") return await withConn((c) => pspGetCheckDefs(c, auth, qs));
+      if (method === "GET" && path === "/puspakom/prechecks") return await withConn((c) => pspListPrechecks(c, auth, qs));
+      if (method === "GET" && path === "/puspakom/media/presign") return await withConn((c) => pspPresignMedia(c, auth, qs));
+      if (method === "GET" && /^\/puspakom\/buses\/[^/]+$/.test(path)) {
+        const busId = decodeURIComponent(params.bus_id ?? path.split("/")[3]);
+        return await withConn((c) => pspGetBus(c, auth, busId));
+      }
+      if (method === "POST" && path === "/puspakom/inspections") {
+        return await withConn((c) => pspRegister(c, auth, mustJson(event)));
+      }
+      if (isPspInspectionPath(path)) {
+        const id = pspInspectionIdFromPath(params, path);
+        if (method === "GET") return await withConn((c) => pspGetInspection(c, auth, id));
+        if (method === "PATCH") return await withConn((c) => pspUpdateBooking(c, auth, id, mustJson(event)));
+      }
+      if (method === "GET" && path === "/puspakom/reports") return await withConn((c) => pspListReports(c, auth, qs));
+      if (method === "GET" && path === "/puspakom/kpis") return await withConn((c) => pspGetKpis(c, auth, qs));
+      if (method === "GET" && pspInspectionSubPath(path, "report-pdf")) {
+        const id = pspInspectionIdFromPath(params, path);
+        return await withConn((c) => pspGetReportPdf(c, auth, id));
+      }
+      if (method === "POST" && pspInspectionSubPath(path, "result")) {
+        const id = pspInspectionIdFromPath(params, path);
+        return await withConn((c) => pspRecordResult(c, auth, id, mustJson(event)));
+      }
+      if (method === "POST" && pspInspectionSubPath(path, "answers")) {
+        const id = pspInspectionIdFromPath(params, path);
+        return await withConn((c) => pspSaveAnswers(c, auth, id, mustJson(event)));
+      }
+      if (method === "POST" && pspInspectionSubPath(path, "precheck/submit")) {
+        const id = pspInspectionIdFromPath(params, path);
+        return await withConn((c) => pspSubmitPrecheck(c, auth, id, mustJson(event)));
+      }
+      if (method === "POST" && pspInspectionSubPath(path, "recheck")) {
+        const id = pspInspectionIdFromPath(params, path);
+        return await withConn((c) => pspSaveRecheck(c, auth, id, mustJson(event)));
+      }
+      if (method === "POST" && pspInspectionSubPath(path, "recheck/submit")) {
+        const id = pspInspectionIdFromPath(params, path);
+        return await withConn((c) => pspSubmitRecheck(c, auth, id, mustJson(event)));
+      }
+    }
+
     return json(404, { message: `Not found: ${method} ${path}` });
   } catch (e) {
     console.error("Lambda error:", { code: e?.code, message: e?.message }, e);
@@ -990,7 +1037,7 @@ async function resolveRecipientsByRole(conn, { roles, projectId = null, excludeU
  * are guarded separately: they used to share one try, so an FK violation on
  * report_id/job_id silently took the push down with it.
  */
-async function notifyUsers(conn, { userIds, type, title, body = null, reportId = null, jobId = null }) {
+async function notifyUsers(conn, { userIds, type, title, body = null, reportId = null, jobId = null, puspakomInspectionId = null }) {
   if (!userIds?.length) {
     plog("notify.recipients", { type, title, count: 0, reason: "none" });
     return;
@@ -1001,11 +1048,16 @@ async function notifyUsers(conn, { userIds, type, title, body = null, reportId =
     const rowPlaceholders = [];
     const values = [];
     for (const userId of userIds) {
-      rowPlaceholders.push("(?,?,?,?,?,?)");
+      rowPlaceholders.push(puspakomInspectionId != null ? "(?,?,?,?,?,?,?)" : "(?,?,?,?,?,?)");
       values.push(userId, type, title, body, reportId, jobId);
+      if (puspakomInspectionId != null) values.push(puspakomInspectionId);
     }
+    // The PUSPAKOM column is only named when it is used, so every other
+    // notification keeps working on a database that hasn't run 024 yet.
     await conn.execute(
-      `INSERT INTO NOTIFICATION (user_id, notification_type, notification_title, notification_body, report_id, job_id)
+      `INSERT INTO NOTIFICATION (user_id, notification_type, notification_title, notification_body, report_id, job_id${
+        puspakomInspectionId != null ? ", puspakom_inspection_id" : ""
+      })
        VALUES ${rowPlaceholders.join(",")}`,
       values
     );
@@ -1018,7 +1070,7 @@ async function notifyUsers(conn, { userIds, type, title, body = null, reportId =
     userIds,
     title,
     body,
-    data: { type, reportId, jobId },
+    data: { type, reportId, jobId, puspakomInspectionId },
   });
 }
 
@@ -5299,6 +5351,10 @@ async function runScheduledTask(conn, event) {
       const result = await runTyreDigest(conn);
       return json(200, { task, ...result });
     }
+    if (task === "puspakom_tick") {
+      const result = await runPuspakomTick(conn);
+      return json(200, { task, ...result });
+    }
     plog("scheduled.unknown", { task });
     return json(400, { message: `Unknown scheduled task: ${task}` });
   } catch (e) {
@@ -5653,8 +5709,9 @@ async function listNotifications(conn, auth, qs) {
   if (qs?.unread === "1") where.push("is_read=0");
 
   const [rows] = await conn.execute(
-    `SELECT notification_id, notification_type, notification_title, notification_body,
-            report_id, job_id, is_read, created_at
+    // * rather than a column list so puspakom_inspection_id (migration 024)
+    // comes through once it exists, without breaking before it does.
+    `SELECT *
      FROM NOTIFICATION
      WHERE ${where.join(" AND ")}
      ORDER BY created_at DESC, notification_id DESC
@@ -5698,4 +5755,2146 @@ async function markAllNotificationsRead(conn, auth) {
     [userId]
   );
   return json(200, { success: true });
+}
+
+// ===================== PUSPAKOM RULES (pure) =====================
+//
+// Everything between this marker and "END PUSPAKOM RULES" is pure: no DB, no
+// S3, no globals from the rest of the file. lambda/scripts/test_puspakom_rules.mjs
+// cuts this block out and tests it on its own, so keep it that way.
+//
+// Dates are "YYYY-MM-DD" strings in Malaysia time (UTC+8): due dates and
+// result dates are calendar days, and comparing strings avoids timezone bugs.
+
+const PSP_MYT_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+const PSP_STATUS = Object.freeze({
+  NOT_DUE: "NOT_DUE",
+  NOT_BOOKED: "NOT_BOOKED",
+  OVERDUE_NOT_BOOKED: "OVERDUE_NOT_BOOKED",
+  BOOKED: "BOOKED",
+  OVERDUE_BOOKED: "OVERDUE_BOOKED",
+  PRECHECK_DONE: "PRECHECK_DONE",
+  INSPECTED_UPDATE: "INSPECTED_UPDATE",
+  FAILED_PENDING: "FAILED_PENDING",
+});
+
+const PSP_DEFAULT_SETTINGS = Object.freeze({
+  cycleMonths: 6,
+  notBookedDays: 60,
+  treadMinMm: 6.0,
+  pressureTargetPsi: 120,
+  pressureLowPct: 90,
+  padReplaceMm: 3.0,
+  padCheckMm: 5.0,
+});
+
+const PSP_NG_REASONS = ["NOT_WORKING", "FLICKERING", "CRACKED", "LOOSE", "OTHER"];
+const PSP_DAMAGE_TYPES = ["SCRATCH", "DENT", "CRACK", "PAINT"];
+const PSP_ATTENTION_TAGS = ["NG", "REPLACE", "LOW", "CHECK_SOON", "DAMAGE"];
+
+/** Calendar date in Malaysia time of an instant, as "YYYY-MM-DD". */
+function pspMytDate(instant) {
+  const t = new Date(new Date(instant).getTime() + PSP_MYT_OFFSET_MS);
+  return t.toISOString().slice(0, 10);
+}
+
+/** "YYYY-MM-DD" + n calendar months; a day that doesn't exist becomes the month's last day. */
+function pspAddMonths(dateStr, months) {
+  const [y, m, d] = String(dateStr).slice(0, 10).split("-").map(Number);
+  const first = new Date(Date.UTC(y, m - 1 + months, 1));
+  const lastDay = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  first.setUTCDate(Math.min(d, lastDay));
+  return first.toISOString().slice(0, 10);
+}
+
+function pspAddDays(dateStr, days) {
+  const [y, m, d] = String(dateStr).slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+/** Whole days from a to b (b - a). */
+function pspDaysBetween(a, b) {
+  const ms = Date.parse(`${String(b).slice(0, 10)}T00:00:00Z`) - Date.parse(`${String(a).slice(0, 10)}T00:00:00Z`);
+  return Math.round(ms / 86400000);
+}
+
+/** Next due = last Passed periodic/re-inspection result + the cycle. null when the bus has never passed. */
+function pspNextDue(lastPassDate, cycleMonths = PSP_DEFAULT_SETTINGS.cycleMonths) {
+  return lastPassDate ? pspAddMonths(lastPassDate, cycleMonths) : null;
+}
+
+/**
+ * The one status a bus has right now (spec p.24).
+ *   nextDue   "YYYY-MM-DD" or null (never passed: the bus starts as Not booked)
+ *   open      the open inspection (no result yet) or null:
+ *             { type, scheduledAt (Date|ISO), preSubmitted (bool) }
+ *   now       Date
+ */
+function pspBusStatus({ nextDue, open, now, notBookedDays = PSP_DEFAULT_SETTINGS.notBookedDays }) {
+  const today = pspMytDate(now);
+  if (open) {
+    const at = new Date(open.scheduledAt);
+    if (now.getTime() >= at.getTime()) return PSP_STATUS.INSPECTED_UPDATE;
+    if (open.type === "REINSPECTION") return PSP_STATUS.FAILED_PENDING;
+    if (open.preSubmitted) return PSP_STATUS.PRECHECK_DONE;
+    const overdue = nextDue != null && (today > nextDue || pspMytDate(at) > nextDue);
+    return overdue ? PSP_STATUS.OVERDUE_BOOKED : PSP_STATUS.BOOKED;
+  }
+  if (!nextDue) return PSP_STATUS.NOT_BOOKED;
+  if (today > nextDue) return PSP_STATUS.OVERDUE_NOT_BOOKED;
+  if (pspDaysBetween(today, nextDue) <= notBookedDays) return PSP_STATUS.NOT_BOOKED;
+  return PSP_STATUS.NOT_DUE;
+}
+
+/** The three schedule counts plus the Fleet Manager's home-row count. */
+function pspCounts(statuses) {
+  const n = (...keys) => statuses.filter((s) => keys.includes(s)).length;
+  return {
+    overdue: n(PSP_STATUS.OVERDUE_NOT_BOOKED, PSP_STATUS.OVERDUE_BOOKED),
+    need_booking: n(PSP_STATUS.NOT_BOOKED),
+    booked: n(
+      PSP_STATUS.BOOKED,
+      PSP_STATUS.OVERDUE_BOOKED,
+      PSP_STATUS.PRECHECK_DONE,
+      PSP_STATUS.INSPECTED_UPDATE,
+      PSP_STATUS.FAILED_PENDING
+    ),
+    action: n(PSP_STATUS.OVERDUE_NOT_BOOKED, PSP_STATUS.NOT_BOOKED, PSP_STATUS.INSPECTED_UPDATE),
+  };
+}
+
+/** Technician card pill and tab (spec p.41). kind: "PRE" | "RECHECK". */
+function pspTechPill({ kind, answered = 0, submitted = false }) {
+  if (kind === "RECHECK") {
+    return submitted ? { pill: "RECHECK_SUBMITTED", tab: "DONE" } : { pill: "RECHECK_TODO", tab: "TODO" };
+  }
+  if (submitted) return { pill: "SUBMITTED", tab: "DONE" };
+  if (answered > 0) return { pill: "IN_PROGRESS", tab: "TODO" };
+  return { pill: "PRECHECK_TODO", tab: "TODO" };
+}
+
+function pspNum(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/**
+ * Check the numbers on one answer are in range. Throws "Invalid …: Check the
+ * number" (→ 400) for anything the phone should already have refused.
+ */
+function pspValidateNumbers(a) {
+  const tread = pspNum(a.tread_mm);
+  const psi = pspNum(a.pressure_psi);
+  const pad = pspNum(a.pad_mm);
+  if (tread !== null && !(tread >= 0 && tread <= 25)) throw new Error(`Invalid tread_mm for ${a.check_id}: Check the number`);
+  if (psi !== null && !(Number.isInteger(psi) && psi >= 0 && psi <= 200)) throw new Error(`Invalid pressure_psi for ${a.check_id}: Check the number`);
+  if (pad !== null && !(pad >= 0 && pad <= 30)) throw new Error(`Invalid pad_mm for ${a.check_id}: Check the number`);
+  return { tread, psi, pad };
+}
+
+/** Tag for one answer (spec p.42 number bands). null = nothing entered yet. */
+function pspAnswerTag(answerType, a, s = PSP_DEFAULT_SETTINGS) {
+  if (answerType === "OK_NG") return a.answer === "NG" ? "NG" : a.answer === "OK" ? "OK" : null;
+  if (answerType === "BODY") return a.answer === "DAMAGE" ? "DAMAGE" : a.answer === "NO_DAMAGE" ? "OK" : null;
+  if (answerType === "BRAKE") {
+    const pad = pspNum(a.pad_mm);
+    if (pad === null || Number.isNaN(pad)) return null;
+    if (pad < s.padReplaceMm) return "REPLACE";
+    if (pad <= s.padCheckMm) return "CHECK_SOON";
+    return "OK";
+  }
+  if (answerType === "TYRE") {
+    const tread = pspNum(a.tread_mm);
+    const psi = pspNum(a.pressure_psi);
+    const hasTread = tread !== null && !Number.isNaN(tread);
+    const hasPsi = psi !== null && !Number.isNaN(psi);
+    if (!hasTread && !hasPsi) return null;
+    if (hasTread && tread < s.treadMinMm) return "REPLACE";
+    if (hasPsi && psi < (s.pressureTargetPsi * s.pressureLowPct) / 100) return "LOW";
+    return "OK";
+  }
+  return null;
+}
+
+function pspDamageComplete(d) {
+  return (
+    d &&
+    Number.isFinite(Number(d.x_pct)) &&
+    Number.isFinite(Number(d.y_pct)) &&
+    String(d.where ?? "").trim() !== "" &&
+    PSP_DAMAGE_TYPES.includes(d.type) &&
+    !!d.photo_s3_key
+  );
+}
+
+/** Is this row done (spec p.42 "Row is done when")? */
+function pspAnswerDone(answerType, a) {
+  if (!a || !a.photo_s3_key) return false;
+  if (answerType === "OK_NG") {
+    if (a.answer === "OK") return true;
+    if (a.answer !== "NG" || !PSP_NG_REASONS.includes(a.ng_reason)) return false;
+    return a.ng_reason !== "OTHER" || String(a.note ?? "").trim() !== "";
+  }
+  if (answerType === "TYRE") return pspNum(a.tread_mm) !== null && pspNum(a.pressure_psi) !== null;
+  if (answerType === "BRAKE") return pspNum(a.pad_mm) !== null;
+  if (answerType === "BODY") {
+    if (a.answer === "NO_DAMAGE") return true;
+    // Every pin placed must be finished: a half-entered damage is not a record.
+    const list = Array.isArray(a.damages) ? a.damages : [];
+    return a.answer === "DAMAGE" && list.length > 0 && list.every(pspDamageComplete);
+  }
+  return false;
+}
+
+/** SKSC-PKR-YYYY-MM-DD-XX for the n-th first inspection on that MYT day. */
+function pspRefNo(firstInspectionDate, n) {
+  return `SKSC-PKR-${String(firstInspectionDate).slice(0, 10)}-${String(n).padStart(2, "0")}`;
+}
+
+// ===================== END PUSPAKOM RULES =====================
+
+// ===================== PUSPAKOM =====================
+//
+// Fleet Manager registers bookings and records results; technicians do the
+// 44-check pre-inspection and the re-check after a fail; the R&M Manager can
+// only look. Every bus's status is worked out from the rows on each read
+// (pspBusStatus above), never stored.
+
+const PSP_FM_ROLES = ["admin", "fleet_manager"];
+const PSP_TECH_ROLES = ["admin", "technician"];
+const PSP_SCHEDULE_ROLES = ["admin", "fleet_manager", "rm_manager"];
+const PSP_VIEW_ROLES = ["admin", "fleet_manager", "rm_manager", "technician"];
+const PSP_MEDIA_KINDS = ["selfie", "check", "damage", "slip", "fix"];
+const PSP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const PSP_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const PSP_TYPE_LABEL = { PERIODIC: "Periodic", REINSPECTION: "Re-inspection", SPECIAL: "Special" };
+
+const isPspInspectionPath = (p) => /^\/puspakom\/inspections\/\d+$/.test(p);
+const pspInspectionSubPath = (p, sub) => new RegExp(`^/puspakom/inspections/\\d+/${sub}$`).test(p);
+const pspInspectionIdFromPath = (params, path) =>
+  getIdFromParamsOrPath(params.inspection_id, path, /^\/puspakom\/inspections\/(\d+)/);
+
+/** "Wed, 18 Nov 2026 · 10:30 am" in Malaysia time. */
+function pspFmtDateTime(instant) {
+  const t = new Date(new Date(instant).getTime() + PSP_MYT_OFFSET_MS);
+  const h24 = t.getUTCHours();
+  const h = h24 % 12 || 12;
+  return `${PSP_DAYS[t.getUTCDay()]}, ${t.getUTCDate()} ${PSP_MONTHS[t.getUTCMonth()]} ${t.getUTCFullYear()} · ${h}:${String(t.getUTCMinutes()).padStart(2, "0")} ${h24 >= 12 ? "pm" : "am"}`;
+}
+
+/** "Wed, 18 Nov 2026" for a "YYYY-MM-DD" date. */
+function pspFmtDate(dateStr) {
+  if (!dateStr) return "—";
+  const t = new Date(`${String(dateStr).slice(0, 10)}T00:00:00Z`);
+  return `${PSP_DAYS[t.getUTCDay()]}, ${t.getUTCDate()} ${PSP_MONTHS[t.getUTCMonth()]} ${t.getUTCFullYear()}`;
+}
+
+/** DATE columns come back as a Date at UTC midnight (the Lambda runs in UTC). */
+function pspDateStr(v) {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
+
+function pspIso(v) {
+  return v == null ? null : new Date(v).toISOString();
+}
+
+function pspParseInstant(v, name) {
+  const d = new Date(String(v ?? ""));
+  if (v == null || v === "" || Number.isNaN(d.getTime())) throw new Error(`Invalid ${name}`);
+  return d;
+}
+
+function pspParseDate(v, name) {
+  const s = String(v ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(`${s}T00:00:00Z`))) throw new Error(`Invalid ${name}`);
+  return s;
+}
+
+function pspText(v, max, name) {
+  const s = String(v ?? "").trim();
+  if (s.length > max) throw new Error(`Invalid ${name}: at most ${max} characters`);
+  return s || null;
+}
+
+function pspKeyPrefix(busId) {
+  return `puspakom/${safeFilePart(busId) || "BUS"}/`;
+}
+
+/** Only accept S3 keys this bus's presign could have issued. */
+function pspCheckKey(key, busId, name) {
+  if (key == null || key === "") return null;
+  const k = String(key);
+  if (!k.startsWith(pspKeyPrefix(busId)) || k.includes("..") || k.length > 512) throw new Error(`Invalid ${name}`);
+  return k;
+}
+
+function pspSignoff(b, busId) {
+  const name = String(b?.verified_name ?? "").trim();
+  if (!name) throw new Error("verified_name required");
+  if (name.length > 150) throw new Error("Invalid verified_name");
+  const key = pspCheckKey(b?.selfie_s3_key, busId, "selfie_s3_key");
+  if (!key) throw new Error("selfie_s3_key required");
+  return { name, key };
+}
+
+function pspJsonArr(v) {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v;
+  try {
+    const p = JSON.parse(v);
+    return Array.isArray(p) ? p : [];
+  } catch {
+    return [];
+  }
+}
+
+async function pspSettings(conn) {
+  const [rows] = await conn.execute(
+    "SELECT setting_key, setting_value FROM APP_SETTING WHERE setting_key LIKE 'puspakom\\_%'"
+  );
+  const m = Object.fromEntries(rows.map((r) => [r.setting_key, Number(r.setting_value)]));
+  const pick = (k, d) => (Number.isFinite(m[k]) ? m[k] : d);
+  const D = PSP_DEFAULT_SETTINGS;
+  return {
+    cycleMonths: pick("puspakom_cycle_months", D.cycleMonths),
+    notBookedDays: pick("puspakom_not_booked_days", D.notBookedDays),
+    treadMinMm: pick("puspakom_tread_min_mm", D.treadMinMm),
+    pressureTargetPsi: pick("puspakom_pressure_target_psi", D.pressureTargetPsi),
+    pressureLowPct: pick("puspakom_pressure_low_pct", D.pressureLowPct),
+    padReplaceMm: pick("puspakom_pad_replace_mm", D.padReplaceMm),
+    padCheckMm: pick("puspakom_pad_check_mm", D.padCheckMm),
+  };
+}
+
+/** Stops and checks for a bus model: the model's own rows if it has any, else the '*' set. */
+async function pspDefs(conn, busModel, cache = null) {
+  const model = String(busModel ?? "").trim();
+  if (cache?.has(model)) return cache.get(model);
+  const [own] = await conn.execute("SELECT COUNT(*) AS n FROM PUSPAKOM_CHECK_DEF WHERE bus_model=?", [model]);
+  const use = model && Number(own[0]?.n) > 0 ? model : "*";
+  const [stops] = await conn.execute(
+    `SELECT stop_no, stop_name, stop_where, helper_top, helper_end, has_drawing
+     FROM PUSPAKOM_STOP_DEF WHERE bus_model=? ORDER BY stop_no`,
+    [use]
+  );
+  const [checks] = await conn.execute(
+    `SELECT check_id, stop_no, sort_no, answer_type, label, ok_if, photo_hint, puspakom_item, pin_x_pct, pin_y_pct
+     FROM PUSPAKOM_CHECK_DEF WHERE bus_model=? ORDER BY sort_no`,
+    [use]
+  );
+  const out = {
+    stops: stops.map((s) => ({ ...s, has_drawing: !!s.has_drawing })),
+    checks: checks.map((c) => ({
+      ...c,
+      pin_x_pct: c.pin_x_pct == null ? null : Number(c.pin_x_pct),
+      pin_y_pct: c.pin_y_pct == null ? null : Number(c.pin_y_pct),
+    })),
+    byId: new Map(checks.map((c) => [c.check_id, c])),
+  };
+  cache?.set(model, out);
+  return out;
+}
+
+async function pspEvent(conn, { inspectionId, rootId, type, actorId = null, at = null, detail = null }) {
+  await conn.execute(
+    `INSERT INTO PUSPAKOM_EVENT (inspection_id, root_inspection_id, event_type, actor_user_id, event_at, detail)
+     VALUES (?,?,?,?,?,?)`,
+    [inspectionId, rootId, type, actorId, at ?? new Date(), detail ? JSON.stringify(detail) : null]
+  );
+}
+
+function pspPlaceholders(arr) {
+  return arr.map(() => "?").join(",");
+}
+
+/** Buses the caller may see, optionally one bus or one project. */
+async function pspLoadBuses(conn, auth, projectId, busId = null) {
+  const userId = await getOrCreateUserId(conn, auth);
+  const scope = busProjectScope(auth, userId, "b", projectId);
+  const [rows] = await conn.execute(
+    `SELECT b.bus_id, b.bus_ev_no, b.bus_model, b.project_id FROM BUS b
+     WHERE 1=1 ${busId ? "AND b.bus_id=?" : ""} ${scope.sql}
+     ORDER BY b.bus_id`,
+    [...(busId ? [busId] : []), ...scope.vals]
+  );
+  return rows;
+}
+
+/**
+ * Status, due date and open booking for each bus. Shared by the schedule,
+ * the counts, the bus inspection screen and the hourly tick, so every screen
+ * agrees on a bus's status.
+ */
+async function pspStateForBuses(conn, buses, settings, now) {
+  if (!buses.length) return [];
+  const ids = buses.map((b) => b.bus_id);
+  const ph = pspPlaceholders(ids);
+
+  // The due date moves only on a Passed result in a chain that started as a
+  // periodic inspection (a Special pass does not change it).
+  const [passRows] = await conn.execute(
+    `SELECT i.bus_id, MAX(i.result_date) AS last_pass
+     FROM PUSPAKOM_INSPECTION i
+     JOIN PUSPAKOM_INSPECTION r ON r.inspection_id = COALESCE(i.root_inspection_id, i.inspection_id)
+     WHERE i.result='PASSED' AND r.inspection_type='PERIODIC' AND i.bus_id IN (${ph})
+     GROUP BY i.bus_id`,
+    ids
+  );
+  const lastPass = new Map(passRows.map((r) => [r.bus_id, pspDateStr(r.last_pass)]));
+
+  const [openRows] = await conn.execute(
+    `SELECT i.inspection_id, i.bus_id, i.inspection_type, i.scheduled_at, i.booking_ref,
+            COALESCE(i.root_inspection_id, i.inspection_id) AS root_id, i.parent_inspection_id,
+            p.precheck_id, p.kind, p.submitted_at,
+            (SELECT COUNT(*) FROM PUSPAKOM_ANSWER a WHERE a.precheck_id = p.precheck_id) AS answered
+     FROM PUSPAKOM_INSPECTION i
+     LEFT JOIN PUSPAKOM_PRECHECK p ON p.inspection_id = i.inspection_id
+     WHERE i.result IS NULL AND i.bus_id IN (${ph})
+     ORDER BY i.scheduled_at`,
+    ids
+  );
+  const open = new Map();
+  for (const r of openRows) if (!open.has(r.bus_id)) open.set(r.bus_id, r);
+
+  // For a re-inspection: when the parent failed and on what.
+  const parentIds = [...open.values()].map((o) => o.parent_inspection_id).filter((x) => x != null);
+  const failedOn = new Map();
+  if (parentIds.length) {
+    const [fr] = await conn.execute(
+      `SELECT i.inspection_id, i.result_date, f.check_id
+       FROM PUSPAKOM_INSPECTION i LEFT JOIN PUSPAKOM_FAILED_ITEM f ON f.inspection_id = i.inspection_id
+       WHERE i.inspection_id IN (${pspPlaceholders(parentIds)})`,
+      parentIds
+    );
+    for (const r of fr) {
+      const cur = failedOn.get(r.inspection_id) ?? { date: pspDateStr(r.result_date), checks: [] };
+      if (r.check_id) cur.checks.push(r.check_id);
+      failedOn.set(r.inspection_id, cur);
+    }
+  }
+
+  const today = pspMytDate(now);
+  return buses.map((b) => {
+    const last = lastPass.get(b.bus_id) ?? null;
+    const nextDue = pspNextDue(last, settings.cycleMonths);
+    const o = open.get(b.bus_id) ?? null;
+    const status = pspBusStatus({
+      nextDue,
+      open: o && { type: o.inspection_type, scheduledAt: o.scheduled_at, preSubmitted: o.kind === "PRE" && !!o.submitted_at },
+      now,
+      notBookedDays: settings.notBookedDays,
+    });
+    const failed = o?.parent_inspection_id != null ? failedOn.get(o.parent_inspection_id) ?? null : null;
+    return {
+      bus_id: b.bus_id,
+      bus_ev_no: b.bus_ev_no ?? null,
+      bus_model: b.bus_model ?? null,
+      project_id: b.project_id ?? null,
+      last_passed: last,
+      next_due: nextDue,
+      days_to_due: nextDue ? pspDaysBetween(today, nextDue) : null,
+      status,
+      open: o
+        ? {
+            inspection_id: Number(o.inspection_id),
+            root_inspection_id: Number(o.root_id),
+            inspection_type: o.inspection_type,
+            scheduled_at: pspIso(o.scheduled_at),
+            booking_ref: o.booking_ref ?? null,
+            precheck_kind: o.kind ?? null,
+            precheck_answered: Number(o.answered ?? 0),
+            precheck_submitted_at: pspIso(o.submitted_at),
+            failed_on: failed?.date ?? null,
+            failed_checks: failed?.checks ?? [],
+          }
+        : null,
+    };
+  });
+}
+
+// ----- media -----
+
+async function pspPresignMedia(conn, auth, qs) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "technician"]);
+  if (deny) return deny;
+  const busId = String(qs?.bus_id ?? "").trim();
+  if (!busId) throw new Error("bus_id required");
+  const kind = String(qs?.kind ?? "");
+  if (!PSP_MEDIA_KINDS.includes(kind)) throw new Error("Invalid kind");
+  const mime = String(qs?.mime ?? "").trim();
+  if (!/^image\/(jpeg|png|webp)$/.test(mime)) throw new Error("Invalid mime");
+  const scopeDeny = await assertBusInScope(conn, auth, busId);
+  if (scopeDeny) return scopeDeny;
+
+  const key = `${pspKeyPrefix(busId)}${kind}/${crypto.randomUUID()}.${extFromMime(mime)}`;
+  const uploadUrl = await getSignedUrl(
+    s3,
+    new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime }),
+    { expiresIn: 300 }
+  );
+  return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
+}
+
+// ----- schedule, counts, config -----
+
+async function pspGetSchedule(conn, auth, qs) {
+  const deny = requireRole(auth, PSP_SCHEDULE_ROLES);
+  if (deny) return deny;
+  const { projectId, deny: pDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (pDeny) return pDeny;
+
+  const now = new Date();
+  const settings = await pspSettings(conn);
+  const buses = await pspLoadBuses(conn, auth, projectId);
+  const rows = await pspStateForBuses(conn, buses, settings, now);
+  return json(200, {
+    today: pspMytDate(now),
+    now: now.toISOString(),
+    counts: pspCounts(rows.map((r) => r.status)),
+    buses: rows,
+    can_edit: PSP_FM_ROLES.includes(auth.role),
+  });
+}
+
+async function pspGetCounts(conn, auth, qs) {
+  const deny = requireRole(auth, PSP_VIEW_ROLES);
+  if (deny) return deny;
+  const { projectId, deny: pDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (pDeny) return pDeny;
+
+  const buses = await pspLoadBuses(conn, auth, projectId);
+  if (auth.role === "technician") {
+    if (!buses.length) return json(200, { technician_todo: 0 });
+    const ids = buses.map((b) => b.bus_id);
+    const [r] = await conn.execute(
+      `SELECT COUNT(*) AS n FROM PUSPAKOM_INSPECTION i
+       JOIN PUSPAKOM_PRECHECK p ON p.inspection_id = i.inspection_id
+       WHERE i.result IS NULL AND p.submitted_at IS NULL AND i.bus_id IN (${pspPlaceholders(ids)})`,
+      ids
+    );
+    return json(200, { technician_todo: Number(r[0]?.n ?? 0) });
+  }
+  const rows = await pspStateForBuses(conn, buses, await pspSettings(conn), new Date());
+  return json(200, pspCounts(rows.map((r) => r.status)));
+}
+
+async function pspGetCheckDefs(conn, auth, qs) {
+  const deny = requireRole(auth, PSP_VIEW_ROLES);
+  if (deny) return deny;
+  const defs = await pspDefs(conn, qs?.bus_model);
+  return json(200, { stops: defs.stops, checks: defs.checks, settings: await pspSettings(conn) });
+}
+
+// ----- one inspection (every role's bus inspection / checklist screen) -----
+
+function pspShapeInspection(i) {
+  return {
+    inspection_id: Number(i.inspection_id),
+    bus_id: i.bus_id,
+    inspection_type: i.inspection_type,
+    parent_inspection_id: i.parent_inspection_id == null ? null : Number(i.parent_inspection_id),
+    root_inspection_id: Number(i.root_inspection_id ?? i.inspection_id),
+    scheduled_at: pspIso(i.scheduled_at),
+    booking_ref: i.booking_ref ?? null,
+    notes: i.notes ?? null,
+    registered_by: i.registered_by_name ?? null,
+    registered_at: pspIso(i.registered_at),
+    registered_verified_name: i.registered_verified_name ?? null,
+    result: i.result ?? null,
+    result_date: pspDateStr(i.result_date),
+    result_by: i.result_by_name ?? null,
+    result_at: pspIso(i.result_at),
+    result_verified_name: i.result_verified_name ?? null,
+    ref_no: i.ref_no ?? null,
+  };
+}
+
+async function pspGetInspection(conn, auth, id) {
+  const deny = requireRole(auth, PSP_VIEW_ROLES);
+  if (deny) return deny;
+
+  const [rows] = await conn.execute(
+    `SELECT i.inspection_id, i.bus_id, COALESCE(i.root_inspection_id, i.inspection_id) AS root_id
+     FROM PUSPAKOM_INSPECTION i WHERE i.inspection_id=?`,
+    [id]
+  );
+  if (!rows.length) return json(404, { message: "Inspection not found" });
+  const busId = rows[0].bus_id;
+  const rootId = Number(rows[0].root_id);
+  const scopeDeny = await assertBusInScope(conn, auth, busId);
+  if (scopeDeny) return scopeDeny;
+
+  const now = new Date();
+  const settings = await pspSettings(conn);
+  const [busRows] = await conn.execute(
+    "SELECT bus_id, bus_ev_no, bus_model, project_id FROM BUS WHERE bus_id=?",
+    [busId]
+  );
+  const bus = busRows[0];
+  const [state] = await pspStateForBuses(conn, [bus], settings, now);
+  const defs = await pspDefs(conn, bus.bus_model);
+
+  const [chainRows] = await conn.execute(
+    `SELECT i.*, ru.user_name AS registered_by_name, xu.user_name AS result_by_name
+     FROM PUSPAKOM_INSPECTION i
+     LEFT JOIN \`USER\` ru ON ru.user_id = i.registered_by
+     LEFT JOIN \`USER\` xu ON xu.user_id = i.result_by
+     WHERE COALESCE(i.root_inspection_id, i.inspection_id) = ?
+     ORDER BY i.scheduled_at, i.inspection_id`,
+    [rootId]
+  );
+  const chainIds = chainRows.map((c) => Number(c.inspection_id));
+  const cph = pspPlaceholders(chainIds);
+
+  const [preRows] = await conn.execute(
+    `SELECT p.*, su.user_name AS submitted_by_name, st.user_name AS started_by_name
+     FROM PUSPAKOM_PRECHECK p
+     LEFT JOIN \`USER\` su ON su.user_id = p.submitted_by
+     LEFT JOIN \`USER\` st ON st.user_id = p.started_by
+     WHERE p.inspection_id IN (${cph})`,
+    chainIds
+  );
+
+  const shapePrecheck = async (p) =>
+    p && {
+      precheck_id: Number(p.precheck_id),
+      inspection_id: Number(p.inspection_id),
+      kind: p.kind,
+      started_by: p.started_by_name ?? null,
+      started_at: pspIso(p.started_at),
+      submitted_by: p.submitted_by_name ?? null,
+      submitted_at: pspIso(p.submitted_at),
+      remarks: p.remarks ?? null,
+      declared: !!p.declared,
+      verified_name: p.verified_name ?? null,
+      selfie_url: await signS3Url(p.selfie_s3_bucket, p.selfie_s3_key),
+    };
+
+  // The 44-check pre-inspection lives on the first booking of the chain.
+  const preRow = preRows.find((p) => p.kind === "PRE") ?? null;
+  let precheck = null;
+  if (preRow) {
+    const [ans] = await conn.execute(
+      `SELECT a.*, u.user_name AS entered_by_name FROM PUSPAKOM_ANSWER a
+       LEFT JOIN \`USER\` u ON u.user_id = a.entered_by
+       WHERE a.precheck_id=?`,
+      [preRow.precheck_id]
+    );
+    const answers = await Promise.all(
+      ans.map(async (a) => ({
+        check_id: a.check_id,
+        answer: a.answer ?? null,
+        ng_reason: a.ng_reason ?? null,
+        note: a.note ?? null,
+        tread_mm: a.tread_mm == null ? null : Number(a.tread_mm),
+        pressure_psi: a.pressure_psi == null ? null : Number(a.pressure_psi),
+        pad_mm: a.pad_mm == null ? null : Number(a.pad_mm),
+        tag: a.tag ?? null,
+        photo_s3_key: a.photo_s3_key ?? null,
+        photo_url: await signS3Url(S3_BUCKET, a.photo_s3_key),
+        damages: await Promise.all(
+          pspJsonArr(a.damages).map(async (d) => ({ ...d, photo_url: await signS3Url(S3_BUCKET, d.photo_s3_key) }))
+        ),
+        entered_by: a.entered_by_name ?? null,
+        entered_at: pspIso(a.entered_at),
+        client_ts: Number(a.client_ts),
+      }))
+    );
+    const byId = new Map(answers.map((a) => [a.check_id, a]));
+    const done = defs.checks.filter((d) => pspAnswerDone(d.answer_type, byId.get(d.check_id))).length;
+    const attention = answers.filter((a) => PSP_ATTENTION_TAGS.includes(a.tag)).map((a) => a.check_id);
+    precheck = {
+      ...(await shapePrecheck(preRow)),
+      total: defs.checks.length,
+      done,
+      photos: answers.reduce((n, a) => n + (a.photo_s3_key ? 1 : 0) + a.damages.filter((d) => d.photo_s3_key).length, 0),
+      needs_attention: attention,
+      answers,
+    };
+  }
+
+  const [failedRows] = await conn.execute(
+    `SELECT f.*, u.user_name AS fixed_by_name FROM PUSPAKOM_FAILED_ITEM f
+     LEFT JOIN \`USER\` u ON u.user_id = f.fixed_by
+     WHERE f.inspection_id IN (${cph}) ORDER BY f.inspection_id, f.check_id`,
+    chainIds
+  );
+  const failedItems = await Promise.all(
+    failedRows.map(async (f) => {
+      const keys = pspJsonArr(f.fix_photo_keys);
+      return {
+        inspection_id: Number(f.inspection_id),
+        check_id: f.check_id,
+        label: defs.byId.get(f.check_id)?.label ?? f.check_id,
+        stop_no: defs.byId.get(f.check_id)?.stop_no ?? null,
+        puspakom_found: f.puspakom_found,
+        fixed_text: f.fixed_text ?? null,
+        fix_photos: await Promise.all(keys.map(async (k) => ({ s3_key: k, url: await signS3Url(S3_BUCKET, k) }))),
+        fixed_by: f.fixed_by_name ?? null,
+        fixed_at: pspIso(f.fixed_at),
+        client_ts: Number(f.client_ts),
+      };
+    })
+  );
+
+  const rechecks = await Promise.all(
+    preRows.filter((p) => p.kind === "RECHECK").map(async (p) => {
+      const insp = chainRows.find((c) => Number(c.inspection_id) === Number(p.inspection_id));
+      const items = failedItems.filter((f) => f.inspection_id === Number(insp?.parent_inspection_id));
+      return {
+        ...(await shapePrecheck(p)),
+        total: items.length,
+        done: items.filter((f) => f.fixed_text && f.fix_photos.length > 0).length,
+      };
+    })
+  );
+
+  const [slipRows] = await conn.execute(
+    `SELECT m.media_id, m.inspection_id, m.s3_bucket, m.s3_key, m.uploaded_at, u.user_name AS uploaded_by_name
+     FROM PUSPAKOM_MEDIA m LEFT JOIN \`USER\` u ON u.user_id = m.uploaded_by
+     WHERE m.inspection_id IN (${cph}) ORDER BY m.uploaded_at, m.media_id`,
+    chainIds
+  );
+  const slips = await Promise.all(
+    slipRows.map(async (m) => ({
+      media_id: Number(m.media_id),
+      inspection_id: Number(m.inspection_id),
+      url: await signS3Url(m.s3_bucket, m.s3_key),
+      uploaded_by: m.uploaded_by_name ?? null,
+      uploaded_at: pspIso(m.uploaded_at),
+    }))
+  );
+
+  const [eventRows] = await conn.execute(
+    `SELECT e.event_id, e.inspection_id, e.event_type, e.event_at, e.detail, u.user_name AS actor_name, u.user_role AS actor_role
+     FROM PUSPAKOM_EVENT e LEFT JOIN \`USER\` u ON u.user_id = e.actor_user_id
+     WHERE e.root_inspection_id=? ORDER BY e.event_at, e.event_id`,
+    [rootId]
+  );
+  const events = eventRows.map((e) => ({
+    event_id: Number(e.event_id),
+    inspection_id: Number(e.inspection_id),
+    type: e.event_type,
+    at: pspIso(e.event_at),
+    actor: e.actor_name ?? null,
+    actor_role: e.actor_role ?? null,
+    detail: typeof e.detail === "string" ? JSON.parse(e.detail) : e.detail ?? null,
+  }));
+
+  const chain = await Promise.all(
+    chainRows.map(async (c) => ({
+      ...pspShapeInspection(c),
+      registered_selfie_url: await signS3Url(c.registered_selfie_s3_bucket, c.registered_selfie_s3_key),
+      result_selfie_url: await signS3Url(c.result_selfie_s3_bucket, c.result_selfie_s3_key),
+    }))
+  );
+  const current = chain.find((c) => c.inspection_id === Number(id));
+
+  return json(200, {
+    now: now.toISOString(),
+    bus: { bus_id: bus.bus_id, bus_ev_no: bus.bus_ev_no ?? null, bus_model: bus.bus_model ?? null },
+    state,
+    inspection: current,
+    chain,
+    precheck,
+    rechecks,
+    failed_items: failedItems,
+    slips,
+    events,
+    defs: { stops: defs.stops, checks: defs.checks },
+    settings,
+    can_edit: PSP_FM_ROLES.includes(auth.role),
+    can_work: PSP_TECH_ROLES.includes(auth.role),
+  });
+}
+
+/**
+ * The bus inspection screen opened from a schedule card. Shows the open
+ * inspection if there is one, otherwise the bus's most recent inspection
+ * ("last result only"), otherwise just the bus and its status.
+ */
+async function pspGetBus(conn, auth, busId) {
+  const deny = requireRole(auth, PSP_VIEW_ROLES);
+  if (deny) return deny;
+  const scopeDeny = await assertBusInScope(conn, auth, busId);
+  if (scopeDeny) return scopeDeny;
+
+  const [rows] = await conn.execute(
+    `SELECT inspection_id FROM PUSPAKOM_INSPECTION WHERE bus_id=?
+     ORDER BY (result IS NULL) DESC, scheduled_at DESC, inspection_id DESC LIMIT 1`,
+    [busId]
+  );
+  if (rows.length) return pspGetInspection(conn, auth, Number(rows[0].inspection_id));
+
+  const now = new Date();
+  const [busRows] = await conn.execute("SELECT bus_id, bus_ev_no, bus_model, project_id FROM BUS WHERE bus_id=?", [busId]);
+  const bus = busRows[0];
+  const settings = await pspSettings(conn);
+  const [state] = await pspStateForBuses(conn, [bus], settings, now);
+  return json(200, {
+    now: now.toISOString(),
+    bus: { bus_id: bus.bus_id, bus_ev_no: bus.bus_ev_no ?? null, bus_model: bus.bus_model ?? null },
+    state,
+    inspection: null,
+    chain: [],
+    precheck: null,
+    rechecks: [],
+    failed_items: [],
+    slips: [],
+    events: [],
+    defs: null,
+    settings,
+    can_edit: PSP_FM_ROLES.includes(auth.role),
+    can_work: PSP_TECH_ROLES.includes(auth.role),
+  });
+}
+
+// ----- Fleet Manager: register, edit booking, record result -----
+
+async function pspNotifyTechnicians(conn, { projectId, excludeUserId, type, title, body, inspectionId }) {
+  await notifyUsersByRole(conn, {
+    roles: ["technician"],
+    projectId,
+    excludeUserId,
+    type,
+    title,
+    body,
+    puspakomInspectionId: inspectionId,
+  });
+}
+
+async function pspNotifyFleetManagers(conn, { projectId, excludeUserId, type, title, body, inspectionId }) {
+  await notifyUsersByRole(conn, {
+    roles: ["fleet_manager"],
+    projectId,
+    excludeUserId,
+    type,
+    title,
+    body,
+    puspakomInspectionId: inspectionId,
+  });
+}
+
+function pspBusLabel(bus) {
+  return bus?.bus_ev_no ? `${bus.bus_id} (${bus.bus_ev_no})` : String(bus?.bus_id ?? "");
+}
+
+async function pspRegister(conn, auth, b) {
+  const deny = requireRole(auth, PSP_FM_ROLES);
+  if (deny) return deny;
+
+  const busId = String(b?.bus_id ?? "").trim();
+  if (!busId) throw new Error("bus_id required");
+  const scopeDeny = await assertBusInScope(conn, auth, busId);
+  if (scopeDeny) return scopeDeny;
+
+  const type = String(b?.inspection_type ?? "");
+  if (!["PERIODIC", "SPECIAL"].includes(type)) throw new Error("Invalid inspection_type: PERIODIC or SPECIAL");
+  const now = new Date();
+  const at = pspParseInstant(b?.scheduled_at, "scheduled_at");
+  if (pspMytDate(at) < pspMytDate(now)) throw new Error("Invalid scheduled_at: the date cannot be in the past");
+  const bookingRef = pspText(b?.booking_ref, 64, "booking_ref");
+  const notes = pspText(b?.notes, 500, "notes");
+  const sign = pspSignoff(b, busId);
+  const userId = await getOrCreateUserId(conn, auth);
+
+  let inspectionId;
+  let bus;
+  await conn.beginTransaction();
+  try {
+    // Lock the bus row so two Fleet Managers can't both book the same bus.
+    const [busRows] = await conn.execute(
+      "SELECT bus_id, bus_ev_no, project_id FROM BUS WHERE bus_id=? FOR UPDATE",
+      [busId]
+    );
+    bus = busRows[0];
+    const [openRows] = await conn.execute(
+      "SELECT inspection_id FROM PUSPAKOM_INSPECTION WHERE bus_id=? AND result IS NULL LIMIT 1",
+      [busId]
+    );
+    if (openRows.length) {
+      await conn.rollback();
+      return json(409, {
+        code: "ALREADY_BOOKED",
+        message: "This bus already has an open inspection. Edit that booking instead.",
+        inspection_id: Number(openRows[0].inspection_id),
+      });
+    }
+    const [res] = await conn.execute(
+      `INSERT INTO PUSPAKOM_INSPECTION
+         (bus_id, inspection_type, scheduled_at, booking_ref, notes, registered_by, registered_at,
+          registered_verified_name, registered_selfie_s3_bucket, registered_selfie_s3_key)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [busId, type, at, bookingRef, notes, userId, now, sign.name, S3_BUCKET, sign.key]
+    );
+    inspectionId = Number(res.insertId);
+    await conn.execute("UPDATE PUSPAKOM_INSPECTION SET root_inspection_id=? WHERE inspection_id=?", [inspectionId, inspectionId]);
+    await conn.execute("INSERT INTO PUSPAKOM_PRECHECK (inspection_id, kind) VALUES (?, 'PRE')", [inspectionId]);
+    await pspEvent(conn, {
+      inspectionId,
+      rootId: inspectionId,
+      type: "REGISTERED",
+      actorId: userId,
+      at: now,
+      detail: { inspection_type: type, scheduled_at: at.toISOString(), booking_ref: bookingRef },
+    });
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+
+  const due = pspAddDays(pspMytDate(at), -1);
+  await pspNotifyTechnicians(conn, {
+    projectId: bus.project_id,
+    excludeUserId: userId,
+    type: "puspakom_registered",
+    title: `PUSPAKOM pre-inspection: ${pspBusLabel(bus)}`,
+    body: `${PSP_TYPE_LABEL[type]} inspection ${pspFmtDateTime(at)}. Checklist due ${pspFmtDate(due)}.`,
+    inspectionId,
+  });
+  return json(201, { inspection_id: inspectionId });
+}
+
+async function pspUpdateBooking(conn, auth, id, b) {
+  const deny = requireRole(auth, PSP_FM_ROLES);
+  if (deny) return deny;
+
+  const [rows] = await conn.execute(
+    `SELECT i.*, b.bus_ev_no, b.project_id FROM PUSPAKOM_INSPECTION i JOIN BUS b ON b.bus_id = i.bus_id
+     WHERE i.inspection_id=?`,
+    [id]
+  );
+  if (!rows.length) return json(404, { message: "Inspection not found" });
+  const insp = rows[0];
+  const scopeDeny = await assertBusInScope(conn, auth, insp.bus_id);
+  if (scopeDeny) return scopeDeny;
+  if (insp.result) return json(409, { code: "CLOSED", message: "This inspection already has a result." });
+
+  const now = new Date();
+  const sets = [];
+  const vals = [];
+  const changed = {};
+  if (b?.scheduled_at !== undefined) {
+    const at = pspParseInstant(b.scheduled_at, "scheduled_at");
+    if (pspMytDate(at) < pspMytDate(now)) throw new Error("Invalid scheduled_at: the date cannot be in the past");
+    if (at.getTime() !== new Date(insp.scheduled_at).getTime()) {
+      sets.push("scheduled_at=?");
+      vals.push(at);
+      changed.scheduled_at = { from: pspIso(insp.scheduled_at), to: at.toISOString() };
+    }
+  }
+  if (b?.booking_ref !== undefined) {
+    const v = pspText(b.booking_ref, 64, "booking_ref");
+    if (v !== (insp.booking_ref ?? null)) {
+      sets.push("booking_ref=?");
+      vals.push(v);
+      changed.booking_ref = { from: insp.booking_ref ?? null, to: v };
+    }
+  }
+  if (b?.notes !== undefined) {
+    const v = pspText(b.notes, 500, "notes");
+    if (v !== (insp.notes ?? null)) {
+      sets.push("notes=?");
+      vals.push(v);
+      changed.notes = true;
+    }
+  }
+  if (b?.inspection_type !== undefined && b.inspection_type !== insp.inspection_type) {
+    if (insp.inspection_type === "REINSPECTION" || !["PERIODIC", "SPECIAL"].includes(b.inspection_type)) {
+      throw new Error("Invalid inspection_type");
+    }
+    sets.push("inspection_type=?");
+    vals.push(b.inspection_type);
+    changed.inspection_type = { from: insp.inspection_type, to: b.inspection_type };
+  }
+  if (!sets.length) return json(200, { inspection_id: Number(id), changed: {} });
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const rootId = Number(insp.root_inspection_id ?? insp.inspection_id);
+  await conn.execute(
+    `UPDATE PUSPAKOM_INSPECTION SET ${sets.join(", ")} WHERE inspection_id=? AND result IS NULL`,
+    [...vals, id]
+  );
+  await pspEvent(conn, { inspectionId: Number(id), rootId, type: "BOOKING_CHANGED", actorId: userId, at: now, detail: changed });
+
+  if (changed.scheduled_at) {
+    await pspNotifyTechnicians(conn, {
+      projectId: insp.project_id,
+      excludeUserId: userId,
+      type: "puspakom_booking_changed",
+      title: `PUSPAKOM booking changed: ${pspBusLabel(insp)}`,
+      body: `Now ${pspFmtDateTime(changed.scheduled_at.to)} (was ${pspFmtDateTime(changed.scheduled_at.from)}).`,
+      inspectionId: Number(id),
+    });
+  }
+  return json(200, { inspection_id: Number(id), changed });
+}
+
+/** SKSC-PKR-YYYY-MM-DD-XX on the chain's first booking, fixed once given. */
+async function pspEnsureRefNo(conn, rootId) {
+  const [rows] = await conn.execute(
+    "SELECT ref_no, scheduled_at FROM PUSPAKOM_INSPECTION WHERE inspection_id=?",
+    [rootId]
+  );
+  if (!rows.length) return null;
+  if (rows[0].ref_no) return rows[0].ref_no;
+
+  const at = new Date(rows[0].scheduled_at);
+  const day = pspMytDate(at);
+  const startUtc = new Date(Date.parse(`${day}T00:00:00+08:00`));
+  const endUtc = new Date(startUtc.getTime() + 86400000);
+  const [cnt] = await conn.execute(
+    `SELECT COUNT(*) AS n FROM PUSPAKOM_INSPECTION
+     WHERE root_inspection_id = inspection_id
+       AND scheduled_at >= ? AND scheduled_at < ?
+       AND (scheduled_at < ? OR (scheduled_at = ? AND inspection_id <= ?))`,
+    [startUtc, endUtc, at, at, rootId]
+  );
+  const position = Math.max(1, Number(cnt[0]?.n ?? 1));
+  for (let n = position; n < position + 99; n++) {
+    try {
+      const [res] = await conn.execute(
+        "UPDATE PUSPAKOM_INSPECTION SET ref_no=? WHERE inspection_id=? AND ref_no IS NULL",
+        [pspRefNo(day, n), rootId]
+      );
+      if (res.affectedRows) return pspRefNo(day, n);
+      const [again] = await conn.execute("SELECT ref_no FROM PUSPAKOM_INSPECTION WHERE inspection_id=?", [rootId]);
+      return again[0]?.ref_no ?? null;
+    } catch (e) {
+      if (e?.code !== "ER_DUP_ENTRY") throw e;
+    }
+  }
+  throw new Error("Could not assign a reference number");
+}
+
+async function pspRecordResult(conn, auth, id, b) {
+  const deny = requireRole(auth, PSP_FM_ROLES);
+  if (deny) return deny;
+
+  const [pre] = await conn.execute(
+    `SELECT i.bus_id, b.bus_model FROM PUSPAKOM_INSPECTION i JOIN BUS b ON b.bus_id = i.bus_id WHERE i.inspection_id=?`,
+    [id]
+  );
+  if (!pre.length) return json(404, { message: "Inspection not found" });
+  const busId = pre[0].bus_id;
+  const scopeDeny = await assertBusInScope(conn, auth, busId);
+  if (scopeDeny) return scopeDeny;
+
+  const result = String(b?.result ?? "");
+  if (!["PASSED", "FAILED"].includes(result)) throw new Error("Invalid result: PASSED or FAILED");
+  const now = new Date();
+  const today = pspMytDate(now);
+  const sign = pspSignoff(b, busId);
+  const slipKeys = (Array.isArray(b?.slip_keys) ? b.slip_keys : []).map((k) => pspCheckKey(k, busId, "slip_keys"));
+  if (slipKeys.length > 10) throw new Error("Invalid slip_keys: at most 10 photos");
+
+  let failed = [];
+  let reAt = null;
+  if (result === "FAILED") {
+    const defs = await pspDefs(conn, pre[0].bus_model);
+    const seen = new Set();
+    failed = (Array.isArray(b?.failed) ? b.failed : []).map((f) => {
+      const checkId = String(f?.check_id ?? "");
+      if (!defs.byId.has(checkId)) throw new Error(`Invalid check_id ${checkId}`);
+      if (seen.has(checkId)) throw new Error(`Invalid failed: ${checkId} listed twice`);
+      seen.add(checkId);
+      const found = pspText(f?.puspakom_found, 300, "puspakom_found");
+      if (!found) throw new Error(`puspakom_found required for ${checkId}`);
+      return { check_id: checkId, label: defs.byId.get(checkId).label, found };
+    });
+    if (!failed.length) throw new Error("failed required: pick at least one failed check");
+    if (!slipKeys.length) throw new Error("slip_keys required: add a photo of the PUSPAKOM result slip");
+    reAt = pspParseInstant(b?.reinspection?.scheduled_at, "reinspection.scheduled_at");
+  }
+
+  const userId = await getOrCreateUserId(conn, auth);
+  let insp;
+  let childId = null;
+  let resultDate;
+  await conn.beginTransaction();
+  try {
+    const [rows] = await conn.execute(
+      `SELECT i.*, b.bus_ev_no, b.project_id FROM PUSPAKOM_INSPECTION i JOIN BUS b ON b.bus_id = i.bus_id
+       WHERE i.inspection_id=? FOR UPDATE`,
+      [id]
+    );
+    insp = rows[0];
+    if (insp.result) {
+      await conn.rollback();
+      return json(409, { code: "CLOSED", message: "A result was already recorded for this inspection." });
+    }
+    const inspDate = pspMytDate(insp.scheduled_at);
+    if (today < inspDate) {
+      await conn.rollback();
+      return json(409, { code: "NOT_YET", message: `Available from the inspection date (${pspFmtDate(inspDate)}).` });
+    }
+    resultDate = b?.result_date ? pspParseDate(b.result_date, "result_date") : inspDate;
+    if (resultDate > today) throw new Error("Invalid result_date: cannot be in the future");
+    if (reAt && pspMytDate(reAt) <= resultDate) throw new Error("Invalid reinspection.scheduled_at: must be after the result date");
+
+    const rootId = Number(insp.root_inspection_id ?? insp.inspection_id);
+    await conn.execute(
+      `UPDATE PUSPAKOM_INSPECTION
+       SET result=?, result_date=?, result_by=?, result_at=?,
+           result_verified_name=?, result_selfie_s3_bucket=?, result_selfie_s3_key=?
+       WHERE inspection_id=?`,
+      [result, resultDate, userId, now, sign.name, S3_BUCKET, sign.key, id]
+    );
+    for (const k of slipKeys) {
+      await conn.execute(
+        "INSERT INTO PUSPAKOM_MEDIA (inspection_id, media_kind, s3_bucket, s3_key, uploaded_by) VALUES (?, 'SLIP', ?, ?, ?)",
+        [id, S3_BUCKET, k, userId]
+      );
+    }
+
+    if (result === "FAILED") {
+      for (const f of failed) {
+        await conn.execute(
+          "INSERT INTO PUSPAKOM_FAILED_ITEM (inspection_id, check_id, puspakom_found) VALUES (?,?,?)",
+          [id, f.check_id, f.found]
+        );
+      }
+      const [res] = await conn.execute(
+        `INSERT INTO PUSPAKOM_INSPECTION
+           (bus_id, inspection_type, parent_inspection_id, root_inspection_id, scheduled_at, registered_by, registered_at)
+         VALUES (?, 'REINSPECTION', ?, ?, ?, ?, ?)`,
+        [insp.bus_id, id, rootId, reAt, userId, now]
+      );
+      childId = Number(res.insertId);
+      await conn.execute("INSERT INTO PUSPAKOM_PRECHECK (inspection_id, kind) VALUES (?, 'RECHECK')", [childId]);
+      await pspEvent(conn, {
+        inspectionId: Number(id),
+        rootId,
+        type: "RESULT_FAILED",
+        actorId: userId,
+        at: now,
+        detail: {
+          result_date: resultDate,
+          slips: slipKeys.length,
+          failed: failed.map((f) => ({ check_id: f.check_id, label: f.label, puspakom_found: f.found })),
+        },
+      });
+      await pspEvent(conn, {
+        inspectionId: childId,
+        rootId,
+        type: "REINSPECTION_BOOKED",
+        actorId: userId,
+        at: now,
+        detail: { scheduled_at: reAt.toISOString() },
+      });
+    } else {
+      const [rootRows] = await conn.execute("SELECT inspection_type FROM PUSPAKOM_INSPECTION WHERE inspection_id=?", [rootId]);
+      const settings = await pspSettings(conn);
+      const movesDue = rootRows[0]?.inspection_type === "PERIODIC";
+      await pspEvent(conn, {
+        inspectionId: Number(id),
+        rootId,
+        type: "RESULT_PASSED",
+        actorId: userId,
+        at: now,
+        detail: {
+          result_date: resultDate,
+          slips: slipKeys.length,
+          next_due: movesDue ? pspNextDue(resultDate, settings.cycleMonths) : null,
+        },
+      });
+    }
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+
+  const rootId = Number(insp.root_inspection_id ?? insp.inspection_id);
+  let refNo = null;
+  if (result === "PASSED") {
+    refNo = await pspEnsureRefNo(conn, rootId);
+    // Make the report PDF now, so the first download is already there. A
+    // failed queue write is not fatal: the download endpoint queues it again.
+    try {
+      await pspQueueReportPdf(conn, rootId);
+    } catch (e) {
+      console.error("[PUSPAKOM] report PDF queue failed", { rootId, message: e?.message });
+    }
+  } else {
+    const list = failed.map((f) => `${f.check_id} ${f.label}`).join(", ");
+    await pspNotifyTechnicians(conn, {
+      projectId: insp.project_id,
+      excludeUserId: userId,
+      type: "puspakom_reinspection",
+      title: `PUSPAKOM re-check: ${pspBusLabel(insp)}`,
+      body: `Failed at PUSPAKOM: ${list}. Re-inspection ${pspFmtDateTime(reAt)}.`,
+      inspectionId: childId,
+    });
+  }
+  return json(200, { inspection_id: Number(id), result, ref_no: refNo, reinspection_id: childId });
+}
+
+// ----- Technician: pre-inspection answers, submit, re-check -----
+
+async function pspLoadOpenForTech(conn, auth, id) {
+  const [rows] = await conn.execute(
+    `SELECT i.*, b.bus_ev_no, b.bus_model, b.project_id FROM PUSPAKOM_INSPECTION i
+     JOIN BUS b ON b.bus_id = i.bus_id WHERE i.inspection_id=?`,
+    [id]
+  );
+  if (!rows.length) return { deny: json(404, { message: "Inspection not found" }) };
+  const insp = rows[0];
+  const scopeDeny = await assertBusInScope(conn, auth, insp.bus_id);
+  if (scopeDeny) return { deny: scopeDeny };
+  if (insp.result) return { deny: json(409, { code: "CLOSED", message: "The Fleet Manager has already recorded the result." }) };
+  return { insp, rootId: Number(insp.root_inspection_id ?? insp.inspection_id) };
+}
+
+async function pspGetPrecheckRow(conn, inspectionId, kind) {
+  await conn.execute("INSERT IGNORE INTO PUSPAKOM_PRECHECK (inspection_id, kind) VALUES (?, ?)", [inspectionId, kind]);
+  const [rows] = await conn.execute(
+    "SELECT * FROM PUSPAKOM_PRECHECK WHERE inspection_id=? AND kind=?",
+    [inspectionId, kind]
+  );
+  return rows[0];
+}
+
+async function pspMarkStarted(conn, precheckId, userId, at) {
+  await conn.execute(
+    "UPDATE PUSPAKOM_PRECHECK SET started_by=?, started_at=? WHERE precheck_id=? AND started_at IS NULL",
+    [userId, at, precheckId]
+  );
+}
+
+/** When the phone says an answer was entered; never in the future. */
+function pspClientTime(v, now) {
+  const d = v ? new Date(v) : null;
+  if (!d || Number.isNaN(d.getTime()) || d.getTime() > now.getTime()) return now;
+  return d;
+}
+
+async function pspSaveAnswers(conn, auth, id, b) {
+  const deny = requireRole(auth, PSP_TECH_ROLES);
+  if (deny) return deny;
+  const { insp, deny: lDeny } = await pspLoadOpenForTech(conn, auth, id);
+  if (lDeny) return lDeny;
+  if (insp.inspection_type === "REINSPECTION") {
+    return json(400, { message: "A re-inspection has a re-check, not a pre-inspection." });
+  }
+  const list = Array.isArray(b?.answers) ? b.answers : [];
+  if (!list.length) throw new Error("answers required");
+  if (list.length > 60) throw new Error("Invalid answers: at most 60 per request");
+
+  const pre = await pspGetPrecheckRow(conn, id, "PRE");
+  if (pre.submitted_at) return json(409, { code: "LOCKED", message: "This pre-inspection was already submitted." });
+
+  const defs = await pspDefs(conn, insp.bus_model);
+  const settings = await pspSettings(conn);
+  const userId = await getOrCreateUserId(conn, auth);
+  const now = new Date();
+  const busId = insp.bus_id;
+
+  const rows = list.map((a) => {
+    const checkId = String(a?.check_id ?? "");
+    const def = defs.byId.get(checkId);
+    if (!def) throw new Error(`Invalid check_id ${checkId}`);
+    const type = def.answer_type;
+    const clientTs = Number(a?.client_ts);
+    if (!Number.isSafeInteger(clientTs) || clientTs < 0) throw new Error(`Invalid client_ts for ${checkId}`);
+    const nums = pspValidateNumbers({ ...a, check_id: checkId });
+
+    let answer = a?.answer ?? null;
+    const allowed = type === "OK_NG" ? ["OK", "NG"] : type === "BODY" ? ["NO_DAMAGE", "DAMAGE"] : [];
+    if (answer !== null && !allowed.includes(answer)) throw new Error(`Invalid answer for ${checkId}`);
+    if (!allowed.length) answer = null;
+
+    const ngReason = type === "OK_NG" && answer === "NG" ? a?.ng_reason ?? null : null;
+    if (ngReason !== null && !PSP_NG_REASONS.includes(ngReason)) throw new Error(`Invalid ng_reason for ${checkId}`);
+    const note = type === "OK_NG" ? pspText(a?.note, 200, "note") : null;
+
+    let damages = null;
+    if (type === "BODY" && answer === "DAMAGE") {
+      const raw = Array.isArray(a?.damages) ? a.damages : [];
+      if (raw.length > 20) throw new Error(`Invalid damages for ${checkId}: at most 20`);
+      damages = raw.map((d, i) => {
+        const x = Number(d?.x_pct);
+        const y = Number(d?.y_pct);
+        if (!(x >= 0 && x <= 100 && y >= 0 && y <= 100)) throw new Error(`Invalid damage position for ${checkId}`);
+        if (d?.type != null && !PSP_DAMAGE_TYPES.includes(d.type)) throw new Error(`Invalid damage type for ${checkId}`);
+        return {
+          no: Number.isInteger(d?.no) ? d.no : i + 1,
+          x_pct: x,
+          y_pct: y,
+          where: pspText(d?.where, 80, "damage where") ?? "",
+          type: d?.type ?? null,
+          photo_s3_key: pspCheckKey(d?.photo_s3_key, busId, "damage photo_s3_key"),
+        };
+      });
+    }
+
+    const clean = {
+      answer,
+      ng_reason: ngReason,
+      note,
+      tread_mm: type === "TYRE" ? nums.tread : null,
+      pressure_psi: type === "TYRE" ? nums.psi : null,
+      pad_mm: type === "BRAKE" ? nums.pad : null,
+      damages,
+      photo_s3_key: pspCheckKey(a?.photo_s3_key, busId, "photo_s3_key"),
+    };
+    return {
+      checkId,
+      clientTs,
+      enteredAt: pspClientTime(a?.entered_at, now),
+      tag: pspAnswerTag(type, clean, settings),
+      ...clean,
+    };
+  });
+
+  // Last write wins by the phone's own timestamp, so a phone that was offline
+  // can't overwrite a newer answer someone else has since saved. client_ts is
+  // assigned LAST: MySQL evaluates these left to right, and every IF() above
+  // it must still compare against the old value.
+  const cols = ["answer", "ng_reason", "note", "tread_mm", "pressure_psi", "pad_mm", "tag", "photo_s3_key", "damages", "entered_by", "entered_at"];
+  const sql = `
+    INSERT INTO PUSPAKOM_ANSWER (precheck_id, check_id, ${cols.join(", ")}, client_ts)
+    VALUES (?, ?, ${cols.map(() => "?").join(", ")}, ?)
+    ON DUPLICATE KEY UPDATE
+      ${cols.map((c) => `${c} = IF(VALUES(client_ts) > client_ts, VALUES(${c}), ${c})`).join(",\n      ")},
+      client_ts = IF(VALUES(client_ts) > client_ts, VALUES(client_ts), client_ts)`;
+  let applied = 0;
+  for (const r of rows) {
+    const [res] = await conn.execute(sql, [
+      pre.precheck_id,
+      r.checkId,
+      r.answer,
+      r.ng_reason,
+      r.note,
+      r.tread_mm,
+      r.pressure_psi,
+      r.pad_mm,
+      r.tag,
+      r.photo_s3_key,
+      r.damages ? JSON.stringify(r.damages) : null,
+      userId,
+      r.enteredAt,
+      r.clientTs,
+    ]);
+    if (res.affectedRows > 0) applied++;
+  }
+  await pspMarkStarted(conn, pre.precheck_id, userId, now);
+
+  return json(200, {
+    saved: applied,
+    results: rows.map((r) => ({ check_id: r.checkId, client_ts: r.clientTs, tag: r.tag })),
+  });
+}
+
+async function pspSubmitPrecheck(conn, auth, id, b) {
+  const deny = requireRole(auth, PSP_TECH_ROLES);
+  if (deny) return deny;
+  const { insp, rootId, deny: lDeny } = await pspLoadOpenForTech(conn, auth, id);
+  if (lDeny) return lDeny;
+  if (insp.inspection_type === "REINSPECTION") {
+    return json(400, { message: "A re-inspection has a re-check, not a pre-inspection." });
+  }
+  if (b?.declared !== true) throw new Error("declared required: tick the declaration");
+  const remarks = pspText(b?.remarks, 500, "remarks");
+  const sign = pspSignoff(b, insp.bus_id);
+
+  const pre = await pspGetPrecheckRow(conn, id, "PRE");
+  if (pre.submitted_at) return json(409, { code: "LOCKED", message: "This pre-inspection was already submitted." });
+
+  const defs = await pspDefs(conn, insp.bus_model);
+  const [ans] = await conn.execute("SELECT * FROM PUSPAKOM_ANSWER WHERE precheck_id=?", [pre.precheck_id]);
+  const byId = new Map(ans.map((a) => [a.check_id, { ...a, damages: pspJsonArr(a.damages) }]));
+  const missing = defs.checks.filter((d) => !pspAnswerDone(d.answer_type, byId.get(d.check_id))).map((d) => d.check_id);
+  if (missing.length) {
+    return json(409, {
+      code: "INCOMPLETE",
+      message: `${missing.length} check${missing.length === 1 ? "" : "s"} not done yet. Every check needs its answer and photo.`,
+      missing,
+    });
+  }
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const now = new Date();
+  const [res] = await conn.execute(
+    `UPDATE PUSPAKOM_PRECHECK
+     SET submitted_by=?, submitted_at=?, remarks=?, declared=1, verified_name=?, selfie_s3_bucket=?, selfie_s3_key=?
+     WHERE precheck_id=? AND submitted_at IS NULL`,
+    [userId, now, remarks, sign.name, S3_BUCKET, sign.key, pre.precheck_id]
+  );
+  if (!res.affectedRows) return json(409, { code: "LOCKED", message: "This pre-inspection was already submitted." });
+
+  const attention = ans.filter((a) => PSP_ATTENTION_TAGS.includes(a.tag)).map((a) => a.check_id);
+  const photos = ans.reduce(
+    (n, a) => n + (a.photo_s3_key ? 1 : 0) + pspJsonArr(a.damages).filter((d) => d.photo_s3_key).length,
+    0
+  );
+  await pspEvent(conn, {
+    inspectionId: Number(id),
+    rootId,
+    type: "PRECHECK_SUBMITTED",
+    actorId: userId,
+    at: now,
+    detail: { checks: defs.checks.length, photos, needs_attention: attention },
+  });
+  await pspNotifyFleetManagers(conn, {
+    projectId: insp.project_id,
+    excludeUserId: userId,
+    type: "puspakom_precheck_submitted",
+    title: `Pre-inspection submitted: ${pspBusLabel(insp)}`,
+    body: `${defs.checks.length} of ${defs.checks.length} checks · ${attention.length} need attention. Inspection ${pspFmtDateTime(insp.scheduled_at)}.`,
+    inspectionId: Number(id),
+  });
+  return json(200, { inspection_id: Number(id), submitted_at: now.toISOString(), needs_attention: attention });
+}
+
+async function pspSaveRecheck(conn, auth, id, b) {
+  const deny = requireRole(auth, PSP_TECH_ROLES);
+  if (deny) return deny;
+  const { insp, deny: lDeny } = await pspLoadOpenForTech(conn, auth, id);
+  if (lDeny) return lDeny;
+  if (insp.inspection_type !== "REINSPECTION") return json(400, { message: "Only a re-inspection has a re-check." });
+
+  const pre = await pspGetPrecheckRow(conn, id, "RECHECK");
+  if (pre.submitted_at) return json(409, { code: "LOCKED", message: "This re-check was already submitted." });
+
+  const list = Array.isArray(b?.items) ? b.items : [];
+  if (!list.length) throw new Error("items required");
+  const userId = await getOrCreateUserId(conn, auth);
+  const now = new Date();
+  let applied = 0;
+  for (const it of list) {
+    const checkId = String(it?.check_id ?? "");
+    const clientTs = Number(it?.client_ts);
+    if (!Number.isSafeInteger(clientTs) || clientTs < 0) throw new Error(`Invalid client_ts for ${checkId}`);
+    const text = pspText(it?.fixed_text, 300, "fixed_text");
+    const keys = (Array.isArray(it?.fix_photo_keys) ? it.fix_photo_keys : []).map((k) =>
+      pspCheckKey(k, insp.bus_id, "fix_photo_keys")
+    );
+    if (keys.length > 5) throw new Error(`Invalid fix_photo_keys for ${checkId}: at most 5 photos`);
+    const [res] = await conn.execute(
+      `UPDATE PUSPAKOM_FAILED_ITEM
+       SET fixed_text=?, fix_photo_keys=?, fixed_by=?, fixed_at=?, client_ts=?
+       WHERE inspection_id=? AND check_id=? AND client_ts < ?`,
+      [text, JSON.stringify(keys), userId, pspClientTime(it?.entered_at, now), clientTs, insp.parent_inspection_id, checkId, clientTs]
+    );
+    if (res.affectedRows) applied++;
+  }
+  await pspMarkStarted(conn, pre.precheck_id, userId, now);
+  return json(200, { saved: applied });
+}
+
+async function pspSubmitRecheck(conn, auth, id, b) {
+  const deny = requireRole(auth, PSP_TECH_ROLES);
+  if (deny) return deny;
+  const { insp, rootId, deny: lDeny } = await pspLoadOpenForTech(conn, auth, id);
+  if (lDeny) return lDeny;
+  if (insp.inspection_type !== "REINSPECTION") return json(400, { message: "Only a re-inspection has a re-check." });
+  const sign = pspSignoff(b, insp.bus_id);
+
+  const pre = await pspGetPrecheckRow(conn, id, "RECHECK");
+  if (pre.submitted_at) return json(409, { code: "LOCKED", message: "This re-check was already submitted." });
+
+  const [items] = await conn.execute(
+    "SELECT check_id, fixed_text, fix_photo_keys FROM PUSPAKOM_FAILED_ITEM WHERE inspection_id=?",
+    [insp.parent_inspection_id]
+  );
+  const missing = items
+    .filter((f) => !String(f.fixed_text ?? "").trim() || pspJsonArr(f.fix_photo_keys).length < 1)
+    .map((f) => f.check_id);
+  if (missing.length) {
+    return json(409, {
+      code: "INCOMPLETE",
+      message: "Add what was fixed and at least one photo for every failed check.",
+      missing,
+    });
+  }
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const now = new Date();
+  const [res] = await conn.execute(
+    `UPDATE PUSPAKOM_PRECHECK
+     SET submitted_by=?, submitted_at=?, declared=1, verified_name=?, selfie_s3_bucket=?, selfie_s3_key=?
+     WHERE precheck_id=? AND submitted_at IS NULL`,
+    [userId, now, sign.name, S3_BUCKET, sign.key, pre.precheck_id]
+  );
+  if (!res.affectedRows) return json(409, { code: "LOCKED", message: "This re-check was already submitted." });
+
+  const defs = await pspDefs(conn, insp.bus_model);
+  const fixed = items.map((f) => ({ check_id: f.check_id, label: defs.byId.get(f.check_id)?.label ?? f.check_id }));
+  await pspEvent(conn, {
+    inspectionId: Number(id),
+    rootId,
+    type: "RECHECK_SUBMITTED",
+    actorId: userId,
+    at: now,
+    detail: { fixed },
+  });
+  await pspNotifyFleetManagers(conn, {
+    projectId: insp.project_id,
+    excludeUserId: userId,
+    type: "puspakom_recheck_submitted",
+    title: `Re-check submitted: ${pspBusLabel(insp)}`,
+    body: `${fixed.map((f) => `${f.check_id} ${f.label}`).join(", ")} fixed. Re-inspection ${pspFmtDateTime(insp.scheduled_at)}.`,
+    inspectionId: Number(id),
+  });
+  return json(200, { inspection_id: Number(id), submitted_at: now.toISOString() });
+}
+
+/** The technician's list: every open inspection in their projects (no assignment step). */
+async function pspListPrechecks(conn, auth, qs) {
+  const deny = requireRole(auth, PSP_TECH_ROLES);
+  if (deny) return deny;
+  const { projectId, deny: pDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (pDeny) return pDeny;
+
+  const buses = await pspLoadBuses(conn, auth, projectId);
+  if (!buses.length) return json(200, { items: [] });
+  const busById = new Map(buses.map((b) => [b.bus_id, b]));
+  const ids = buses.map((b) => b.bus_id);
+
+  const [rows] = await conn.execute(
+    `SELECT i.inspection_id, i.bus_id, i.inspection_type, i.scheduled_at, i.booking_ref, i.notes,
+            i.parent_inspection_id, i.registered_at, ru.user_name AS registered_by_name,
+            p.precheck_id, p.kind, p.started_at, p.submitted_at, su.user_name AS submitted_by_name
+     FROM PUSPAKOM_INSPECTION i
+     JOIN PUSPAKOM_PRECHECK p ON p.inspection_id = i.inspection_id
+     LEFT JOIN \`USER\` ru ON ru.user_id = i.registered_by
+     LEFT JOIN \`USER\` su ON su.user_id = p.submitted_by
+     WHERE i.result IS NULL AND i.bus_id IN (${pspPlaceholders(ids)})
+     ORDER BY i.scheduled_at`,
+    ids
+  );
+
+  const preIds = rows.filter((r) => r.kind === "PRE").map((r) => r.precheck_id);
+  const answersBy = new Map();
+  if (preIds.length) {
+    const [ans] = await conn.execute(
+      `SELECT * FROM PUSPAKOM_ANSWER WHERE precheck_id IN (${pspPlaceholders(preIds)})`,
+      preIds
+    );
+    for (const a of ans) {
+      const list = answersBy.get(a.precheck_id) ?? [];
+      list.push({ ...a, damages: pspJsonArr(a.damages) });
+      answersBy.set(a.precheck_id, list);
+    }
+  }
+  const parentIds = rows.filter((r) => r.kind === "RECHECK").map((r) => r.parent_inspection_id);
+  const failedBy = new Map();
+  if (parentIds.length) {
+    const [fr] = await conn.execute(
+      `SELECT f.*, i.result_date FROM PUSPAKOM_FAILED_ITEM f JOIN PUSPAKOM_INSPECTION i ON i.inspection_id = f.inspection_id
+       WHERE f.inspection_id IN (${pspPlaceholders(parentIds)})`,
+      parentIds
+    );
+    for (const f of fr) {
+      const list = failedBy.get(f.inspection_id) ?? [];
+      list.push(f);
+      failedBy.set(f.inspection_id, list);
+    }
+  }
+
+  const cache = new Map();
+  const items = [];
+  for (const r of rows) {
+    const bus = busById.get(r.bus_id);
+    const defs = await pspDefs(conn, bus.bus_model, cache);
+    let total;
+    let done;
+    let attention = 0;
+    let failed = null;
+    if (r.kind === "PRE") {
+      const list = answersBy.get(r.precheck_id) ?? [];
+      const byId = new Map(list.map((a) => [a.check_id, a]));
+      total = defs.checks.length;
+      done = defs.checks.filter((d) => pspAnswerDone(d.answer_type, byId.get(d.check_id))).length;
+      attention = list.filter((a) => PSP_ATTENTION_TAGS.includes(a.tag)).length;
+    } else {
+      const list = failedBy.get(r.parent_inspection_id) ?? [];
+      total = list.length;
+      done = list.filter((f) => String(f.fixed_text ?? "").trim() && pspJsonArr(f.fix_photo_keys).length).length;
+      failed = {
+        failed_on: pspDateStr(list[0]?.result_date),
+        checks: list.map((f) => ({
+          check_id: f.check_id,
+          label: defs.byId.get(f.check_id)?.label ?? f.check_id,
+          puspakom_found: f.puspakom_found,
+        })),
+      };
+    }
+    const answered = r.kind === "PRE" ? (answersBy.get(r.precheck_id) ?? []).length : done;
+    const { pill, tab } = pspTechPill({ kind: r.kind, answered, submitted: !!r.submitted_at });
+    items.push({
+      inspection_id: Number(r.inspection_id),
+      bus_id: r.bus_id,
+      bus_ev_no: bus.bus_ev_no ?? null,
+      bus_model: bus.bus_model ?? null,
+      inspection_type: r.inspection_type,
+      scheduled_at: pspIso(r.scheduled_at),
+      checklist_due: pspAddDays(pspMytDate(r.scheduled_at), -1),
+      booking_ref: r.booking_ref ?? null,
+      notes: r.notes ?? null,
+      registered_by: r.registered_by_name ?? null,
+      registered_at: pspIso(r.registered_at),
+      kind: r.kind,
+      pill,
+      tab,
+      total,
+      done,
+      needs_attention: attention,
+      started_at: pspIso(r.started_at),
+      submitted_at: pspIso(r.submitted_at),
+      submitted_by: r.submitted_by_name ?? null,
+      failed,
+    });
+  }
+  return json(200, { today: pspMytDate(new Date()), items });
+}
+
+// ----- hourly tick: reminders and "needs the Fleet Manager" alerts -----
+
+/** True the first time this key is seen (and records it); false ever after. */
+async function pspFirstTime(conn, key) {
+  const [res] = await conn.execute(
+    "INSERT IGNORE INTO NOTIFICATION_DEDUPE (dedupe_key, last_sent_at) VALUES (?, NOW())",
+    [key.slice(0, 191)]
+  );
+  return res.affectedRows === 1;
+}
+
+async function runPuspakomTick(conn) {
+  const now = new Date();
+  const today = pspMytDate(now);
+  const settings = await pspSettings(conn);
+  const [buses] = await conn.execute("SELECT bus_id, bus_ev_no, bus_model, project_id FROM BUS");
+  const states = await pspStateForBuses(conn, buses, settings, now);
+  let sent = 0;
+
+  for (const s of states) {
+    const label = pspBusLabel(s);
+    // A bus that has never passed has no due date, so nothing has "turned"
+    // Not booked: it just started that way. Only alert on real transitions.
+    if (s.status === PSP_STATUS.NOT_BOOKED && s.next_due && (await pspFirstTime(conn, `psp:nb:${s.bus_id}:${s.next_due}`))) {
+      await pspNotifyFleetManagers(conn, {
+        projectId: s.project_id,
+        type: "puspakom_not_booked",
+        title: `PUSPAKOM due soon: ${label}`,
+        body: `Due by ${pspFmtDate(s.next_due)} (${s.days_to_due} days). No inspection booked yet.`,
+        inspectionId: null,
+      });
+      sent++;
+    }
+    if (s.status === PSP_STATUS.OVERDUE_NOT_BOOKED && (await pspFirstTime(conn, `psp:od:${s.bus_id}:${s.next_due}`))) {
+      await pspNotifyFleetManagers(conn, {
+        projectId: s.project_id,
+        type: "puspakom_overdue",
+        title: `PUSPAKOM overdue: ${label}`,
+        body: `Was due by ${pspFmtDate(s.next_due)}. No inspection booked.`,
+        inspectionId: null,
+      });
+      sent++;
+    }
+    if (
+      s.status === PSP_STATUS.INSPECTED_UPDATE &&
+      (await pspFirstTime(conn, `psp:res:${s.open.inspection_id}:${s.open.scheduled_at}`))
+    ) {
+      await pspNotifyFleetManagers(conn, {
+        projectId: s.project_id,
+        type: "puspakom_result_needed",
+        title: `Record the PUSPAKOM result: ${label}`,
+        body: `The inspection on ${pspFmtDateTime(s.open.scheduled_at)} has passed with no result recorded.`,
+        inspectionId: s.open.inspection_id,
+      });
+      sent++;
+    }
+  }
+
+  // 09:00 reminder on the checklist due day (the day before the inspection).
+  const mytHour = new Date(now.getTime() + PSP_MYT_OFFSET_MS).getUTCHours();
+  if (mytHour >= 9) {
+    for (const s of states) {
+      const o = s.open;
+      if (!o || o.precheck_submitted_at || o.precheck_kind == null) continue;
+      if (pspAddDays(pspMytDate(o.scheduled_at), -1) !== today) continue;
+      if (!(await pspFirstTime(conn, `psp:rem:${o.inspection_id}:${today}`))) continue;
+      const what = o.precheck_kind === "RECHECK" ? "Re-check" : "Pre-inspection checklist";
+      await pspNotifyTechnicians(conn, {
+        projectId: s.project_id,
+        type: "puspakom_reminder",
+        title: `${what} due today: ${pspBusLabel(s)}`,
+        body: `PUSPAKOM ${PSP_TYPE_LABEL[o.inspection_type].toLowerCase()} inspection ${pspFmtDateTime(o.scheduled_at)}.`,
+        inspectionId: o.inspection_id,
+      });
+      sent++;
+    }
+  }
+  return { buses: states.length, sent };
+}
+
+// ----- reports, KPIs and the inspection report PDF -----
+//
+// One report per chain (the first booking and any re-inspections), created
+// when the chain is recorded as Passed.
+
+const PSP_REPORT_ROLES = ["admin", "fleet_manager", "rm_manager"];
+
+/** Every inspection and failed item for these buses, oldest first. */
+async function pspHistory(conn, busIds) {
+  if (!busIds.length) return { insp: [], failed: [] };
+  const ph = pspPlaceholders(busIds);
+  const [insp] = await conn.execute(
+    `SELECT inspection_id, bus_id, inspection_type, COALESCE(root_inspection_id, inspection_id) AS root_id,
+            parent_inspection_id, scheduled_at, result, result_date, ref_no
+     FROM PUSPAKOM_INSPECTION WHERE bus_id IN (${ph}) ORDER BY scheduled_at, inspection_id`,
+    busIds
+  );
+  const [failed] = await conn.execute(
+    `SELECT f.inspection_id, f.check_id FROM PUSPAKOM_FAILED_ITEM f
+     JOIN PUSPAKOM_INSPECTION i ON i.inspection_id = f.inspection_id
+     WHERE i.bus_id IN (${ph})`,
+    busIds
+  );
+  return {
+    insp: insp.map((r) => ({
+      ...r,
+      inspection_id: Number(r.inspection_id),
+      root_id: Number(r.root_id),
+      result_date: pspDateStr(r.result_date),
+      sched_date: pspMytDate(r.scheduled_at),
+    })),
+    failed: failed.map((f) => ({ inspection_id: Number(f.inspection_id), check_id: f.check_id })),
+  };
+}
+
+/** Group by chain; a chain is "closed" once an inspection in it passed. */
+function pspChains(insp) {
+  const chains = new Map();
+  for (const r of insp) chains.set(r.root_id, [...(chains.get(r.root_id) ?? []), r]);
+  return [...chains.values()].map((list) => {
+    const root = list.find((r) => r.inspection_id === r.root_id) ?? list[0];
+    const pass = list.find((r) => r.result === "PASSED") ?? null;
+    return { root, list, pass };
+  });
+}
+
+/** The due date a periodic booking was measured against: the previous pass + the cycle. */
+function pspDueBefore(chains, busId, beforeDate, cycleMonths) {
+  let last = null;
+  for (const c of chains) {
+    if (c.root.bus_id !== busId || c.root.inspection_type !== "PERIODIC" || !c.pass) continue;
+    if (c.pass.result_date < beforeDate && (!last || c.pass.result_date > last)) last = c.pass.result_date;
+  }
+  return { lastPass: last, due: pspNextDue(last, cycleMonths) };
+}
+
+async function pspListReports(conn, auth, qs) {
+  const deny = requireRole(auth, PSP_REPORT_ROLES);
+  if (deny) return deny;
+  const { projectId, deny: pDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (pDeny) return pDeny;
+
+  const buses = await pspLoadBuses(conn, auth, projectId);
+  const busById = new Map(buses.map((b) => [b.bus_id, b]));
+  const { insp, failed } = await pspHistory(conn, buses.map((b) => b.bus_id));
+  const reports = pspChains(insp)
+    .filter((c) => c.pass)
+    .map((c) => {
+      const ids = new Set(c.list.map((r) => r.inspection_id));
+      const bus = busById.get(c.root.bus_id);
+      return {
+        root_inspection_id: c.root.inspection_id,
+        bus_id: c.root.bus_id,
+        bus_ev_no: bus?.bus_ev_no ?? null,
+        inspection_type: c.root.inspection_type,
+        first_date: c.root.sched_date,
+        passed_date: c.pass.result_date,
+        attempts: c.list.length,
+        first_time: c.list.length === 1,
+        ref_no: c.root.ref_no ?? null,
+        failed_checks: [...new Set(failed.filter((f) => ids.has(f.inspection_id)).map((f) => f.check_id))],
+      };
+    })
+    .sort((a, b) => b.first_date.localeCompare(a.first_date) || b.root_inspection_id - a.root_inspection_id);
+  return json(200, { reports });
+}
+
+/** Period for the KPIs: whole calendar months up to the end of last month. */
+function pspKpiPeriod(period, today, earliest) {
+  const [y, m] = today.split("-").map(Number);
+  const monthStart = (yy, mm) => new Date(Date.UTC(yy, mm - 1, 1)).toISOString().slice(0, 10);
+  if (period === "all") {
+    const from = earliest ? `${earliest.slice(0, 7)}-01` : monthStart(y, m);
+    return { from, to: today };
+  }
+  const n = period === "12m" ? 12 : 6;
+  const to = new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10); // last day of last month
+  return { from: monthStart(y, m - n), to };
+}
+
+async function pspGetKpis(conn, auth, qs) {
+  const deny = requireRole(auth, PSP_REPORT_ROLES);
+  if (deny) return deny;
+  const { projectId, deny: pDeny } = await resolveSelectedProject(conn, auth, qs);
+  if (pDeny) return pDeny;
+  const period = ["6m", "12m", "all"].includes(qs?.period) ? qs.period : "6m";
+
+  const settings = await pspSettings(conn);
+  const buses = await pspLoadBuses(conn, auth, projectId);
+  const { insp, failed } = await pspHistory(conn, buses.map((b) => b.bus_id));
+  const chains = pspChains(insp);
+  const today = pspMytDate(new Date());
+  const withResult = insp.filter((r) => r.result);
+  const earliest = withResult.reduce((min, r) => (!min || r.result_date < min ? r.result_date : min), null);
+  const { from, to } = pspKpiPeriod(period, today, earliest);
+  const inRange = (d) => d && d >= from && d <= to;
+
+  const results = withResult.filter((r) => inRange(r.result_date));
+  const roots = results.filter((r) => r.inspection_id === r.root_id);
+  const firstPass = roots.filter((r) => r.result === "PASSED").length;
+
+  const periodic = roots.filter((r) => r.inspection_type === "PERIODIC");
+  let onTimeTotal = 0;
+  let onTime = 0;
+  for (const r of periodic) {
+    const { due } = pspDueBefore(chains, r.bus_id, r.sched_date, settings.cycleMonths);
+    if (!due) continue; // first ever inspection: nothing to be on time for
+    onTimeTotal++;
+    if (r.sched_date <= due) onTime++;
+  }
+
+  const fails = results.filter((r) => r.result === "FAILED");
+  const failIds = new Set(fails.map((r) => r.inspection_id));
+  const defs = await pspDefs(conn, "*");
+  const failedByBus = new Map();
+  for (const f of failed.filter((x) => failIds.has(x.inspection_id))) {
+    const r = fails.find((x) => x.inspection_id === f.inspection_id);
+    failedByBus.set(r.bus_id, [...(failedByBus.get(r.bus_id) ?? []), defs.byId.get(f.check_id)?.label ?? f.check_id]);
+  }
+
+  // Each check PUSPAKOM has ever failed in these buses, counted in the period.
+  const everFailed = [...new Set(failed.map((f) => f.check_id))];
+  const failedItems = everFailed
+    .map((id) => ({
+      check_id: id,
+      label: defs.byId.get(id)?.label ?? id,
+      count: failed.filter((f) => f.check_id === id && failIds.has(f.inspection_id)).length,
+    }))
+    .sort((a, b) => b.count - a.count || a.check_id.localeCompare(b.check_id));
+
+  // Average days from a Failed result to its re-inspection date.
+  const gaps = fails
+    .map((r) => insp.find((c) => c.parent_inspection_id != null && Number(c.parent_inspection_id) === r.inspection_id))
+    .map((child, i) => (child ? pspDaysBetween(fails[i].result_date, child.sched_date) : null))
+    .filter((x) => x != null);
+
+  const months = [];
+  for (let k = from.slice(0, 7); k <= to.slice(0, 7); ) {
+    months.push({
+      month: k,
+      passed: results.filter((r) => r.result === "PASSED" && r.result_date.startsWith(k)).length,
+      failed: results.filter((r) => r.result === "FAILED" && r.result_date.startsWith(k)).length,
+    });
+    const [yy, mm] = k.split("-").map(Number);
+    k = new Date(Date.UTC(yy, mm, 1)).toISOString().slice(0, 7);
+    if (months.length > 240) break;
+  }
+
+  const byBus = buses
+    .map((b) => {
+      const mine = results.filter((r) => r.bus_id === b.bus_id);
+      const myRoots = roots.filter((r) => r.bus_id === b.bus_id);
+      return {
+        bus_id: b.bus_id,
+        bus_ev_no: b.bus_ev_no ?? null,
+        inspections: mine.length,
+        fails: mine.filter((r) => r.result === "FAILED").length,
+        first_time: myRoots.length ? myRoots.every((r) => r.result === "PASSED") : null,
+      };
+    })
+    .sort((a, b) => b.inspections - a.inspections || a.bus_id.localeCompare(b.bus_id));
+
+  return json(200, {
+    period: { key: period, from, to },
+    first_time: { passed: firstPass, attempts: roots.length },
+    inspections: {
+      total: results.length,
+      periodic: results.filter((r) => r.inspection_type === "PERIODIC").length,
+      reinspection: results.filter((r) => r.inspection_type === "REINSPECTION").length,
+      special: results.filter((r) => r.inspection_type === "SPECIAL").length,
+    },
+    failed: {
+      count: fails.length,
+      buses: [...failedByBus.entries()].map(([busId, items]) => ({
+        bus_id: busId,
+        bus_ev_no: buses.find((b) => b.bus_id === busId)?.bus_ev_no ?? null,
+        items,
+      })),
+    },
+    on_time: { on_time: onTime, total: onTimeTotal },
+    per_month: months,
+    failed_items: failedItems,
+    avg_fail_to_re_days: gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null,
+    by_bus: byBus,
+  });
+}
+
+/** Everything the PUSPAKOM Inspection Report PDF prints (the renderer has no DB). */
+async function pspBuildReportData(conn, rootId) {
+  const [rootRows] = await conn.execute(
+    `SELECT i.*, b.bus_ev_no, b.bus_model FROM PUSPAKOM_INSPECTION i JOIN BUS b ON b.bus_id = i.bus_id
+     WHERE i.inspection_id=?`,
+    [rootId]
+  );
+  if (!rootRows.length) return null;
+  const root = rootRows[0];
+  const settings = await pspSettings(conn);
+  const defs = await pspDefs(conn, root.bus_model);
+  const label = (id) => defs.byId.get(id)?.label ?? id;
+  const stopName = (id) => defs.stops.find((s) => s.stop_no === defs.byId.get(id)?.stop_no)?.stop_name ?? "";
+
+  const [chain] = await conn.execute(
+    `SELECT i.*, ru.user_name AS registered_by_name, xu.user_name AS result_by_name
+     FROM PUSPAKOM_INSPECTION i
+     LEFT JOIN \`USER\` ru ON ru.user_id = i.registered_by
+     LEFT JOIN \`USER\` xu ON xu.user_id = i.result_by
+     WHERE COALESCE(i.root_inspection_id, i.inspection_id)=? ORDER BY i.scheduled_at, i.inspection_id`,
+    [rootId]
+  );
+  const ids = chain.map((c) => Number(c.inspection_id));
+  const ph = pspPlaceholders(ids);
+  const pass = chain.find((c) => c.result === "PASSED") ?? null;
+
+  const [pres] = await conn.execute(
+    `SELECT p.*, u.user_name AS submitted_by_name FROM PUSPAKOM_PRECHECK p
+     LEFT JOIN \`USER\` u ON u.user_id = p.submitted_by WHERE p.inspection_id IN (${ph})`,
+    ids
+  );
+  const pre = pres.find((p) => p.kind === "PRE") ?? null;
+  let answers = [];
+  if (pre) {
+    const [a] = await conn.execute("SELECT * FROM PUSPAKOM_ANSWER WHERE precheck_id=?", [pre.precheck_id]);
+    answers = a.map((x) => ({ ...x, damages: pspJsonArr(x.damages) }));
+  }
+  const [failedRows] = await conn.execute(
+    `SELECT f.*, u.user_name AS fixed_by_name FROM PUSPAKOM_FAILED_ITEM f
+     LEFT JOIN \`USER\` u ON u.user_id = f.fixed_by WHERE f.inspection_id IN (${ph}) ORDER BY f.inspection_id, f.check_id`,
+    ids
+  );
+  const [slips] = await conn.execute(
+    `SELECT m.*, u.user_name AS by_name FROM PUSPAKOM_MEDIA m LEFT JOIN \`USER\` u ON u.user_id = m.uploaded_by
+     WHERE m.inspection_id IN (${ph}) ORDER BY m.uploaded_at, m.media_id`,
+    ids
+  );
+  const [events] = await conn.execute(
+    `SELECT e.*, u.user_name AS actor_name FROM PUSPAKOM_EVENT e LEFT JOIN \`USER\` u ON u.user_id = e.actor_user_id
+     WHERE e.root_inspection_id=? ORDER BY e.event_at, e.event_id`,
+    [rootId]
+  );
+
+  // Due dates around this chain: the pass before it, and the next due after it.
+  const [prev] = await conn.execute(
+    `SELECT MAX(i.result_date) AS d FROM PUSPAKOM_INSPECTION i
+     JOIN PUSPAKOM_INSPECTION r ON r.inspection_id = COALESCE(i.root_inspection_id, i.inspection_id)
+     WHERE i.bus_id=? AND i.result='PASSED' AND r.inspection_type='PERIODIC' AND i.result_date < ?`,
+    [root.bus_id, pspMytDate(root.scheduled_at)]
+  );
+  const lastPassed = pspDateStr(prev[0]?.d);
+  const passDate = pspDateStr(pass?.result_date);
+
+  const attention = defs.checks
+    .map((d) => ({ def: d, a: answers.find((x) => x.check_id === d.check_id) }))
+    .filter(({ a }) => a && PSP_ATTENTION_TAGS.includes(a.tag));
+
+  const answerText = (d, a) => {
+    if (d.answer_type === "TYRE") return `${a.tread_mm ?? "—"} mm · ${a.pressure_psi ?? "—"} psi`;
+    if (d.answer_type === "BRAKE") return `${a.pad_mm ?? "—"} mm`;
+    if (d.answer_type === "BODY") return a.damages.map((x) => `${x.no}. ${x.type ?? ""} ${x.where ?? ""}`.trim()).join("; ");
+    return a.answer === "NG" ? `NG${a.ng_reason ? ` · ${a.ng_reason.replace("_", " ").toLowerCase()}` : ""}` : String(a.answer ?? "");
+  };
+  const TAG_TEXT = { NG: "NG", REPLACE: "REPLACE", LOW: "LOW", CHECK_SOON: "CHECK SOON", DAMAGE: "DAMAGE", OK: "OK" };
+
+  const photo = (key, caption, at) => ({ bucket: S3_BUCKET, key, caption, at });
+  const groups = [];
+  if (attention.length) {
+    groups.push({
+      title: "Needs attention",
+      indexTitle: "Needs attention (pre-inspection)",
+      by: pre?.submitted_by_name ?? null,
+      at: pre?.submitted_at ?? null,
+      photos: attention.flatMap(({ def, a }) => [
+        ...(a.photo_s3_key ? [photo(a.photo_s3_key, `${def.check_id} ${def.label}: ${answerText(def, a)}`, a.entered_at)] : []),
+        ...a.damages.filter((x) => x.photo_s3_key).map((x) =>
+          photo(x.photo_s3_key, `${def.check_id} damage ${x.no}: ${x.type ?? ""} ${x.where ?? ""}`.trim(), a.entered_at)
+        ),
+      ]),
+      checks: attention.map(({ def }) => def.check_id),
+    });
+  }
+  for (const f of failedRows) {
+    const keys = pspJsonArr(f.fix_photo_keys);
+    if (!keys.length) continue;
+    groups.push({
+      title: `Re-check: ${f.check_id} ${label(f.check_id)}`,
+      indexTitle: `Re-check: ${f.check_id} ${label(f.check_id)}`,
+      by: f.fixed_by_name ?? null,
+      at: f.fixed_at,
+      photos: keys.map((k, i) => photo(k, `${f.check_id} ${label(f.check_id)}: after the fix (${i + 1})`, f.fixed_at)),
+      fix: `${f.inspection_id}:${f.check_id}`,
+    });
+  }
+  for (const c of chain.filter((x) => x.result)) {
+    const list = slips.filter((m) => Number(m.inspection_id) === Number(c.inspection_id));
+    if (!list.length) continue;
+    const res = c.result === "PASSED" ? "Passed" : "Failed";
+    groups.push({
+      title: `PUSPAKOM result slip (${res})`,
+      indexTitle: `PUSPAKOM result slip (${res})`,
+      by: c.result_by_name ?? null,
+      at: c.result_at,
+      photos: list.map((m) => photo(m.s3_key, `PUSPAKOM result slip, ${res}`, m.uploaded_at)),
+      slipOf: Number(c.inspection_id),
+    });
+  }
+
+  const typeLong = { PERIODIC: "Periodic (Berkala)", REINSPECTION: "Re-inspection (Berkala Semula)", SPECIAL: "Special (Khas)" };
+  const failedChecks = [...new Set(failedRows.map((f) => f.check_id))];
+  const recheckPre = pres.filter((p) => p.kind === "RECHECK" && p.submitted_at);
+
+  return {
+    kind: "puspakom",
+    ref_no: root.ref_no,
+    issued_at: root.report_issued_at ?? new Date(),
+    vehicle: { plate: root.bus_id, fleet_no: root.bus_ev_no ?? null, model: root.bus_model ?? null },
+    type: typeLong[root.inspection_type],
+    is_periodic: root.inspection_type === "PERIODIC",
+    registered_by: root.registered_by_name ?? null,
+    booking_ref: root.booking_ref ?? null,
+    first_inspection: root.scheduled_at,
+    result: pass ? "PASSED" : "OPEN",
+    attempts: chain.length,
+    passed_date: passDate,
+    days_to_pass: passDate ? pspDaysBetween(pspMytDate(root.scheduled_at), passDate) : null,
+    last_passed: lastPassed,
+    due_by: pspNextDue(lastPassed, settings.cycleMonths),
+    next_due: pass && root.inspection_type === "PERIODIC" ? pspNextDue(passDate, settings.cycleMonths) : null,
+    failed_checks: failedChecks.map((id) => `${id} ${label(id)}`),
+    precheck: pre && {
+      submitted_by: pre.submitted_by_name ?? null,
+      submitted_at: pre.submitted_at,
+      declared: !!pre.declared,
+      remarks: pre.remarks ?? null,
+      total: defs.checks.length,
+      stops: defs.stops.length,
+      done: defs.checks.filter((d) => pspAnswerDone(d.answer_type, answers.find((x) => x.check_id === d.check_id))).length,
+      photos: answers.reduce((n, a) => n + (a.photo_s3_key ? 1 : 0) + a.damages.filter((x) => x.photo_s3_key).length, 0),
+      attention: attention.map(({ def, a }) => ({
+        check_id: def.check_id,
+        label: def.label,
+        stop: `${def.stop_no} ${stopName(def.check_id)}`,
+        result: `${answerText(def, a)} · ${TAG_TEXT[a.tag]}`,
+        note: a.note ?? null,
+      })),
+    },
+    rechecks: failedRows.map((f) => {
+      const failInsp = chain.find((c) => Number(c.inspection_id) === Number(f.inspection_id));
+      const sub = recheckPre.find((p) => {
+        const child = chain.find((c) => Number(c.parent_inspection_id) === Number(f.inspection_id));
+        return child && Number(p.inspection_id) === Number(child.inspection_id);
+      });
+      return {
+        key: `${f.inspection_id}:${f.check_id}`,
+        check: `${f.check_id} ${label(f.check_id)}`,
+        failed_on: pspDateStr(failInsp?.result_date),
+        found: f.puspakom_found,
+        fixed: f.fixed_text ?? null,
+        fixed_by: f.fixed_by_name ?? null,
+        done_at: sub?.submitted_at ?? f.fixed_at ?? null,
+        slip_inspection_id: Number(f.inspection_id),
+      };
+    }),
+    events: events.map((e) => ({
+      inspection_id: Number(e.inspection_id),
+      type: e.event_type,
+      by: e.actor_name ?? null,
+      at: e.event_at,
+      detail: typeof e.detail === "string" ? JSON.parse(e.detail) : e.detail ?? {},
+    })),
+    photo_groups: groups,
+  };
+}
+
+function pspPdfKey(refNo, plate) {
+  return `${PDF_OUT_PREFIX}puspakom/${refNo}_${safeFilePart(plate) || "BUS"}.pdf`;
+}
+
+async function pspQueueReportPdf(conn, rootId) {
+  const refNo = await pspEnsureRefNo(conn, rootId);
+  const data = await pspBuildReportData(conn, rootId);
+  if (!data || !refNo) return null;
+  const outKey = pspPdfKey(refNo, data.vehicle.plate);
+  const issuedAt = data.issued_at instanceof Date ? data.issued_at : new Date(data.issued_at);
+  await putQueueFile(`${PDF_QUEUE_PREFIX}puspakom-${rootId}-${Date.now()}.json`, {
+    ...data,
+    ref_no: refNo,
+    issued_at: issuedAt,
+    out_bucket: S3_BUCKET,
+    out_key: outKey,
+  });
+  await conn.execute(
+    `UPDATE PUSPAKOM_INSPECTION SET report_pdf_s3_key=?, report_issued_at=COALESCE(report_issued_at, ?)
+     WHERE inspection_id=?`,
+    [outKey, issuedAt, rootId]
+  );
+  return outKey;
+}
+
+const _pspPdfQueuedAt = new Map();
+
+/** GET /puspakom/inspections/{id}/report-pdf: same contract as /jobs/{id}/report-pdf. */
+async function pspGetReportPdf(conn, auth, id) {
+  const deny = requireRole(auth, PSP_REPORT_ROLES);
+  if (deny) return deny;
+  const [rows] = await conn.execute(
+    `SELECT i.bus_id, COALESCE(i.root_inspection_id, i.inspection_id) AS root_id FROM PUSPAKOM_INSPECTION i WHERE i.inspection_id=?`,
+    [id]
+  );
+  if (!rows.length) return json(404, { message: "Inspection not found" });
+  const scopeDeny = await assertBusInScope(conn, auth, rows[0].bus_id);
+  if (scopeDeny) return scopeDeny;
+  const rootId = Number(rows[0].root_id);
+  const [passed] = await conn.execute(
+    "SELECT 1 FROM PUSPAKOM_INSPECTION WHERE COALESCE(root_inspection_id, inspection_id)=? AND result='PASSED' LIMIT 1",
+    [rootId]
+  );
+  if (!passed.length) {
+    return json(409, { code: "NOT_PASSED", message: "The inspection report is made once the bus passes." });
+  }
+  const [root] = await conn.execute("SELECT report_pdf_s3_key FROM PUSPAKOM_INSPECTION WHERE inspection_id=?", [rootId]);
+  const refNo = await pspEnsureRefNo(conn, rootId);
+  const key = root[0]?.report_pdf_s3_key || pspPdfKey(refNo, rows[0].bus_id);
+  const filename = key.split("/").pop();
+
+  if (await s3ObjectExists(key)) {
+    const url = await getSignedUrl(
+      s3,
+      new GetObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: key,
+        ResponseContentDisposition: `attachment; filename="${filename}"`,
+        ResponseContentType: "application/pdf",
+      }),
+      { expiresIn: VIEW_URL_TTL_S }
+    );
+    return json(200, { status: "ready", url, filename, ref_no: refNo });
+  }
+  const last = _pspPdfQueuedAt.get(rootId) ?? 0;
+  if (Date.now() - last > PDF_REQUEUE_AFTER_MS) {
+    await pspQueueReportPdf(conn, rootId);
+    _pspPdfQueuedAt.set(rootId, Date.now());
+  }
+  return json(200, { status: "pending", filename, ref_no: refNo });
 }

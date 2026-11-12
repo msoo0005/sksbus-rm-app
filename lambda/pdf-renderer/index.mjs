@@ -23,6 +23,7 @@ import {
 import { buildJobCompletionHtml } from "./templates/jobCompletion.mjs";
 import { loadAssets, renderPdf } from "./lib/render.mjs";
 import { buildRangeReportHtml, buildBusReportHtml } from "./templates/fleetReports.mjs";
+import { buildPuspakomReportHtml } from "./templates/puspakomReport.mjs";
 
 const s3 = new S3Client({});
 
@@ -82,6 +83,12 @@ export async function buildHtml(job) {
     };
     return buildJobCompletionHtml(data, { ...assets, generatedAt: new Date() });
   }
+  if (job.kind === "puspakom") {
+    const groups = await Promise.all(
+      (job.photo_groups ?? []).map(async (g) => ({ ...g, photos: await embedPhotos(g.photos, job.out_bucket) }))
+    );
+    return buildPuspakomReportHtml({ ...job, photo_groups: groups }, { ...assets, generatedAt: new Date() });
+  }
   if (job.kind === "range") return buildRangeReportHtml(job, assets);
   if (job.kind === "bus") return buildBusReportHtml(job, assets);
   throw new Error(`Unknown report kind: ${job.kind}`);
@@ -92,14 +99,14 @@ async function handleOne(Bucket, Key) {
   const outBucket = job.out_bucket || Bucket;
   if (!job.out_key) throw new Error("out_key missing");
 
-  if (job.kind === "job" && (await exists(outBucket, job.out_key))) {
+  if ((job.kind === "job" || job.kind === "puspakom") && (await exists(outBucket, job.out_key))) {
     log("skip.exists", { key: Key, out: job.out_key });
     return;
   }
 
   const started = Date.now();
   const html = await buildHtml(job);
-  const { pdf, pages } = await renderPdf(html);
+  const { pdf, pages, photoBytes } = await renderPdf(html);
   await s3.send(
     new PutObjectCommand({
       Bucket: outBucket,
@@ -108,7 +115,7 @@ async function handleOne(Bucket, Key) {
       ContentType: "application/pdf",
     })
   );
-  log("rendered", { key: Key, out: job.out_key, pages, bytes: pdf.length, ms: Date.now() - started });
+  log("rendered", { key: Key, out: job.out_key, pages, bytes: pdf.length, photoBytes, ms: Date.now() - started });
 }
 
 export const handler = async (event) => {

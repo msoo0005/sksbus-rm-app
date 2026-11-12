@@ -8,6 +8,8 @@
 // Keys are grouped by screen/feature area and read via dot-path, e.g.
 // t("common.cancel") or t("jobDetail.sectionTasks").
 
+import { PUSPAKOM_STRINGS } from "./puspakom";
+
 export type Language = "en" | "ms";
 
 export const LANGUAGE_LABELS: Record<Language, string> = {
@@ -2311,3 +2313,7 @@ export const translations: Record<Language, TranslationTree> = {
     },
   },
 };
+
+// PUSPAKOM keeps its strings in ./puspakom.ts (t("puspakom.…")).
+translations.en.puspakom = PUSPAKOM_STRINGS.en;
+translations.ms.puspakom = PUSPAKOM_STRINGS.ms;

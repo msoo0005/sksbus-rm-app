@@ -19,6 +19,8 @@ import {
 } from "@/notifications/usePushRegistration";
 import { useI18n } from "@/i18n/i18n-ctx";
 
+const PUSPAKOM_STYLE = { icon: "clipboard-check", color: "#F06A25", colorLight: "#FFF7ED" };
+
 const TYPE_CONFIG: Record<
   NotificationType,
   { icon: string; color: string; colorLight: string }
@@ -28,6 +30,15 @@ const TYPE_CONFIG: Record<
   job_progress: { icon: "chart-line", color: "#16A34A", colorLight: "#F0FDF4" },
   report_reviewed: { icon: "clipboard-check", color: "#7C3AED", colorLight: "#F5F3FF" },
   tyre_digest: { icon: "dot-circle", color: "#D97706", colorLight: "#FFFBEB" },
+  puspakom_registered: PUSPAKOM_STYLE,
+  puspakom_booking_changed: PUSPAKOM_STYLE,
+  puspakom_reinspection: { icon: "redo", color: "#DC2626", colorLight: "#FEF2F2" },
+  puspakom_reminder: PUSPAKOM_STYLE,
+  puspakom_precheck_submitted: { icon: "clipboard-check", color: "#16A34A", colorLight: "#F0FDF4" },
+  puspakom_recheck_submitted: { icon: "clipboard-check", color: "#16A34A", colorLight: "#F0FDF4" },
+  puspakom_not_booked: PUSPAKOM_STYLE,
+  puspakom_overdue: { icon: "exclamation-circle", color: "#DC2626", colorLight: "#FEF2F2" },
+  puspakom_result_needed: PUSPAKOM_STYLE,
 };
 
 function formatWhen(iso: string) {
@@ -95,6 +106,20 @@ export default function NotificationsScreen() {
     }
 
     const role = dbUser?.user_role;
+
+    // PUSPAKOM: straight to that inspection; bus-level alerts (Not booked,
+    // Overdue) have no inspection yet, so they open the schedule.
+    if (n.notification_type.startsWith("puspakom_")) {
+      if (n.puspakom_inspection_id != null && role === "technician") {
+        // The booking screen sends a re-inspection on to its re-check.
+        router.push(`/puspakom/tech/${n.puspakom_inspection_id}` as any);
+      } else if (n.puspakom_inspection_id != null) {
+        router.push({ pathname: "/puspakom/inspection/[id]", params: { id: String(n.puspakom_inspection_id) } } as any);
+      } else if (role !== "technician") {
+        router.push("/puspakom" as any);
+      }
+      return;
+    }
 
     // The tyre digest is fleet-wide; drop into tyre management rather than a
     // single bus, since it summarises several.

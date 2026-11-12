@@ -26,6 +26,12 @@ type SecondaryAction = {
    */
   badge?: string | null;
   /**
+   * Work waiting for this role behind the card, drawn as the same red bubble
+   * as the main card's (e.g. PUSPAKOM buses the Fleet Manager must act on).
+   * Hidden at 0.
+   */
+  alertCount?: number;
+  /**
    * Give the card the accent tint and weight of the hero above it.
    *
    * For a module that is a main job rather than a side trip. Tyre management
@@ -167,6 +173,7 @@ function SecondaryCard({ action }: { action: SecondaryAction }) {
           <Text style={styles.secondaryBadgeText}>{action.badge}</Text>
         </View>
       )}
+      <AlertBubble count={action.alertCount ?? 0} size={22} />
       <FontAwesome5 name="chevron-right" size={13} color="#9CA3AF" />
     </Pressable>
   );
