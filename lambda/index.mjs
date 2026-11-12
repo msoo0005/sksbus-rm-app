@@ -2,7 +2,7 @@
 
 import mysql from "mysql2/promise";
 import crypto from "crypto";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 // Pool tuned for Lambda, where the process is frozen between invocations and
@@ -163,6 +163,11 @@ export const handler = async (event) => {
       return await withConn((c) => getReport(c, auth, reportId));
     }
 
+    if (method === "PATCH" && isReportIdPath(path)) {
+      const reportId = getIdFromParamsOrPath(params.report_id, path, /^\/reports\/(\d+)$/);
+      return await withConn((c) => patchReport(c, auth, reportId, mustJson(event)));
+    }
+
     if (method === "POST" && path === "/reports") {
       return await withConn((c) => createReport(c, auth, mustJson(event)));
     }
@@ -212,6 +217,40 @@ export const handler = async (event) => {
     // call itself, so the sign-off is stored in the same write as the action.
     if (method === "GET" && path === "/verification/selfie/presign") {
       return await withConn((c) => presignVerificationSelfie(c, auth, qs));
+    }
+
+    // ===== JOB ORDERS =====
+    if (method === "POST" && path === "/job-orders") {
+      return await withConn((c) => createJobOrder(c, auth, mustJson(event)));
+    }
+
+    // ===== PERFORMANCE & KPIs =====
+    if (method === "GET" && path === "/kpis/overview") {
+      return await withConn((c) => getKpiOverview(c, auth, qs));
+    }
+
+    if (method === "GET" && path === "/kpis/buses") {
+      return await withConn((c) => getKpiBuses(c, auth, qs));
+    }
+
+    if (method === "GET" && /^\/kpis\/buses\/[^/]+$/.test(path)) {
+      const busId = decodeURIComponent(params.bus_id ?? path.split("/").pop());
+      return await withConn((c) => getKpiBus(c, auth, busId, qs));
+    }
+
+    // ===== PDF EXPORTS =====
+    if (method === "POST" && path === "/exports") {
+      return await withConn((c) => createExport(c, auth, mustJson(event)));
+    }
+
+    if (method === "GET" && /^\/exports\/[^/]+$/.test(path)) {
+      const exportId = params.export_id ?? path.split("/").pop();
+      return await withConn((c) => getExport(c, auth, exportId, qs));
+    }
+
+    if (method === "GET" && /^\/jobs\/\d+\/report-pdf$/.test(path)) {
+      const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/report-pdf$/);
+      return await withConn((c) => getJobReportPdf(c, auth, jobId));
     }
 
     // ===== JOBS =====
@@ -1422,7 +1461,7 @@ async function getParts(conn, auth, qs) {
   }
 
   const [rows] = await conn.query(
-    `SELECT part_id, part_name, part_code, part_brand, part_cost, part_stock FROM PART ORDER BY part_name ASC LIMIT ${limit}`
+    `SELECT part_id, part_name, part_code, part_brand, part_unit, part_cost, part_stock FROM PART ORDER BY part_name ASC LIMIT ${limit}`
   );
   return json(200, rows);
 }
@@ -1430,6 +1469,24 @@ async function getParts(conn, auth, qs) {
 // Parts catalogue editors. R&M managers maintain the list technicians pick
 // from when adding parts to a job.
 const PART_EDITOR_ROLES = ["admin", "inventory_manager", "rm_manager"];
+
+// Units a part is counted in. "pc" parts are used in whole numbers; the rest
+// (litres, kilograms, metres) may be fractional, e.g. 1.5 L of coolant.
+const PART_UNITS = ["pc", "set", "L", "kg", "m"];
+
+function normalisePartUnit(raw) {
+  if (raw == null || String(raw).trim() === "") return "pc";
+  const v = String(raw).trim();
+  return PART_UNITS.find((u) => u.toLowerCase() === v.toLowerCase()) ?? null;
+}
+
+// A part quantity: > 0, at most 2 decimals. Whole numbers only for "pc"/"set".
+function parsePartQty(raw, unit) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if ((unit === "pc" || unit === "set") && !Number.isInteger(n)) return null;
+  return Math.round(n * 100) / 100;
+}
 
 async function createPart(conn, auth, b) {
   const deny = requireRole(auth, PART_EDITOR_ROLES);
@@ -1451,9 +1508,12 @@ async function createPart(conn, auth, b) {
   const stock = b.part_stock == null || b.part_stock === "" ? 0 : parseStock(b.part_stock);
   if (stock == null) return json(400, { message: "Quantity must be a whole number (0 or more)" });
 
+  const unit = normalisePartUnit(b.part_unit);
+  if (unit == null) return json(400, { message: `Unit must be one of: ${PART_UNITS.join(", ")}` });
+
   const [res] = await conn.execute(
-    "INSERT INTO PART (part_name, part_code, part_brand, part_cost, part_stock) VALUES (?,?,?,?,?)",
-    [name, code, brand, cost, stock]
+    "INSERT INTO PART (part_name, part_code, part_brand, part_unit, part_cost, part_stock) VALUES (?,?,?,?,?,?)",
+    [name, code, brand, unit, cost, stock]
   );
 
   return json(200, { success: true, part_id: Number(res.insertId) });
@@ -1480,6 +1540,11 @@ async function updatePart(conn, auth, partId, b) {
     const brand = b.part_brand != null && String(b.part_brand).trim() ? String(b.part_brand).trim() : null;
     updates.push("part_brand=?"); vals.push(brand);
   }
+  if (b.part_unit !== undefined) {
+    const unit = normalisePartUnit(b.part_unit);
+    if (unit == null) return json(400, { message: `Unit must be one of: ${PART_UNITS.join(", ")}` });
+    updates.push("part_unit=?"); vals.push(unit);
+  }
   if (b.part_cost !== undefined) {
     const cost = b.part_cost == null || b.part_cost === "" ? null : Number(b.part_cost);
     if (cost != null && (!Number.isFinite(cost) || cost < 0)) return json(400, { message: "Invalid price" });
@@ -1499,6 +1564,119 @@ async function updatePart(conn, auth, partId, b) {
 }
 
 // ===================== REPORTS =====================
+
+// The 29 EV bus system categories ("EV Bus – System Category & Description
+// Master List"). A report, and every task, is filed under one. The KEY is what
+// is stored, so the list can be renumbered without touching saved data.
+// Mirrors src/utils/busSystems.ts in the app; keep the two lists in step.
+const BUS_SYSTEMS = [
+  ["axle_braking", "Axle & Braking System"],
+  ["suspension", "Suspension System"],
+  ["steering", "Steering System"],
+  ["air_compressor", "Air Compressor System"],
+  ["pneumatic", "Pneumatic System"],
+  ["wheels_tyres", "Wheels & Tyres"],
+  ["transmission_driveline", "Transmission & Driveline System"],
+  ["chassis_frame", "Chassis & Frame System"],
+  ["hv_battery", "High-Voltage Battery System"],
+  ["hv_electrical", "High-Voltage Electrical System"],
+  ["electric_drive", "Electric Drive & Propulsion System"],
+  ["charging", "Charging System"],
+  ["low_voltage_electrical", "Low-Voltage Electrical & Control System"],
+  ["thermal_management", "Thermal Management System (TMS)"],
+  ["auxiliary_thermal", "Auxiliary Thermal System (ATS)"],
+  ["communication_telematics", "Communication & Telematics System"],
+  ["body_structure", "Body & Structural System"],
+  ["hvac", "Air Conditioning & HVAC System"],
+  ["doors_access", "Door & Access System"],
+  ["interior_seating", "Interior & Passenger Seating System"],
+  ["lighting_signalling", "Lighting & Signalling System"],
+  ["windscreen_glass_wipers", "Windscreen, Glass & Wiper System"],
+  ["dashboard_instrumentation", "Dashboard & Instrumentation System"],
+  ["fire_suppression", "Fire Detection & Suppression System"],
+  ["brake_control_safety", "Brake Control & Electronic Safety System"],
+  ["driver_controls", "Driver Control & Safety System"],
+  ["mirrors", "Mirrors System"],
+  ["cctv", "CCTV & Surveillance System"],
+  ["accessibility_emergency", "Passenger Accessibility & Emergency Equipment"],
+].map(([key, name], i) => ({ key, name, no: i + 1 }));
+const BUS_SYSTEM_BY_KEY = new Map(BUS_SYSTEMS.map((c) => [c.key, c]));
+
+// The seven issue types the app used before the bus-system list. Older app
+// builds still send them; map them across where the meaning is clear.
+const LEGACY_ISSUE_TYPES = {
+  brakes: "axle_braking",
+  doors: "doors_access",
+  aircon: "hvac",
+  tyres_wheels: "wheels_tyres",
+  body_glass: "body_structure",
+  battery_electrical: null,
+  other: null,
+};
+
+// A category key, or null when it is missing or unknown.
+function normaliseBusSystem(raw) {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (BUS_SYSTEM_BY_KEY.has(v)) return v;
+  if (Object.prototype.hasOwnProperty.call(LEGACY_ISSUE_TYPES, v)) return LEGACY_ISSUE_TYPES[v];
+  return null;
+}
+
+// Grouping key for counts: unset or unknown categories go under "uncategorised".
+const UNCATEGORISED = "uncategorised";
+const categoryOf = (raw) => normaliseBusSystem(raw) ?? UNCATEGORISED;
+
+// { key, no, name } for the PDFs, which have no copy of the list.
+function busSystemInfo(raw) {
+  const c = BUS_SYSTEM_BY_KEY.get(normaliseBusSystem(raw) ?? "");
+  return c ? { key: c.key, no: c.no, name: c.name } : null;
+}
+
+const TASK_JOB_TYPES = ["repair", "maintenance"];
+
+// "VMQ6372 (EV012)", the way the depot names a bus; the plate alone when the
+// bus has no EV number. Used in notification text.
+function formatBusLabel(busId, evNo) {
+  if (busId == null || busId === "") return "—";
+  const ev = evNo == null ? "" : String(evNo).trim();
+  return ev ? `${busId} (${ev})` : String(busId);
+}
+
+async function busLabel(conn, busId) {
+  if (busId == null) return "—";
+  try {
+    const [rows] = await conn.execute("SELECT bus_ev_no FROM BUS WHERE bus_id=? LIMIT 1", [busId]);
+    return formatBusLabel(busId, rows[0]?.bus_ev_no);
+  } catch {
+    return String(busId);
+  }
+}
+
+// PATCH /reports/{id}: lets R&M correct a report's issue type (the reporter's
+// pick is a best guess). Nothing else on a report is editable here.
+async function patchReport(conn, auth, reportId, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager", "fleet_manager"]);
+  if (deny) return deny;
+
+  const issueType = normaliseBusSystem(b?.report_issue_type);
+  if (!issueType) {
+    return json(400, { message: "report_issue_type must be one of the 29 bus system categories" });
+  }
+
+  const [rows] = await conn.execute("SELECT project_id FROM REPORT WHERE report_id=?", [reportId]);
+  if (!rows.length) return json(404, { message: "Report not found" });
+  if (auth.role !== "admin") {
+    const userId = await getOrCreateUserId(conn, auth);
+    const [chk] = await conn.execute(
+      "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+      [userId, rows[0].project_id]
+    );
+    if (!chk.length) return json(403, { message: "Forbidden" });
+  }
+
+  await conn.execute("UPDATE REPORT SET report_issue_type=? WHERE report_id=?", [issueType, reportId]);
+  return json(200, { success: true, report_issue_type: issueType });
+}
 
 // A report that exists only so its selfie and photos have something to attach
 // to. It is not a submission yet: excluded from every list, count and
@@ -1586,15 +1764,15 @@ const CLOSED_HISTORY_LIMIT = 200;
 function reportListSql(where, limit) {
   return `
     SELECT
-      r.report_id, r.report_type, r.report_desc, r.report_location,
+      r.report_id, r.report_type, r.report_issue_type, r.report_desc, r.report_location,
       r.report_lat, r.report_lng, r.report_priority, r.report_status,
       r.report_uploaded_at, r.user_id, r.bus_id, r.job_id,
       r.report_review_action, r.report_review_reason, r.report_review_by, r.report_review_at,
       r.report_verified_name, r.report_selfie_s3_bucket, r.report_selfie_s3_key,
       r.report_review_verified_name, r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key,
       u.user_name AS reporter_name, u.user_email AS reporter_email,
-      b.bus_route, b.bus_model,
-      jb.job_completed_at, jb.technician_user_id,
+      b.bus_route, b.bus_model, b.bus_ev_no,
+      jb.job_completed_at, jb.technician_user_id, jb.job_ref_no,
       jb.job_accept_verified_name, jb.job_accept_selfie_s3_bucket, jb.job_accept_selfie_s3_key,
       tech.user_name AS technician_name
     FROM REPORT r
@@ -1615,8 +1793,10 @@ async function getReport(conn, auth, reportId) {
   if (deny) return deny;
 
   const [rows] = await conn.execute(
-    `SELECT r.*, u.user_name AS reporter_name, u.user_email AS reporter_email
+    `SELECT r.*, u.user_name AS reporter_name, u.user_email AS reporter_email,
+            b.bus_ev_no, b.bus_model
      FROM REPORT r LEFT JOIN \`USER\` u ON u.user_id=r.user_id
+     LEFT JOIN BUS b ON b.bus_id=r.bus_id
      WHERE r.report_id=?`,
     [reportId]
   );
@@ -1667,13 +1847,17 @@ async function createReport(conn, auth, b) {
   // selfie and photos can be presigned against it, but until those uploads
   // finish it isn't a real report — so it stays invisible to reviewers and
   // silent until POST /reports/{id}/submit promotes it.
+  // Unknown or legacy-unmappable values are stored as NULL (uncategorised)
+  // rather than refused, so an older app build can still submit.
+  const issueType = normaliseBusSystem(b.report_issue_type);
+
   const [res] = await conn.execute(
     `INSERT INTO REPORT
-     (project_id, report_type, report_desc, report_location, report_lat, report_lng,
+     (project_id, report_type, report_issue_type, report_desc, report_location, report_lat, report_lng,
       report_priority, report_status, user_id, bus_id, report_uploaded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
     [
-      projectId, b.report_type, b.report_desc ?? null,
+      projectId, b.report_type, issueType, b.report_desc ?? null,
       b.report_location ?? null, b.report_lat ?? null, b.report_lng ?? null,
       b.report_priority ?? "medium", REPORT_STATUS_DRAFT, userId, b.bus_id,
     ]
@@ -1726,7 +1910,7 @@ async function submitReport(conn, auth, reportId) {
     excludeUserId: userId,
     type: "new_report",
     title: "New report submitted",
-    body: `${reporterName} submitted a ${report.report_type} report for bus ${report.bus_id}.`,
+    body: `${reporterName} submitted a ${report.report_type} report for bus ${await busLabel(conn, report.bus_id)}.`,
     reportId,
   });
 
@@ -1882,14 +2066,15 @@ async function updateReportStatus(conn, auth, reportId, b) {
   if (action === "approved" || action === "declined") {
     const authorId = Number(report.user_id);
     const reason = b.report_review_reason ? String(b.report_review_reason).trim() : "";
+    const bus = await busLabel(conn, report.bus_id);
     await notifyUsers(conn, {
       userIds: authorId && authorId !== userId ? [authorId] : [],
       type: "report_reviewed",
       title: action === "approved" ? "Report approved" : "Report declined",
       body:
         action === "approved"
-          ? `Your ${report.report_type} report for bus ${report.bus_id} was approved.`
-          : `Your ${report.report_type} report for bus ${report.bus_id} was declined${reason ? `: ${reason}` : "."}`,
+          ? `Your ${report.report_type} report for bus ${bus} was approved.`
+          : `Your ${report.report_type} report for bus ${bus} was declined${reason ? `: ${reason}` : "."}`,
       reportId,
     });
   }
@@ -1954,7 +2139,8 @@ async function patchJob(conn, auth, jobId, b) {
   if (auth.role === "technician") {
     const techUserId = await getOrCreateUserId(conn, auth);
     const [res] = await conn.execute(
-      `UPDATE JOB SET job_odometer=?, job_updated_at=NOW() WHERE job_id=? AND technician_user_id=? AND job_odometer IS NULL`,
+      `UPDATE JOB SET job_odometer=?, job_arrived_at=COALESCE(job_arrived_at, NOW()), job_updated_at=NOW()
+       WHERE job_id=? AND technician_user_id=? AND job_odometer IS NULL`,
       [odo, jobId, techUserId]
     );
 
@@ -1971,7 +2157,10 @@ async function patchJob(conn, auth, jobId, b) {
     return json(200, { success: true, job_odometer: odo });
   }
 
-  await conn.execute(`UPDATE JOB SET job_odometer=?, job_updated_at=NOW() WHERE job_id=?`, [odo, jobId]);
+  await conn.execute(
+    `UPDATE JOB SET job_odometer=?, job_arrived_at=COALESCE(job_arrived_at, NOW()), job_updated_at=NOW() WHERE job_id=?`,
+    [odo, jobId]
+  );
   await upsertOdometerRecordedTask(conn, jobId);
   return json(200, { success: true, job_odometer: odo });
 }
@@ -2138,17 +2327,20 @@ function jobListSql(where, limit) {
     SELECT
       j.job_id, j.job_desc, j.job_status, j.technician_user_id,
       tech.user_name AS technician_name,
-      j.job_odometer, j.job_created_at, j.job_accepted_at, j.job_updated_at, j.job_completed_at,
+      j.job_odometer, j.job_created_at, j.job_accepted_at, j.job_arrived_at, j.job_updated_at, j.job_completed_at,
       j.job_verified_name, j.job_selfie_s3_bucket, j.job_selfie_s3_key,
       j.job_accept_verified_name, j.job_accept_selfie_s3_bucket, j.job_accept_selfie_s3_key,
-      r.report_id, r.report_type, r.report_priority, r.report_desc,
+      j.job_ref_no,
+      r.report_id, r.report_type, r.report_issue_type, r.report_priority, r.report_desc,
       r.report_location, r.report_uploaded_at, r.bus_id, r.project_id,
       r.report_verified_name, r.report_selfie_s3_bucket, r.report_selfie_s3_key,
       r.report_review_by, r.report_review_at, r.report_review_verified_name,
       r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key,
-      reporter.user_name AS reporter_name
+      reporter.user_name AS reporter_name,
+      b.bus_ev_no, b.bus_model
     FROM JOB j
     LEFT JOIN REPORT r ON r.job_id = j.job_id
+    LEFT JOIN BUS b ON b.bus_id = r.bus_id
     LEFT JOIN \`USER\` reporter ON reporter.user_id = r.user_id
     LEFT JOIN \`USER\` tech ON tech.user_id = j.technician_user_id
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -2171,7 +2363,7 @@ async function listJobParts(conn, auth, jobId) {
   if (deny) return deny;
 
   const [rows] = await conn.execute(
-    `SELECT t.task_id, t.task_name, tp.part_id, tp.qty AS jp_qty, tp.line_cost AS jp_linecost, p.part_name, p.part_code, p.part_brand, p.part_cost
+    `SELECT t.task_id, t.task_name, tp.part_id, tp.qty AS jp_qty, tp.line_cost AS jp_linecost, p.part_name, p.part_code, p.part_brand, p.part_unit, p.part_cost
      FROM JOB_TASK t JOIN JOB_TASK_PART tp ON tp.task_id = t.task_id JOIN PART p ON p.part_id = tp.part_id
      WHERE t.job_id=? ORDER BY t.task_order, p.part_name`,
     [jobId]
@@ -2235,6 +2427,11 @@ async function updateJobStatus(conn, auth, jobId, b) {
     return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to complete a job" });
   }
 
+  if (isTerminal) {
+    const problem = await checkTasksComplete(conn, jobId);
+    if (problem) return json(400, { code: "TASK_INCOMPLETE", message: problem });
+  }
+
   // The job and its report close together. The app used to close the report
   // in a second request, and when that one failed the report stayed Open
   // forever with nothing the technician could do about it.
@@ -2262,17 +2459,71 @@ async function updateJobStatus(conn, auth, jobId, b) {
     throw e;
   }
 
+  // The Job Completion Report: give the job its fixed reference number and
+  // queue the PDF. Best-effort: a failure here never undoes the close, and
+  // GET /jobs/{id}/report-pdf retries it.
+  if (isTerminal) {
+    try {
+      await ensureJobRefNo(conn, jobId);
+      await queueJobReportPdf(conn, jobId);
+    } catch (e) {
+      console.error("[PDF] queue after close failed", { jobId, message: e?.message });
+    }
+  }
+
+  const closedReport = isTerminal ? await reportForJob(conn, jobId) : null;
+  const isJobOrder = closedReport?.report_type === JOB_ORDER_TYPE;
   await notifyUsersByRole(conn, {
     roles: ["admin", "rm_manager", "fleet_manager"],
     projectId: await projectIdForJob(conn, jobId),
     excludeUserId: userId,
     type: "job_progress",
-    title: isTerminal ? "Job completed" : "Job status updated",
-    body: `Job #${jobId} status changed to "${toStatus}".`,
+    title: isJobOrder ? "Job order logged" : isTerminal ? "Job completed" : "Job status updated",
+    body: isJobOrder
+      ? `${await getDisplayName(conn, auth)} logged Job Order #${jobId} for bus ${await busLabel(conn, closedReport.bus_id)}.`
+      : `Job #${jobId} status changed to "${toStatus}".`,
     jobId,
   });
 
   return json(200, { success: true });
+}
+
+async function reportForJob(conn, jobId) {
+  const [rows] = await conn.execute(
+    "SELECT report_id, report_type, bus_id, project_id FROM REPORT WHERE job_id=? LIMIT 1",
+    [jobId]
+  );
+  return rows[0] ?? null;
+}
+
+// Tasks created from this date on must carry a full record before the job
+// can close: work done, parts used (or "no parts used" ticked) and at least
+// one photo. Older tasks predate those fields and are immutable, so holding
+// them to the rule would leave jobs that were open at release unclosable.
+const TASK_RULES_SINCE = process.env.TASK_RULES_SINCE || "2026-11-11 00:00:00";
+const SYSTEM_TASK_NAMES = ["Recorded odometer reading", "General / Parts Used"];
+
+async function checkTasksComplete(conn, jobId) {
+  const [tasks] = await conn.execute(
+    `SELECT t.task_id, t.task_name, t.task_desc, t.task_no_parts, t.task_job_type, t.task_category,
+            (SELECT COUNT(*) FROM JOB_TASK_PART tp WHERE tp.task_id = t.task_id) AS part_count,
+            (SELECT COUNT(*) FROM JOB_MEDIA m WHERE m.task_id = t.task_id) AS photo_count
+     FROM JOB_TASK t
+     WHERE t.job_id=? AND t.created_at >= ? AND t.task_name NOT IN (?, ?)
+     ORDER BY t.task_order, t.task_id`,
+    [jobId, TASK_RULES_SINCE, ...SYSTEM_TASK_NAMES]
+  );
+  for (const t of tasks) {
+    const name = t.task_name ? `"${t.task_name}"` : `#${t.task_id}`;
+    if (!TASK_JOB_TYPES.includes(String(t.task_job_type ?? ""))) return `Task ${name} needs its job type (Repair or Maintenance).`;
+    if (!normaliseBusSystem(t.task_category)) return `Task ${name} needs its category (bus system).`;
+    if (!t.task_desc || !String(t.task_desc).trim()) return `Task ${name} needs the work done filled in.`;
+    if (!Number(t.part_count) && !Number(t.task_no_parts)) {
+      return `Task ${name} needs its parts used, or "No parts used" ticked.`;
+    }
+    if (!Number(t.photo_count)) return `Task ${name} needs at least one completion photo.`;
+  }
+  return null;
 }
 
 // ===================== JOB HISTORY =====================
@@ -2323,12 +2574,52 @@ async function createJobTask(conn, auth, jobId, b) {
   const lock = await assertTechJobUnlocked(conn, auth, jobId);
   if (lock) return lock;
 
-  if (!b.task_name) throw new Error("task_name is required");
+  // Job type and category (bus system) are required: they group the job in
+  // Performance & KPIs and head the task on the Job Completion Report.
+  const jobType = String(b.task_job_type ?? "").trim().toLowerCase();
+  if (!TASK_JOB_TYPES.includes(jobType)) {
+    return json(400, { code: "JOB_TYPE_REQUIRED", message: "Please choose the job type (Repair or Maintenance)" });
+  }
+  const category = normaliseBusSystem(b.task_category);
+  if (!category) {
+    return json(400, { code: "CATEGORY_REQUIRED", message: "Please choose the category (bus system)" });
+  }
+
+  // A repair names the issue found. A maintenance task has no issue, so it is
+  // named after its category.
+  let taskName = b.task_name != null ? String(b.task_name).trim() : "";
+  if (!taskName && jobType === "maintenance") taskName = `Maintenance · ${BUS_SYSTEM_BY_KEY.get(category).name}`;
+  if (!taskName) return json(400, { code: "ISSUE_REQUIRED", message: "Please describe the issue found" });
+
+  const taskDesc = b.task_desc != null && String(b.task_desc).trim() ? String(b.task_desc).trim() : null;
+  // "Work done" is part of the record every task needs (it is printed on the
+  // Job Completion Report), so a task can't be saved without it.
+  if (!taskDesc) {
+    return json(400, { code: "WORK_DONE_REQUIRED", message: "Please describe the work done for this task" });
+  }
+  const taskRemark = b.task_remark != null && String(b.task_remark).trim() ? String(b.task_remark).trim() : null;
+  const noParts = b.task_no_parts === true || b.task_no_parts === 1 || b.task_no_parts === "1" ? 1 : 0;
+
+  // Two maintenance tasks on the same system get the same name, and JOB_TASK
+  // may have a unique key on (job_id, task_name). Number repeats instead of
+  // failing: "Maintenance · Steering System (2)".
+  const [same] = await conn.execute(
+    "SELECT task_name FROM JOB_TASK WHERE job_id=? AND (task_name=? OR task_name LIKE ?)",
+    [jobId, taskName, `${taskName} (%)`]
+  );
+  if (same.length) {
+    const used = new Set(same.map((r) => r.task_name));
+    let n = 2;
+    while (used.has(`${taskName} (${n})`)) n++;
+    taskName = `${taskName} (${n})`;
+  }
 
   const taskStatus = b.task_status ?? "pending";
   const [res] = await conn.execute(
-    `INSERT INTO JOB_TASK (job_id, task_name, task_desc, task_status, task_order, completed_at, created_at) VALUES (?,?,?,?,?,NOW(),NOW())`,
-    [jobId, b.task_name, b.task_desc ?? null, taskStatus, b.task_order ?? 1]
+    `INSERT INTO JOB_TASK (job_id, task_name, task_desc, task_remark, task_no_parts, task_job_type, task_category,
+                           task_status, task_order, completed_at, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,NOW(),NOW())`,
+    [jobId, taskName, taskDesc, taskRemark, noParts, jobType, category, taskStatus, b.task_order ?? 1]
   );
 
   if (taskStatus === "done") {
@@ -2339,7 +2630,7 @@ async function createJobTask(conn, auth, jobId, b) {
       excludeUserId: await getOrCreateUserId(conn, auth),
       type: "job_progress",
       title: "Job progress update",
-      body: `${technicianName} completed a task on Job #${jobId}: ${b.task_name}.`,
+      body: `${technicianName} completed a task on Job #${jobId}: ${taskName}.`,
       jobId,
     });
   }
@@ -2359,6 +2650,14 @@ async function updateJobTask(conn, auth, taskId, b) {
 
   if (b.task_status != null)    { updates.push("task_status=?"); vals.push(b.task_status); }
   if (b.task_desc !== undefined) { updates.push("task_desc=?");   vals.push(b.task_desc ?? null); }
+  if (b.task_remark !== undefined) {
+    updates.push("task_remark=?");
+    vals.push(b.task_remark != null && String(b.task_remark).trim() ? String(b.task_remark).trim() : null);
+  }
+  if (b.task_no_parts !== undefined) {
+    updates.push("task_no_parts=?");
+    vals.push(b.task_no_parts === true || b.task_no_parts === 1 || b.task_no_parts === "1" ? 1 : 0);
+  }
   if (b.task_order != null)     { updates.push("task_order=?");  vals.push(Number(b.task_order)); }
 
   if (!updates.length) return json(200, { success: true });
@@ -2379,7 +2678,7 @@ async function listTaskParts(conn, auth, taskId) {
   // ones, which left their parts lists blank.
 
   const [rows] = await conn.execute(
-    `SELECT tp.task_id, tp.part_id, tp.qty, tp.line_cost, p.part_name, p.part_code, p.part_brand, p.part_cost, p.part_stock
+    `SELECT tp.task_id, tp.part_id, tp.qty, tp.line_cost, p.part_name, p.part_code, p.part_brand, p.part_unit, p.part_cost, p.part_stock
      FROM JOB_TASK_PART tp JOIN PART p ON p.part_id = tp.part_id
      WHERE tp.task_id=? ORDER BY p.part_name ASC, p.part_code ASC`,
     [taskId]
@@ -2395,9 +2694,17 @@ async function addTaskPart(conn, auth, taskId, b) {
   if (lock) return lock;
 
   const partId = toId(b.part_id, "part_id");
-  const rawQty = b.qty ?? b.jp_qty ?? 1;
-  const qty = toWholeNumber(rawQty, "qty");
-  if (qty <= 0) throw new Error("qty must be a whole number > 0");
+  const [pRows] = await conn.execute(`SELECT part_cost, part_unit FROM PART WHERE part_id=? LIMIT 1`, [partId]);
+  if (!pRows.length) return json(404, { message: "Part not found" });
+  const partUnit = pRows[0].part_unit || "pc";
+  const qty = parsePartQty(b.qty ?? b.jp_qty ?? 1, partUnit);
+  if (qty == null) {
+    return json(400, {
+      message: partUnit === "pc" || partUnit === "set"
+        ? "Quantity must be a whole number greater than 0"
+        : "Quantity must be greater than 0",
+    });
+  }
 
   let lineCost = null;
   if (b.line_cost != null || b.jp_linecost != null) {
@@ -2405,9 +2712,8 @@ async function addTaskPart(conn, auth, taskId, b) {
     if (!Number.isFinite(lc)) throw new Error("Invalid line_cost");
     lineCost = lc;
   } else {
-    const [pRows] = await conn.execute(`SELECT part_cost FROM PART WHERE part_id=? LIMIT 1`, [partId]);
-    const unit = pRows?.length ? Number(pRows[0].part_cost) : NaN;
-    if (Number.isFinite(unit)) lineCost = unit * qty;
+    const unitCost = Number(pRows[0].part_cost);
+    if (pRows[0].part_cost != null && Number.isFinite(unitCost)) lineCost = Math.round(unitCost * qty * 100) / 100;
   }
 
   await conn.execute(
@@ -2416,6 +2722,854 @@ async function addTaskPart(conn, auth, taskId, b) {
     [taskId, partId, qty, lineCost]
   );
   return json(200, { success: true });
+}
+
+// ===================== JOB ORDERS =====================
+//
+// A job order is work a technician logs directly for any bus (servicing, a
+// follow-up repair) with no breakdown report and no approval step. It is
+// stored as a REPORT of type 'job_order' plus its JOB, so every list, the
+// KPIs, the bus history and the Job Completion Report treat it like any other
+// job without a second set of tables.
+//
+// POST /job-orders creates both rows, already approved, accepted by the caller
+// and with the odometer recorded. The report starts as a draft (invisible to
+// every list) and the app then adds tasks, parts and photos through the
+// normal job endpoints and closes the job, which closes the report too. If the
+// app dies part-way, the unfinished job order waits in the technician's My
+// Jobs, where it can be finished like any other job.
+
+const JOB_ORDER_TYPE = "job_order";
+
+async function createJobOrder(conn, auth, b) {
+  const deny = requireRole(auth, ["admin", "technician"]);
+  if (deny) return deny;
+
+  const userId = await getOrCreateUserId(conn, auth);
+  const busId = b?.bus_id != null ? String(b.bus_id).trim() : "";
+  if (!busId) return json(400, { message: "Please choose a bus" });
+
+  const [busRows] = await conn.execute("SELECT bus_id, project_id FROM BUS WHERE bus_id=? LIMIT 1", [busId]);
+  if (!busRows.length) return json(404, { message: "Bus not found" });
+  const projectId = busRows[0].project_id;
+
+  if (auth.role !== "admin") {
+    const [chk] = await conn.execute(
+      "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+      [userId, projectId]
+    );
+    if (!chk.length) return json(403, { message: "This bus is not in one of your projects" });
+  }
+
+  // The job order is filed under its first task's category.
+  const issueType = normaliseBusSystem(b?.category ?? b?.issue_type);
+  if (!issueType) return json(400, { message: "Please choose the category (bus system)" });
+
+  // A maintenance job order has no issue text: name it after its category.
+  const desc = String(b?.description ?? "").trim() || `Maintenance · ${BUS_SYSTEM_BY_KEY.get(issueType).name}`;
+
+  const odo = toWholeNumber(b?.odometer, "odometer");
+  const reviewer = await getDisplayName(conn, auth);
+
+  let reportId;
+  let jobId;
+  await conn.beginTransaction();
+  try {
+    const [jobRes] = await conn.execute(
+      `INSERT INTO JOB (job_desc, job_status, job_created_at, technician_user_id, job_accepted_at,
+                        job_arrived_at, job_odometer, job_updated_at)
+       VALUES (?, 'open', NOW(), ?, NOW(), NOW(), ?, NOW())`,
+      [desc, userId, odo]
+    );
+    jobId = Number(jobRes.insertId);
+
+    const [repRes] = await conn.execute(
+      `INSERT INTO REPORT
+       (project_id, report_type, report_issue_type, report_desc, report_location, report_lat, report_lng,
+        report_priority, report_status, user_id, bus_id, job_id, report_uploaded_at,
+        report_review_action, report_review_by, report_review_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'low', ?, ?, ?, ?, NOW(), 'approved', ?, NOW())`,
+      [
+        projectId, JOB_ORDER_TYPE, issueType, desc,
+        b?.location ?? null, b?.lat ?? null, b?.lng ?? null,
+        REPORT_STATUS_DRAFT, userId, busId, jobId, reviewer,
+      ]
+    );
+    reportId = Number(repRes.insertId);
+
+    await upsertOdometerRecordedTask(conn, jobId);
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+
+  return json(200, { success: true, report_id: reportId, job_id: jobId });
+}
+
+// ===================== JOB COMPLETION REPORT (PDF) =====================
+//
+// Spec: "SKSC Job Completion Report Template Spec v1.1". The PDF itself is
+// rendered by the separate sksbus-pdf-renderer Lambda (headless Chrome,
+// outside the VPC; see lambda/pdf-renderer). This side does what needs the
+// database: it fixes the reference number, gathers every field the template
+// prints, and drops the lot into pdf-queue/ in S3, whose upload event starts
+// the renderer. The finished file lands under reports-pdf/.
+
+const PDF_QUEUE_PREFIX = "pdf-queue/";
+const PDF_OUT_PREFIX = "reports-pdf/";
+// Malaysia time, which every date on the report is printed in.
+const MYT_OFFSET_MS = 8 * 60 * 60 * 1000;
+// A queued PDF that hasn't appeared after this long is queued again.
+const PDF_REQUEUE_AFTER_MS = 2 * 60 * 1000;
+
+function mytDateParts(d) {
+  const t = new Date(new Date(d).getTime() + MYT_OFFSET_MS);
+  const y = t.getUTCFullYear();
+  const m = String(t.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(t.getUTCDate()).padStart(2, "0");
+  return { y, m, day, startUtc: new Date(Date.UTC(y, t.getUTCMonth(), t.getUTCDate()) - MYT_OFFSET_MS) };
+}
+
+// SKSC-JCR-YYYY-MM-DD-XX: the MYT date the problem was first reported, then
+// this report's place among the reports submitted that day (01, 02 ...).
+// Fixed once given, so a reprint carries the same number.
+async function ensureJobRefNo(conn, jobId) {
+  const [rows] = await conn.execute(
+    `SELECT j.job_ref_no, j.job_created_at, r.report_id, r.report_uploaded_at
+     FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id
+     WHERE j.job_id=? LIMIT 1`,
+    [jobId]
+  );
+  if (!rows.length) return null;
+  const row = rows[0];
+  if (row.job_ref_no) return row.job_ref_no;
+
+  const reportedAt = row.report_uploaded_at ?? row.job_created_at ?? new Date();
+  const { y, m, day, startUtc } = mytDateParts(reportedAt);
+  const endUtc = new Date(startUtc.getTime() + 24 * 60 * 60 * 1000);
+
+  let position = 1;
+  if (row.report_id != null) {
+    const [cnt] = await conn.execute(
+      `SELECT COUNT(*) AS n FROM REPORT
+       WHERE report_uploaded_at >= ? AND report_uploaded_at < ?
+         AND LOWER(TRIM(COALESCE(report_status,''))) <> ?
+         AND (report_uploaded_at < ? OR (report_uploaded_at = ? AND report_id <= ?))`,
+      [startUtc, endUtc, REPORT_STATUS_DRAFT, reportedAt, reportedAt, row.report_id]
+    );
+    position = Math.max(1, Number(cnt[0]?.n ?? 1));
+  }
+
+  // The position is unique per report, but a number already handed out (a
+  // report later reverted to draft, say) must never be reused, so step on to
+  // the next free one rather than fail.
+  for (let n = position; n < position + 99; n++) {
+    const ref = `SKSC-JCR-${y}-${m}-${day}-${String(n).padStart(2, "0")}`;
+    try {
+      const [res] = await conn.execute(
+        "UPDATE JOB SET job_ref_no=? WHERE job_id=? AND job_ref_no IS NULL",
+        [ref, jobId]
+      );
+      if (res.affectedRows) return ref;
+      const [again] = await conn.execute("SELECT job_ref_no FROM JOB WHERE job_id=?", [jobId]);
+      return again[0]?.job_ref_no ?? null;
+    } catch (e) {
+      if (e?.code !== "ER_DUP_ENTRY") throw e;
+    }
+  }
+  throw new Error("Could not assign a reference number");
+}
+
+function safeFilePart(s) {
+  return String(s ?? "").replace(/[^A-Za-z0-9_-]+/g, "");
+}
+
+function jobPdfKey(refNo, plate) {
+  return `${PDF_OUT_PREFIX}jobs/${refNo}_${safeFilePart(plate) || "BUS"}.pdf`;
+}
+
+async function putQueueFile(key, body) {
+  const client = await s3QueueClient();
+  await client.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      ContentType: "application/json",
+      Body: JSON.stringify(body),
+    })
+  );
+}
+
+async function s3ObjectExists(key) {
+  try {
+    const client = await s3QueueClient();
+    await client.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+    return true;
+  } catch (e) {
+    const status = e?.$metadata?.httpStatusCode;
+    // Without s3:ListBucket, S3 answers a missing file with 403, not 404.
+    if (status === 404 || status === 403 || e?.name === "NotFound" || e?.name === "NoSuchKey") return false;
+    throw e;
+  }
+}
+
+function roleLabel(role) {
+  const r = String(role ?? "").trim().toLowerCase();
+  return {
+    admin: "Admin",
+    fleet_manager: "Fleet Manager",
+    rm_manager: "R&M Manager",
+    technician: "Technician",
+    inventory_manager: "Inventory Manager",
+    driver: "Driver",
+  }[r] ?? null;
+}
+
+// Everything the Job Completion Report prints, in one object. The renderer
+// has no database access, so nothing may be left for it to look up.
+async function buildJobReportData(conn, jobId) {
+  const [jRows] = await conn.execute(
+    `SELECT j.*, r.report_id, r.report_type, r.report_issue_type, r.report_desc, r.report_location,
+            r.report_priority, r.report_uploaded_at, r.report_verified_name, r.report_review_by,
+            r.report_review_at, r.report_review_verified_name, r.bus_id, r.project_id,
+            reporter.user_name AS reporter_username, reporter.user_role AS reporter_role,
+            tech.user_name AS technician_username,
+            b.bus_ev_no, b.bus_model
+     FROM JOB j
+     LEFT JOIN REPORT r ON r.job_id = j.job_id
+     LEFT JOIN \`USER\` reporter ON reporter.user_id = r.user_id
+     LEFT JOIN \`USER\` tech ON tech.user_id = j.technician_user_id
+     LEFT JOIN BUS b ON b.bus_id = r.bus_id
+     WHERE j.job_id=? LIMIT 1`,
+    [jobId]
+  );
+  if (!jRows.length) return null;
+  const j = jRows[0];
+  const isJobOrder = j.report_type === JOB_ORDER_TYPE;
+
+  const [tasks] = await conn.execute(
+    `SELECT task_id, task_name, task_desc, task_remark, task_job_type, task_category,
+            task_status, task_order, completed_at, created_at
+     FROM JOB_TASK WHERE job_id=? AND task_name NOT IN (?, ?)
+     ORDER BY task_order, task_id`,
+    [jobId, ...SYSTEM_TASK_NAMES]
+  );
+
+  const [parts] = await conn.execute(
+    `SELECT tp.task_id, tp.qty, p.part_code, p.part_name, p.part_unit
+     FROM JOB_TASK_PART tp JOIN JOB_TASK t ON t.task_id = tp.task_id JOIN PART p ON p.part_id = tp.part_id
+     WHERE t.job_id=? ORDER BY p.part_name`,
+    [jobId]
+  );
+
+  const [jobMedia] = await conn.execute(
+    `SELECT task_id, s3_bucket, s3_key, uploaded_at FROM JOB_MEDIA
+     WHERE job_id=? AND media_type='image' ORDER BY uploaded_at, media_id`,
+    [jobId]
+  );
+
+  let reportMedia = [];
+  if (j.report_id != null) {
+    const [rm] = await conn.execute(
+      `SELECT s3_bucket, s3_key, uploaded_at FROM REPORT_MEDIA
+       WHERE report_id=? AND media_type='image' ORDER BY uploaded_at, media_id`,
+      [j.report_id]
+    );
+    reportMedia = rm;
+  }
+
+  const photo = (m) => ({ bucket: m.s3_bucket || S3_BUCKET, key: m.s3_key, at: m.uploaded_at });
+  const afterPhotos = jobMedia.filter((m) => m.task_id == null).map(photo);
+  const taskIds = new Set(tasks.map((t) => Number(t.task_id)));
+
+  const technician = j.technician_username ?? null;
+
+  // The event log, in the order the spec lists it. Who: the typed sign-off
+  // name where one was captured, otherwise the username.
+  const events = [];
+  if (!isJobOrder) {
+    events.push({ text: "Report submitted", by: j.report_verified_name || j.reporter_username, at: j.report_uploaded_at });
+    events.push({ text: "Job approved & distributed", by: j.report_review_verified_name || j.report_review_by, at: j.job_created_at ?? j.report_review_at });
+    if (j.job_accepted_at) events.push({ text: "Job accepted", by: j.job_accept_verified_name || technician, at: j.job_accepted_at });
+  } else {
+    events.push({ text: "Job order opened", by: technician, at: j.job_created_at });
+  }
+  if (j.job_arrived_at || j.job_odometer != null) {
+    events.push({
+      text: "Technician on site",
+      odometer: j.job_odometer,
+      by: technician,
+      at: j.job_arrived_at ?? null,
+    });
+  }
+  tasks.forEach((t, i) => {
+    if (t.completed_at) events.push({ text: `Task ${i + 1} completed`, by: technician, at: t.completed_at });
+  });
+  if (afterPhotos.length) {
+    events.push({ text: "After-repair photos taken", by: technician, at: afterPhotos[afterPhotos.length - 1].at });
+  }
+  if (j.job_completed_at) {
+    events.push({ text: "Job completed", by: j.job_verified_name || technician, at: j.job_completed_at });
+  }
+
+  return {
+    kind: "job",
+    job_id: Number(jobId),
+    report_id: j.report_id != null ? Number(j.report_id) : null,
+    is_job_order: isJobOrder,
+    ref_no: j.job_ref_no,
+    issued_at: j.job_report_issued_at ?? new Date(),
+    status: JOB_DONE_STATUSES.includes(j.job_status) ? "CLOSED" : String(j.job_status ?? "").toUpperCase(),
+    priority: isJobOrder ? null : (j.report_priority ? String(j.report_priority).toUpperCase() : null),
+    vehicle: { plate: j.bus_id, fleet_no: j.bus_ev_no, model: j.bus_model },
+    odometer: j.job_odometer,
+    location: j.report_location,
+    reported_by: isJobOrder ? technician : j.reporter_username,
+    reporter_name: isJobOrder ? technician : (j.report_verified_name || j.reporter_username),
+    reporter_role: isJobOrder ? "Technician" : roleLabel(j.reporter_role),
+    approved_by: isJobOrder ? null : j.report_review_by,
+    technician,
+    report_date: isJobOrder ? j.job_created_at : j.report_uploaded_at,
+    approved_at: isJobOrder ? null : (j.job_created_at ?? j.report_review_at),
+    accepted_at: isJobOrder ? null : j.job_accepted_at,
+    arrived_at: j.job_arrived_at,
+    completed_at: j.job_completed_at,
+    issue: j.report_desc,
+    issue_type: j.report_issue_type,
+    category: busSystemInfo(j.report_issue_type),
+    report_photos: reportMedia.map(photo),
+    tasks: tasks.map((t, i) => ({
+      no: i + 1,
+      name: t.task_name,
+      job_type: TASK_JOB_TYPES.includes(String(t.task_job_type ?? "")) ? t.task_job_type : null,
+      category: busSystemInfo(t.task_category),
+      work_done: t.task_desc,
+      remark: t.task_remark,
+      status: String(t.task_status ?? "").toLowerCase() === "done" ? "DONE" : String(t.task_status ?? "").toUpperCase(),
+      completed_at: t.completed_at,
+      parts: parts
+        .filter((p) => Number(p.task_id) === Number(t.task_id))
+        .map((p) => ({ code: p.part_code, name: p.part_name, qty: Number(p.qty), unit: p.part_unit || "pc" })),
+      photos: jobMedia.filter((m) => Number(m.task_id) === Number(t.task_id)).map(photo),
+    })),
+    // Photos attached to a task not shown on the report (the odometer task)
+    // are not lost: they go with the after-repair group.
+    after_photos: [
+      ...afterPhotos,
+      ...jobMedia.filter((m) => m.task_id != null && !taskIds.has(Number(m.task_id))).map(photo),
+    ],
+    events,
+  };
+}
+
+async function queueJobReportPdf(conn, jobId) {
+  const data = await buildJobReportData(conn, jobId);
+  if (!data || !data.ref_no) return null;
+  const outKey = jobPdfKey(data.ref_no, data.vehicle.plate);
+  const issuedAt = data.issued_at instanceof Date ? data.issued_at : new Date(data.issued_at);
+
+  await putQueueFile(`${PDF_QUEUE_PREFIX}job-${jobId}-${Date.now()}.json`, {
+    ...data,
+    issued_at: issuedAt,
+    out_bucket: S3_BUCKET,
+    out_key: outKey,
+  });
+  await conn.execute(
+    `UPDATE JOB SET job_report_pdf_s3_key=?, job_report_issued_at=COALESCE(job_report_issued_at, ?)
+     WHERE job_id=?`,
+    [outKey, issuedAt, jobId]
+  );
+  console.log("[PDF] queued", { jobId, outKey });
+  return outKey;
+}
+
+async function assertCanSeeJob(conn, auth, jobId) {
+  const [rows] = await conn.execute(
+    `SELECT j.job_status, j.job_ref_no, j.job_report_pdf_s3_key, j.job_report_issued_at, j.job_updated_at,
+            r.project_id, r.bus_id
+     FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id WHERE j.job_id=? LIMIT 1`,
+    [jobId]
+  );
+  if (!rows.length) return { error: json(404, { message: "Job not found" }) };
+  if (auth.role !== "admin") {
+    const userId = await getOrCreateUserId(conn, auth);
+    const [chk] = await conn.execute(
+      "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+      [userId, rows[0].project_id]
+    );
+    if (!chk.length) return { error: json(403, { message: "Forbidden" }) };
+  }
+  return { job: rows[0] };
+}
+
+// GET /jobs/{id}/report-pdf: the Job Completion Report, once it exists.
+// Returns "pending" while the renderer works; queues it if it was never made
+// (jobs closed before this feature, or a queue write that failed at close).
+async function getJobReportPdf(conn, auth, jobId) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const { job, error } = await assertCanSeeJob(conn, auth, jobId);
+  if (error) return error;
+  if (!JOB_DONE_STATUSES.includes(job.job_status)) {
+    return json(409, { code: "JOB_NOT_CLOSED", message: "The report is available once the job is completed." });
+  }
+
+  const refNo = job.job_ref_no || (await ensureJobRefNo(conn, jobId));
+  const key = job.job_report_pdf_s3_key || jobPdfKey(refNo, job.bus_id);
+  const filename = key.split("/").pop();
+
+  if (await s3ObjectExists(key)) {
+    const url = await getSignedUrl(
+      s3,
+      new GetObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: key,
+        ResponseContentDisposition: `attachment; filename="${filename}"`,
+        ResponseContentType: "application/pdf",
+      }),
+      { expiresIn: VIEW_URL_TTL_S }
+    );
+    return json(200, { status: "ready", url, filename, ref_no: refNo });
+  }
+
+  // Not there yet. Queue it, unless this instance queued it moments ago.
+  const lastQueue = _pdfQueuedAt.get(Number(jobId)) ?? 0;
+  if (Date.now() - lastQueue > PDF_REQUEUE_AFTER_MS) {
+    await queueJobReportPdf(conn, jobId);
+    _pdfQueuedAt.set(Number(jobId), Date.now());
+  }
+  return json(200, { status: "pending", filename, ref_no: refNo });
+}
+
+// The app polls every couple of seconds while a PDF renders. One Lambda
+// instance usually serves those polls, so a small in-memory note of when each
+// job was last queued stops every poll from queuing another render.
+const _pdfQueuedAt = new Map();
+
+// ===================== PERFORMANCE & KPIs =====================
+
+const KPI_ROLES = ["admin", "rm_manager", "fleet_manager"];
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseKpiRange(qs) {
+  const to = qs?.to ? new Date(String(qs.to)) : new Date();
+  const from = qs?.from ? new Date(String(qs.from)) : new Date(to.getTime() - 30 * DAY_MS);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) {
+    throw new Error("Invalid from/to");
+  }
+  return { from, to };
+}
+
+// Project scope for the KPI queries: the asked-for project, or (for anyone
+// but admin) only the projects they belong to.
+async function kpiScope(conn, auth, qs, alias = "r") {
+  const where = [`LOWER(TRIM(COALESCE(${alias}.report_status,''))) <> ?`];
+  const vals = [REPORT_STATUS_DRAFT];
+  const projectId = qs?.project_id ? String(qs.project_id).trim() : null;
+  if (projectId) { where.push(`${alias}.project_id=?`); vals.push(projectId); }
+  if (auth.role !== "admin") {
+    const userId = await getOrCreateUserId(conn, auth);
+    where.push(`${alias}.project_id IN (SELECT project_id FROM USER_PROJECT WHERE user_id=?)`);
+    vals.push(userId);
+  }
+  return { where, vals };
+}
+
+const KPI_ROW_SQL = `
+  SELECT r.report_id, r.report_type, r.report_issue_type, r.report_desc, r.report_priority,
+         r.report_status, r.report_uploaded_at, r.bus_id, r.project_id, r.job_id,
+         j.job_status, j.job_created_at, j.job_accepted_at, j.job_arrived_at, j.job_completed_at,
+         j.job_ref_no, tech.user_name AS technician_name, b.bus_ev_no, b.bus_model
+  FROM REPORT r
+  LEFT JOIN JOB j ON j.job_id = r.job_id
+  LEFT JOIN \`USER\` tech ON tech.user_id = j.technician_user_id
+  LEFT JOIN BUS b ON b.bus_id = r.bus_id`;
+
+const ms = (a, b) => (a && b ? new Date(b).getTime() - new Date(a).getTime() : null);
+const avg = (xs) => {
+  const v = xs.filter((x) => x != null && Number.isFinite(x) && x >= 0);
+  return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length) : null;
+};
+const isDone = (row) => JOB_DONE_STATUSES.includes(row.job_status) && row.job_completed_at;
+const isJobOrderRow = (row) => row.report_type === JOB_ORDER_TYPE;
+
+// Time-to-fix figures for one job, in ms. Job orders have no waiting stages
+// (they are logged after the work), so only turnaround-free fields apply.
+function jobTimes(row, now = new Date()) {
+  const jo = isJobOrderRow(row);
+  const end = row.job_completed_at ?? null;
+  return {
+    turnaround: jo ? null : ms(row.report_uploaded_at, end),
+    approval: jo ? null : ms(row.report_uploaded_at, row.job_created_at),
+    accept: jo ? null : ms(row.job_created_at, row.job_accepted_at),
+    travel: jo ? null : ms(row.job_accepted_at, row.job_arrived_at),
+    repair: jo ? null : ms(row.job_arrived_at, end),
+    // Downtime: from report until fixed (or until now while still open).
+    downtime: jo || !row.job_id ? null : ms(row.report_uploaded_at, end ?? now),
+  };
+}
+
+function kpiSummary(rows) {
+  const times = rows.filter(isDone).map((r) => jobTimes(r));
+  return {
+    jobs_closed: rows.filter(isDone).length,
+    avg_turnaround_ms: avg(times.map((t) => t.turnaround)),
+    avg_approval_ms: avg(times.map((t) => t.approval)),
+    avg_accept_ms: avg(times.map((t) => t.accept)),
+    avg_travel_ms: avg(times.map((t) => t.travel)),
+    avg_repair_ms: avg(times.map((t) => t.repair)),
+  };
+}
+
+function bucketsFor(from, to) {
+  const span = to.getTime() - from.getTime();
+  // Up to ~10 days: per day. Up to ~2 months: per week. Longer: per month.
+  const unit = span <= 10 * DAY_MS ? "day" : span <= 62 * DAY_MS ? "week" : "month";
+  const out = [];
+  let cur = new Date(from);
+  while (cur < to) {
+    let next;
+    if (unit === "day") next = new Date(cur.getTime() + DAY_MS);
+    else if (unit === "week") next = new Date(cur.getTime() + 7 * DAY_MS);
+    else {
+      const t = new Date(cur.getTime() + MYT_OFFSET_MS);
+      next = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 1) - MYT_OFFSET_MS);
+    }
+    if (next > to) next = new Date(to);
+    out.push({ start: new Date(cur), end: next, opened: 0, closed: 0 });
+    cur = next;
+  }
+  return { unit, buckets: out };
+}
+
+function inRange(d, from, to) {
+  if (!d) return false;
+  const t = new Date(d).getTime();
+  return t >= from.getTime() && t < to.getTime();
+}
+
+function issueCounts(rows) {
+  const counts = {};
+  for (const r of rows) {
+    const k = categoryOf(r.report_issue_type);
+    counts[k] = (counts[k] ?? 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([issue_type, count]) => ({ issue_type, count, label: busSystemInfo(issue_type) }))
+    .sort((a, b) => b.count - a.count);
+}
+
+// Every report in [from - span, to): this period plus the one before it, so
+// "vs last period" comes from the same query.
+async function loadKpiRows(conn, auth, qs, from, to, extraWhere = [], extraVals = []) {
+  const { where, vals } = await kpiScope(conn, auth, qs);
+  const span = to.getTime() - from.getTime();
+  const prevFrom = new Date(from.getTime() - span);
+  where.push("(r.report_uploaded_at >= ? OR j.job_completed_at >= ?)");
+  vals.push(prevFrom, prevFrom);
+  where.push("r.report_uploaded_at < ?");
+  vals.push(to);
+  const [rows] = await conn.execute(
+    `${KPI_ROW_SQL} WHERE ${[...where, ...extraWhere].join(" AND ")} ORDER BY r.report_uploaded_at DESC, r.report_id DESC LIMIT 5000`,
+    [...vals, ...extraVals]
+  );
+  return { rows, prevFrom };
+}
+
+function overviewFromRows(rows, from, to, prevFrom) {
+  const closedNow = rows.filter((r) => isDone(r) && inRange(r.job_completed_at, from, to));
+  const closedPrev = rows.filter((r) => isDone(r) && inRange(r.job_completed_at, prevFrom, from));
+  // Jobs opened in the period: reports that became jobs (approved), plus job
+  // orders. Declined or still-pending reports are not jobs.
+  const openedNow = rows.filter((r) => r.job_id != null && inRange(r.report_uploaded_at, from, to));
+
+  const now = kpiSummary(closedNow);
+  const prev = kpiSummary(closedPrev);
+
+  const { unit, buckets } = bucketsFor(from, to);
+  for (const r of openedNow) {
+    const b = buckets.find((x) => inRange(r.report_uploaded_at, x.start, x.end));
+    if (b) b.opened += 1;
+  }
+  for (const r of closedNow) {
+    const b = buckets.find((x) => inRange(r.job_completed_at, x.start, x.end));
+    if (b) b.closed += 1;
+  }
+
+  const byBus = new Map();
+  for (const r of openedNow) {
+    const k = String(r.bus_id);
+    const e = byBus.get(k) ?? { bus_id: r.bus_id, bus_ev_no: r.bus_ev_no, jobs: 0 };
+    e.jobs += 1;
+    byBus.set(k, e);
+  }
+
+  return {
+    from, to,
+    ...now,
+    prev_jobs_closed: prev.jobs_closed,
+    prev_avg_turnaround_ms: prev.avg_turnaround_ms,
+    jobs_opened: openedNow.length,
+    bucket_unit: unit,
+    buckets: buckets.map((b) => ({ start: b.start, end: b.end, opened: b.opened, closed: b.closed })),
+    issues: issueCounts(openedNow),
+    top_buses: [...byBus.values()].sort((a, b) => b.jobs - a.jobs).slice(0, 5),
+  };
+}
+
+async function getKpiOverview(conn, auth, qs) {
+  const deny = requireRole(auth, KPI_ROLES);
+  if (deny) return deny;
+  const { from, to } = parseKpiRange(qs);
+  const { rows, prevFrom } = await loadKpiRows(conn, auth, qs, from, to);
+  return json(200, overviewFromRows(rows, from, to, prevFrom));
+}
+
+async function getKpiBuses(conn, auth, qs) {
+  const deny = requireRole(auth, KPI_ROLES);
+  if (deny) return deny;
+  const { from, to } = parseKpiRange(qs);
+  const { rows } = await loadKpiRows(conn, auth, qs, from, to);
+  // Optional: only jobs of one issue type (Overview's "Common issues" tap).
+  const onlyIssue = qs?.issue_type
+    ? (normaliseBusSystem(qs.issue_type) ?? (String(qs.issue_type) === UNCATEGORISED ? UNCATEGORISED : "__none__"))
+    : null;
+
+  const byBus = new Map();
+  for (const r of rows) {
+    if (r.job_id == null || !inRange(r.report_uploaded_at, from, to)) continue;
+    if (onlyIssue && categoryOf(r.report_issue_type) !== onlyIssue) continue;
+    const k = String(r.bus_id);
+    const e = byBus.get(k) ?? {
+      bus_id: r.bus_id, bus_ev_no: r.bus_ev_no, bus_model: r.bus_model,
+      jobs: 0, downtime_ms: 0, last_issue: null, last_report_at: null,
+    };
+    e.jobs += 1;
+    e.downtime_ms += jobTimes(r, to < new Date() ? to : new Date()).downtime ?? 0;
+    if (!e.last_report_at || new Date(r.report_uploaded_at) > new Date(e.last_report_at)) {
+      e.last_report_at = r.report_uploaded_at;
+      e.last_issue = r.report_desc;
+    }
+    byBus.set(k, e);
+  }
+  const buses = [...byBus.values()].sort((a, b) => b.jobs - a.jobs || b.downtime_ms - a.downtime_ms);
+  return json(200, { from, to, buses, total_jobs: buses.reduce((s, b) => s + b.jobs, 0) });
+}
+
+async function loadBusHistory(conn, auth, qs, busId, from, to) {
+  const [busRows] = await conn.execute(
+    "SELECT bus_id, bus_ev_no, bus_model, bus_route, bus_route_number, project_id FROM BUS WHERE bus_id=? LIMIT 1",
+    [busId]
+  );
+  if (!busRows.length) return { error: json(404, { message: "Bus not found" }) };
+  const bus = busRows[0];
+
+  const { where, vals } = await kpiScope(conn, auth, { ...qs, project_id: bus.project_id });
+  const [allTime] = await conn.execute(
+    `SELECT COUNT(*) AS n FROM REPORT r WHERE ${where.join(" AND ")} AND r.bus_id=?`,
+    [...vals, busId]
+  );
+  const [rows] = await conn.execute(
+    `${KPI_ROW_SQL} WHERE ${where.join(" AND ")} AND r.bus_id=? AND r.report_uploaded_at >= ? AND r.report_uploaded_at < ?
+     ORDER BY r.report_uploaded_at DESC, r.report_id DESC LIMIT 1000`,
+    [...vals, busId, from, to]
+  );
+  const [odo] = await conn.execute(
+    `SELECT j.job_odometer FROM JOB j JOIN REPORT r ON r.job_id = j.job_id
+     WHERE r.bus_id=? AND j.job_odometer IS NOT NULL ORDER BY COALESCE(j.job_arrived_at, j.job_created_at) DESC LIMIT 1`,
+    [busId]
+  );
+  return { bus, rows, reportsAllTime: Number(allTime[0]?.n ?? 0), latestOdometer: odo[0]?.job_odometer ?? null };
+}
+
+function busHistoryRow(r) {
+  const t = jobTimes(r);
+  return {
+    report_id: r.report_id,
+    job_id: r.job_id,
+    job_ref_no: r.job_ref_no,
+    report_type: r.report_type,
+    issue_type: categoryOf(r.report_issue_type),
+    issue_label: busSystemInfo(r.report_issue_type),
+    issue: r.report_desc,
+    priority: r.report_priority,
+    status: String(r.report_status ?? "").toLowerCase() || "submitted",
+    reported_at: r.report_uploaded_at,
+    completed_at: r.job_completed_at,
+    technician_name: r.technician_name,
+    turnaround_ms: t.turnaround,
+  };
+}
+
+async function getKpiBus(conn, auth, busId, qs) {
+  const deny = requireRole(auth, KPI_ROLES);
+  if (deny) return deny;
+  const { from, to } = parseKpiRange(qs);
+  const res = await loadBusHistory(conn, auth, qs, busId, from, to);
+  if (res.error) return res.error;
+  const { bus, rows, reportsAllTime, latestOdometer } = res;
+
+  const jobs = rows.filter((r) => r.job_id != null);
+  const now = new Date();
+  return json(200, {
+    from, to,
+    bus: { ...bus, latest_odometer: latestOdometer, reports_all_time: reportsAllTime },
+    jobs: jobs.length,
+    downtime_ms: jobs.reduce((s, r) => s + (jobTimes(r, to < now ? to : now).downtime ?? 0), 0),
+    avg_turnaround_ms: kpiSummary(jobs).avg_turnaround_ms,
+    issues: issueCounts(jobs),
+    reports: rows.map(busHistoryRow),
+  });
+}
+
+// ===================== EXPORTS (PDF) =====================
+//
+// POST /exports queues a fleet report: "range" (breakdowns between two dates,
+// optionally for some buses or one status) or "bus" (one bus's full history).
+// The data is gathered here and rendered by the same sksbus-pdf-renderer as
+// the Job Completion Report. GET /exports/{id} reports when the file is ready.
+
+const EXPORT_MAX_ROWS = 1000;
+
+async function tasksForJobs(conn, jobIds) {
+  if (!jobIds.length) return { tasks: [], parts: [] };
+  const ph = jobIds.map(() => "?").join(",");
+  const [tasks] = await conn.execute(
+    `SELECT task_id, job_id, task_name, task_desc, task_remark, task_job_type, task_category FROM JOB_TASK
+     WHERE job_id IN (${ph}) AND task_name NOT IN (?, ?) ORDER BY job_id, task_order, task_id`,
+    [...jobIds, ...SYSTEM_TASK_NAMES]
+  );
+  const [parts] = await conn.execute(
+    `SELECT t.job_id, tp.qty, p.part_code, p.part_name, p.part_unit
+     FROM JOB_TASK_PART tp JOIN JOB_TASK t ON t.task_id = tp.task_id JOIN PART p ON p.part_id = tp.part_id
+     WHERE t.job_id IN (${ph})`,
+    jobIds
+  );
+  return { tasks, parts };
+}
+
+function exportRow(r, tasks, parts) {
+  const jobTasks = tasks.filter((t) => Number(t.job_id) === Number(r.job_id));
+  return {
+    ...busHistoryRow(r),
+    bus_id: r.bus_id,
+    bus_ev_no: r.bus_ev_no,
+    work_done: jobTasks.map((t) => ({
+      issue_found: t.task_name,
+      job_type: t.task_job_type,
+      category: busSystemInfo(t.task_category),
+      work_done: t.task_desc,
+      remark: t.task_remark,
+    })),
+    parts: parts
+      .filter((p) => Number(p.job_id) === Number(r.job_id))
+      .map((p) => ({ code: p.part_code, name: p.part_name, qty: Number(p.qty), unit: p.part_unit || "pc" })),
+  };
+}
+
+async function createExport(conn, auth, b) {
+  const deny = requireRole(auth, KPI_ROLES);
+  if (deny) return deny;
+
+  const kind = String(b?.kind ?? "");
+  if (kind !== "range" && kind !== "bus") return json(400, { message: "kind must be 'range' or 'bus'" });
+
+  const exportId = crypto.randomUUID();
+  const generatedBy = await getDisplayName(conn, auth);
+  let payload;
+  let filename;
+
+  if (kind === "range") {
+    const { from, to } = parseKpiRange(b);
+    const busIds = Array.isArray(b?.bus_ids) ? b.bus_ids.map((x) => String(x).trim()).filter(Boolean) : [];
+    const status = ["open", "closed"].includes(String(b?.status)) ? String(b.status) : "all";
+
+    const extra = [];
+    const extraVals = [];
+    if (busIds.length) { extra.push(`r.bus_id IN (${busIds.map(() => "?").join(",")})`); extraVals.push(...busIds); }
+    const { rows, prevFrom } = await loadKpiRows(conn, auth, b, from, to, extra, extraVals);
+    let inPeriod = rows.filter((r) => inRange(r.report_uploaded_at, from, to));
+    if (status === "closed") inPeriod = inPeriod.filter(isDone);
+    if (status === "open") inPeriod = inPeriod.filter((r) => !isDone(r));
+    inPeriod.sort((a, x) => new Date(a.report_uploaded_at) - new Date(x.report_uploaded_at) || a.report_id - x.report_id);
+    const truncated = inPeriod.length > EXPORT_MAX_ROWS;
+    inPeriod = inPeriod.slice(0, EXPORT_MAX_ROWS);
+
+    const { tasks, parts } = await tasksForJobs(conn, inPeriod.map((r) => r.job_id).filter((x) => x != null));
+    const fromP = mytDateParts(from);
+    const toP = mytDateParts(new Date(to.getTime() - 1));
+    filename = `SKSC-Breakdowns_${fromP.y}-${fromP.m}-${fromP.day}_to_${toP.y}-${toP.m}-${toP.day}.pdf`;
+    payload = {
+      kind: "range",
+      from, to, status,
+      bus_ids: busIds,
+      project_id: b?.project_id ?? null,
+      overview: overviewFromRows(rows, from, to, prevFrom),
+      rows: inPeriod.map((r) => exportRow(r, tasks, parts)),
+      truncated,
+    };
+  } else {
+    const busId = String(b?.bus_id ?? "").trim();
+    if (!busId) return json(400, { message: "bus_id is required" });
+    const to = b?.to ? new Date(String(b.to)) : new Date();
+    const from = b?.from ? new Date(String(b.from)) : new Date("2000-01-01T00:00:00Z");
+    const res = await loadBusHistory(conn, auth, b, busId, from, to);
+    if (res.error) return res.error;
+    const { bus, rows, reportsAllTime, latestOdometer } = res;
+    const ordered = [...rows].sort((a, x) => new Date(a.report_uploaded_at) - new Date(x.report_uploaded_at));
+    const jobs = ordered.filter((r) => r.job_id != null);
+    const { tasks, parts } = await tasksForJobs(conn, jobs.map((r) => r.job_id));
+    const now = new Date();
+    filename = `SKSC-Bus-Report_${safeFilePart(bus.bus_id)}${bus.bus_ev_no ? `_${safeFilePart(bus.bus_ev_no)}` : ""}.pdf`;
+    payload = {
+      kind: "bus",
+      from: b?.from ? from : null,
+      to,
+      bus: { ...bus, latest_odometer: latestOdometer, reports_all_time: reportsAllTime },
+      jobs: jobs.length,
+      downtime_ms: jobs.reduce((s, r) => s + (jobTimes(r, now).downtime ?? 0), 0),
+      avg_turnaround_ms: kpiSummary(jobs).avg_turnaround_ms,
+      issues: issueCounts(jobs),
+      rows: ordered.slice(0, EXPORT_MAX_ROWS).map((r) => exportRow(r, tasks, parts)),
+      truncated: ordered.length > EXPORT_MAX_ROWS,
+    };
+  }
+
+  const outKey = `${PDF_OUT_PREFIX}exports/${exportId}.pdf`;
+  await putQueueFile(`${PDF_QUEUE_PREFIX}export-${exportId}.json`, {
+    ...payload,
+    export_id: exportId,
+    generated_by: generatedBy,
+    generated_at: new Date(),
+    out_bucket: S3_BUCKET,
+    out_key: outKey,
+    filename,
+  });
+  return json(200, { export_id: exportId, filename });
+}
+
+async function getExport(conn, auth, exportId, qs) {
+  const deny = requireRole(auth, KPI_ROLES);
+  if (deny) return deny;
+  if (!/^[0-9a-f-]{36}$/i.test(String(exportId))) return json(400, { message: "Invalid export id" });
+
+  const key = `${PDF_OUT_PREFIX}exports/${exportId}.pdf`;
+  if (!(await s3ObjectExists(key))) return json(200, { status: "pending" });
+
+  const filename = String(qs?.filename ?? "export.pdf").replace(/[^A-Za-z0-9_.-]+/g, "") || "export.pdf";
+  const url = await getSignedUrl(
+    s3,
+    new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      ResponseContentDisposition: `attachment; filename="${filename}"`,
+      ResponseContentType: "application/pdf",
+    }),
+    { expiresIn: VIEW_URL_TTL_S }
+  );
+  return json(200, { status: "ready", url, filename });
 }
 
 // ===================== TYRES =====================
@@ -2926,7 +4080,8 @@ async function getTyre(conn, auth, tyreId) {
   if (!rows.length) return json(404, { message: "Tyre not found" });
 
   const [mountingHistory] = await conn.execute(
-    `SELECT * FROM TYRE_MOUNTING WHERE tyre_id=? ORDER BY mounted_at DESC, tyre_mounting_id DESC`,
+    `SELECT m.*, b.bus_ev_no FROM TYRE_MOUNTING m LEFT JOIN BUS b ON b.bus_id = m.bus_id
+     WHERE m.tyre_id=? ORDER BY m.mounted_at DESC, m.tyre_mounting_id DESC`,
     [tyreId]
   );
 
@@ -2969,11 +4124,25 @@ async function createTyre(conn, auth, b) {
     throw new Error(`Invalid tyre_tread_count — must be ${TYRE_ALLOWED_TREAD_COUNTS.join(" or ")}`);
   }
 
+  // Every new tyre is measured as it enters stock: one reading per groove.
+  // It is on no bus yet, so this can't be an inspection; the readings live on
+  // the TYRE row and pre-fill the incoming thickness when it is fitted.
+  if (b.intake_thickness == null) {
+    return json(400, {
+      code: "INTAKE_THICKNESS_REQUIRED",
+      message: `Enter the thickness of each groove (${treadCount} readings)`,
+    });
+  }
+  const intake = parseIntakeThickness(b.intake_thickness, treadCount);
+  const userId = await getOrCreateUserId(conn, auth);
+
   const [res] = await conn.execute(
     `INSERT INTO TYRE (tyre_serial_number, tyre_brand, tyre_model, tyre_retread_count,
                        retread_sticker_s3_bucket, retread_sticker_s3_key,
-                       tyre_tread_count, tyre_bought_date)
-     VALUES (?,?,?,?,?,?,?,?)`,
+                       tyre_tread_count, tyre_bought_date,
+                       intake_thickness_1, intake_thickness_2, intake_thickness_3, intake_thickness_4,
+                       intake_measured_at, intake_measured_by)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)`,
     [
       String(b.tyre_serial_number).trim(),
       b.tyre_brand ? String(b.tyre_brand).trim() : null,
@@ -2983,9 +4152,25 @@ async function createTyre(conn, auth, b) {
       stickerKey,
       treadCount,
       b.tyre_bought_date ?? null,
+      intake[0] ?? null, intake[1] ?? null, intake[2] ?? null, intake[3] ?? null,
+      userId,
     ]
   );
   return json(200, { tyre_id: res.insertId });
+}
+
+// The deepest a groove on a new bus tyre can plausibly be; anything above it
+// is a typing slip (e.g. 155 for 15.5).
+const TYRE_MAX_THICKNESS_MM = 30;
+
+function parseIntakeThickness(value, treadCount) {
+  const readings = parseThicknessReadings(value, "intake_thickness", treadCount);
+  readings.forEach((n, i) => {
+    if (n > TYRE_MAX_THICKNESS_MM) {
+      throw new Error(`Invalid intake_thickness[${i}] — must be ${TYRE_MAX_THICKNESS_MM}mm or less`);
+    }
+  });
+  return readings;
 }
 
 async function updateTyre(conn, auth, tyreId, b) {
@@ -3017,6 +4202,22 @@ async function updateTyre(conn, auth, tyreId, b) {
     updates.push("tyre_tread_count=?"); vals.push(treadCount);
   }
   if (b.tyre_bought_date !== undefined) { updates.push("tyre_bought_date=?"); vals.push(b.tyre_bought_date ?? null); }
+  // Correcting the readings taken when the tyre entered stock. Checked against
+  // the groove count being set in this same call, or the tyre's current one.
+  if (b.intake_thickness != null) {
+    let count = b.tyre_tread_count != null ? Number(b.tyre_tread_count) : null;
+    if (count == null) {
+      const [cur] = await conn.execute("SELECT tyre_tread_count FROM TYRE WHERE tyre_id=?", [tyreId]);
+      if (!cur.length) return json(404, { message: "Tyre not found" });
+      count = Number(cur[0].tyre_tread_count) || 4;
+    }
+    const intake = parseIntakeThickness(b.intake_thickness, count);
+    updates.push(
+      "intake_thickness_1=?", "intake_thickness_2=?", "intake_thickness_3=?", "intake_thickness_4=?",
+      "intake_measured_at=NOW()", "intake_measured_by=?",
+    );
+    vals.push(intake[0] ?? null, intake[1] ?? null, intake[2] ?? null, intake[3] ?? null, await getOrCreateUserId(conn, auth));
+  }
   if (b.tyre_status != null) {
     updates.push("tyre_status=?");
     vals.push(requireOneOf(b.tyre_status, TYRE_MANUAL_STATUSES, "tyre_status"));
@@ -3724,7 +4925,13 @@ async function createTyreInspectionSession(conn, auth, busId, b) {
 
     for (const entry of tyres) {
       const tyreId = toId(entry.tyre_id, "tyre_id");
-      if (!mountedTyreIds.has(tyreId)) throw new Error(`tyre_id ${tyreId} is not currently mounted on this bus`);
+      // Tyres are only inspected on a bus. A spare's readings are taken when
+      // it is added to stock, and again when it is fitted.
+      if (!mountedTyreIds.has(tyreId)) {
+        throw new Error(
+          `Invalid tyre_id ${tyreId}: tyres can only be inspected while mounted on a bus. Fit it with Tyre Replacement first.`
+        );
+      }
 
       const pressure = entry.tyre_pressure != null ? Number(entry.tyre_pressure) : null;
       if (pressure != null && !Number.isFinite(pressure)) throw new Error("Invalid tyre_pressure");

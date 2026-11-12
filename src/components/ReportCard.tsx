@@ -1,7 +1,9 @@
+import { FontAwesome5 } from "@expo/vector-icons";
 import { Eye } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useI18n } from "../i18n/i18n-ctx";
 import { Report } from "../types/report";
+import { busSystemLabel } from "../utils/busSystems";
 import { reportTypeTitleLabel } from "../utils/reportType";
 import ElapsedTimer from "./ElapsedTimer";
 import PersonChip from "./PersonChip";
@@ -40,30 +42,48 @@ export default function ReportCard({
   );
 
   const declineReason = report.audit?.reason?.trim();
+  const isJobOrder = report.type === "job_order";
 
   return (
     <View style={styles.card}>
-      {/* Header */}
+      {/* Header: title, the vehicle right under it, then the date. Priority
+          and the open timer sit top-right, same size, priority first. */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>
             {reportTypeTitleLabel(report.type, t)} #{report.id}
           </Text>
-          <Text style={styles.date}>{report.date}</Text>
-          <View style={styles.badges}>
-            <StatusBadge type={report.severity} />
-            {isDeclined && <StatusBadge type="critical" label={t("statusBadge.declined")} />}
+          <View style={styles.vehicleRow}>
+            <FontAwesome5 name="bus" size={13} color="#374151" />
+            <Text style={styles.vehicle}>
+              {report.vehicle}
+              {!!report.evNumber && <Text style={styles.vehicleEv}>{`  (${report.evNumber})`}</Text>}
+            </Text>
           </View>
+          <Text style={styles.date}>{report.date}</Text>
+          {(isDeclined || isJobOrder) && (
+            <View style={styles.badges}>
+              {isDeclined && <StatusBadge type="critical" size="sm" label={t("statusBadge.declined")} />}
+              {isJobOrder && (
+                <View style={styles.jobOrderTag}>
+                  <Text style={styles.jobOrderTagText}>{t("jobOrder.tag")}</Text>
+                </View>
+              )}
+            </View>
+          )}
         </View>
 
-        <ElapsedTimer
-          since={report.dateIso}
-          until={report.status === "closed" ? report.closedAt : null}
-        />
+        <View style={styles.headerRight}>
+          {!isJobOrder && <StatusBadge type={report.severity} size="sm" style={styles.rightPill} />}
+          <ElapsedTimer
+            since={report.dateIso}
+            until={report.status === "closed" ? report.closedAt : null}
+            style={styles.rightPill}
+          />
+        </View>
       </View>
 
       {/* Meta */}
-      <Text style={styles.meta}>{t("reportCard.vehicle", { value: report.vehicle })}</Text>
       <Text style={styles.meta}>{t("reportCard.location", { value: report.location })}</Text>
 
       {report.reporter && (report.reporter.username || report.reporter.name) ? (
@@ -106,7 +126,13 @@ export default function ReportCard({
         )
       )}
 
-      <Text style={styles.description}>{report.description}</Text>
+      <Text style={styles.description}>
+        <Text style={styles.issueLabel}>{t("reportCard.issue")} </Text>
+        {report.description}
+      </Text>
+      {!!report.issueType && (
+        <Text style={styles.issueType}>{busSystemLabel(report.issueType, t)}</Text>
+      )}
 
       {isDeclined && (
         <View style={styles.declineBox}>
@@ -173,6 +199,20 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   headerLeft: { flex: 1 },
+  headerRight: { alignItems: "stretch", gap: 6, minWidth: 104 },
+  rightPill: { justifyContent: "center" },
+
+  vehicleRow: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 4 },
+  vehicle: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  vehicleEv: { fontWeight: "700", color: "#4B5563" },
+
+  jobOrderTag: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#F3E8FF",
+  },
+  jobOrderTagText: { fontSize: 12, fontWeight: "800", color: "#7E22CE" },
 
   title: {
     fontSize: 18,
@@ -201,9 +241,12 @@ const styles = StyleSheet.create({
 
   description: {
     marginTop: 12,
-    fontSize: 14,
+    fontSize: 15,
     color: "#111827",
+    lineHeight: 21,
   },
+  issueLabel: { fontWeight: "800" },
+  issueType: { marginTop: 4, fontSize: 12, fontWeight: "600", color: "#6B7280" },
 
   declineBox: {
     marginTop: 12,

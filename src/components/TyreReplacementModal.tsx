@@ -14,7 +14,8 @@ import {
 } from "react-native";
 import DropDownPicker from "react-native-dropdown-picker";
 import type { Tyre, TyreSidewallCondition } from "../api/client";
-import { api } from "../api/client";
+import { api, intakeReadings } from "../api/client";
+import ThicknessInputRow from "./tyres/ThicknessInputRow";
 import DraftRestoreBar from "./DraftRestoreBar";
 import { useFormDraft } from "../hooks/useFormDraft";
 import ImagePickerField, { LocalMedia } from "./ImagePicker";
@@ -213,6 +214,20 @@ export default function TyreReplacementModal({
     );
   }, [incomingTreadCount]);
 
+  // A spare measured when it was added to stock pre-fills its readings, for
+  // the technician to check and correct. Only empty cells are filled, so
+  // anything already typed (or restored from a draft) is never overwritten.
+  const intake = useMemo(
+    () => (selectedSpare && selectedSpare.tyre_id !== outgoingTyre?.tyre_id ? intakeReadings(selectedSpare) : null),
+    [selectedSpare, outgoingTyre],
+  );
+  useEffect(() => {
+    if (!intake) return;
+    setIncomingThickness((prev) =>
+      prev.length === intake.length && prev.every((v) => v.trim() === "") ? intake.map((n) => String(n)) : prev,
+    );
+  }, [intake]);
+
   const outgoingReadingsValid = useMemo(() => !!parseReadings(outgoingThickness), [outgoingThickness]);
   const incomingReadingsValid = useMemo(() => !!parseReadings(incomingThickness), [incomingThickness]);
   const pressureValid = useMemo(() => {
@@ -254,17 +269,6 @@ export default function TyreReplacementModal({
         sidewallEvidenceOk(outgoingCondition, outgoingSidewallPhoto))) &&
     !submitting;
 
-  const setReading = (
-    setter: React.Dispatch<React.SetStateAction<string[]>>,
-    index: number,
-    value: string,
-  ) => {
-    setter((prev) => {
-      const next = [...prev];
-      next[index] = value;
-      return next;
-    });
-  };
 
   const handleConfirm = async () => {
     if (!position || !selectedSpare) return;
@@ -383,20 +387,12 @@ export default function TyreReplacementModal({
     setter: React.Dispatch<React.SetStateAction<string[]>>,
   ) => (
     <>
-      <View style={s.thicknessRow}>
-        {values.map((v, i) => (
-          <TextInput
-            key={i}
-            value={v}
-            onChangeText={(t) => setReading(setter, i, t)}
-            placeholder={t("tyres.replacementForm.thicknessPlaceholder")}
-            placeholderTextColor="#9CA3AF"
-            keyboardType="decimal-pad"
-            style={s.thicknessInput}
-            editable={!submitting}
-          />
-        ))}
-      </View>
+      <ThicknessInputRow
+        values={values}
+        onChange={(next) => setter(next)}
+        placeholder={t("tyres.replacementForm.thicknessPlaceholder")}
+        editable={!submitting}
+      />
       <TreadOrderCaptions count={values.length} axleSide={position?.axle_side ?? null} />
       {/* Derived at the call site, not inside the profile: these are readings
           being typed right now, under the OUTER/INNER captions directly above,
@@ -531,6 +527,17 @@ export default function TyreReplacementModal({
               <Text style={[s.fieldLabel, { marginTop: 16 }]}>
                 THICKNESS (mm) · {incomingTreadCount} GROOVES
               </Text>
+              {intake && selectedSpare?.intake_measured_at ? (
+                <Text style={s.prefillNote}>
+                  {t("tyres.replacementForm.prefilledFromIntake", {
+                    date: new Date(selectedSpare.intake_measured_at).toLocaleDateString(undefined, {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    }),
+                  })}
+                </Text>
+              ) : null}
               {renderThicknessRow(incomingThickness, setIncomingThickness)}
 
               <Text style={s.fieldLabel}>{t("tyres.replacementForm.pressure")}</Text>
@@ -671,6 +678,7 @@ const s = StyleSheet.create({
     marginBottom: 8,
   },
   thicknessRow: { flexDirection: "row", gap: 8 },
+  prefillNote: { fontSize: 12, color: "#1D4ED8", backgroundColor: "#EFF6FF", borderRadius: 8, padding: 8, marginBottom: 8 },
   thicknessInput: {
     flex: 1,
     backgroundColor: "#F9FAFB",

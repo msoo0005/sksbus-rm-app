@@ -3,7 +3,9 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-rou
 import React, { useCallback, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { TyreDetail } from "@/api/client";
-import { api } from "@/api/client";
+import { api, intakeReadings } from "@/api/client";
+import ThicknessInputRow, { parseThicknessCells } from "@/components/tyres/ThicknessInputRow";
+import { useSession } from "@/ctx";
 import { isRetreadEndOfLife, retreadLabel } from "@/components/RetreadCountSelector";
 import RouteBadge from "@/components/RouteBadge";
 import TyreTreadProfile from "@/components/TyreTreadProfile";
@@ -14,6 +16,7 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { formatDate, formatDateTime } from "@/utils/datetime";
 import { detailLine, formatReading } from "@/utils/tyreFormat";
 import { positionLabelFor } from "@/utils/tyrePositions";
+import { formatBusLabel } from "@/utils/busLabel";
 
 // A single tyre's life: where it is now, every bus it has been fitted to, and
 // every inspection it has been through.
@@ -147,7 +150,12 @@ export default function TyreDetailScreen() {
             </Text>
           </>
         )}
+        {/* Tyres are only inspected while on a bus; a spare's readings are
+            taken when it is added to stock and again when it is fitted. */}
+        {!mounted && <Text style={styles.spareNote}>{t("tyres.detail.inspectOnlyWhenFitted")}</Text>}
       </View>
+
+      <IntakeCard tyre={tyre} onSaved={load} />
 
       <Text style={styles.sectionLabel}>{t("tyres.detail.fittedTo")}</Text>
       <View style={styles.card}>
@@ -163,7 +171,7 @@ export default function TyreDetailScreen() {
               <FontAwesome5 name="bus" size={14} color="#111827" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{tyre.current_bus_id}</Text>
+              <Text style={styles.rowTitle}>{formatBusLabel(tyre.current_bus_id, tyre.current_bus_ev_no)}</Text>
               <RouteBadge
                 colour={tyre.current_bus_route_colour}
                 number={tyre.current_bus_route_number}
@@ -191,7 +199,7 @@ export default function TyreDetailScreen() {
           tyre.mounting_history.map((m) => (
             <View key={m.tyre_mounting_id} style={styles.historyRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle}>{m.bus_id}</Text>
+                <Text style={styles.rowTitle}>{formatBusLabel(m.bus_id, m.bus_ev_no)}</Text>
                 <Text style={styles.meta}>
                   {detailLine([
                     positionLabelFor(m),
@@ -257,7 +265,93 @@ export default function TyreDetailScreen() {
   );
 }
 
+// The readings taken when the tyre was added to stock. Admins and R&M can
+// correct a mistyped reading here.
+function IntakeCard({ tyre, onSaved }: { tyre: TyreDetail; onSaved: () => Promise<void> | void }) {
+  const { t } = useI18n();
+  const { dbUser } = useSession() as any;
+  const canEdit = ["admin", "rm_manager"].includes(String(dbUser?.user_role ?? ""));
+  const readings = intakeReadings(tyre);
+  const count = tyre.tyre_tread_count || 4;
+  const [editing, setEditing] = useState(false);
+  const [cells, setCells] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  const startEdit = () => {
+    setCells(readings ? readings.map(String) : Array.from({ length: count }, () => ""));
+    setEditing(true);
+  };
+
+  const save = async () => {
+    const parsed = parseThicknessCells(cells);
+    if (!parsed || parsed.length !== count) {
+      Alert.alert(t("common.validation"), t("tyres.addTyre.thicknessRequired", { count }));
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.updateTyre(tyre.tyre_id, { intake_thickness: parsed });
+      setEditing(false);
+      await onSaved();
+    } catch (e: any) {
+      Alert.alert(t("common.error"), e?.message ?? "Unknown error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <View style={styles.intakeHead}>
+        <Text style={[styles.sectionLabel, { marginTop: 0, marginBottom: 0 }]}>{t("tyres.detail.intakeTitle")}</Text>
+        {canEdit && !editing && (
+          <Pressable onPress={startEdit} hitSlop={8}>
+            <Text style={styles.intakeEdit}>{readings ? t("tyres.detail.intakeEdit") : t("tyres.detail.intakeAdd")}</Text>
+          </Pressable>
+        )}
+      </View>
+      <View style={styles.card}>
+        {editing ? (
+          <>
+            <ThicknessInputRow values={cells} onChange={setCells} editable={!saving} showGrooveLabels />
+            <View style={styles.intakeButtons}>
+              <Pressable style={styles.intakeCancel} onPress={() => setEditing(false)} disabled={saving}>
+                <Text style={styles.intakeCancelText}>{t("common.cancel")}</Text>
+              </Pressable>
+              <Pressable style={styles.intakeSave} onPress={save} disabled={saving}>
+                <Text style={styles.intakeSaveText}>{saving ? t("common.saving") : t("common.save")}</Text>
+              </Pressable>
+            </View>
+          </>
+        ) : readings ? (
+          <>
+            <TyreTreadProfile readings={readings} showUnevenWear={false} />
+            <Text style={styles.treadMeta}>
+              {detailLine([
+                readings.map((n) => `${n}`).join(" / ") + " mm",
+                tyre.intake_measured_at
+                  ? t("tyres.detail.measuredOn", { date: formatDate(tyre.intake_measured_at) })
+                  : null,
+              ])}
+            </Text>
+          </>
+        ) : (
+          <Text style={styles.empty}>{t("tyres.detail.intakeNone")}</Text>
+        )}
+      </View>
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
+  spareNote: { marginTop: 10, fontSize: 12, color: "#1D4ED8", backgroundColor: "#EFF6FF", padding: 8, borderRadius: 8 },
+  intakeHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 20, marginBottom: 8 },
+  intakeEdit: { fontSize: 13, fontWeight: "700", color: "#2563EB" },
+  intakeButtons: { flexDirection: "row", gap: 10, marginTop: 12 },
+  intakeCancel: { flex: 1, height: 42, borderRadius: 10, borderWidth: 1, borderColor: "#D1D5DB", alignItems: "center", justifyContent: "center" },
+  intakeCancelText: { fontWeight: "700", color: "#111827" },
+  intakeSave: { flex: 1, height: 42, borderRadius: 10, backgroundColor: "#111827", alignItems: "center", justifyContent: "center" },
+  intakeSaveText: { fontWeight: "800", color: "#fff" },
   page: { flex: 1, backgroundColor: "#F9FAFB" },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#F9FAFB" },
 

@@ -55,7 +55,7 @@ function normaliseStatusToUi(raw?: string | null): Report["status"] {
 function normaliseType(raw?: string | null): Report["type"] {
   const s = toLower(raw);
 
-  if (s === "problem" || s === "repair" || s === "accident") return s;
+  if (s === "problem" || s === "repair" || s === "accident" || s === "job_order") return s;
 
   return "problem";
 }
@@ -116,6 +116,8 @@ function mapApiRowToReport(r: any): FleetReport {
     type: normaliseType(r?.report_type),
     severity: normaliseSeverity(r?.report_priority),
     vehicle: String(r?.bus_id ?? "—"),
+    evNumber: r?.bus_ev_no ?? null,
+    issueType: r?.report_issue_type ?? null,
     location: String(r?.report_location ?? "—"),
     lat: r?.report_lat ?? null,
     lng: r?.report_lng ?? null,

@@ -17,6 +17,7 @@ import BusIdentity from "../../BusIdentity";
 import { UNEVEN_WEAR_I18N_KEY } from "../../../utils/tyreWear";
 import { positionLabelFor } from "../../../utils/tyrePositions";
 import { useProjectFilter } from "../../../hooks/useProjectFilter";
+import { formatBusLabel } from "../../../utils/busLabel";
 
 // Fleet tread analysis: the distribution, the statistics behind it, and the
 // buses that need attention first.
@@ -313,7 +314,7 @@ export default function SummaryPanel({ active }: { active: boolean }) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.wearType}>{t(UNEVEN_WEAR_I18N_KEY[w.uneven_wear_type])}</Text>
                     <Text style={styles.wearMeta}>
-                      {w.bus_id} · {w.tyre_serial_number}
+                      {formatBusLabel(w.bus_id, w.bus_ev_no)} · {w.tyre_serial_number}
                     </Text>
                   </View>
                   <Text style={styles.wearSpread}>{mm(w.tread_spread_mm)}</Text>

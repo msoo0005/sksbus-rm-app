@@ -30,9 +30,10 @@ const HEADER_TITLE_MAX_WIDTH = 190;
 
 
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
-  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres"],
-  fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector"],
-  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory"],
+  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres", "/performance"],
+  // /rm-manager/job: "View report" from a bus history opens the job (read-only).
+  fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector", "/performance", "/rm-manager/job"],
+  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory", "/performance"],
   technician: ["/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres"],
   inventory_manager: ["/inventory", "/project-selector"],
   driver: ["/form", "/project-selector"],
@@ -392,6 +393,10 @@ export default function RootLayout() {
         <Stack.Screen name="technician-home" options={{ title: "Home" }} />
         <Stack.Screen name="technician/index" options={{ title: "Technician" }} />
         <Stack.Screen name="technician/job/[id]" options={{ title: "Job Details" }} />
+        <Stack.Screen name="technician/job-order" options={{ title: t("jobOrder.navTitle") }} />
+        <Stack.Screen name="performance/index" options={{ title: t("performance.navTitle") }} />
+        <Stack.Screen name="performance/bus/[busId]" options={{ title: t("performance.busHistoryTitle") }} />
+        <Stack.Screen name="performance/export" options={{ title: t("performance.exportTitle") }} />
         <Stack.Screen name="inventory" options={{ title: t("inventory.navTitle") }} />
         <Stack.Screen name="form" options={{ title: t("reportForm.title") }} />
         <Stack.Screen name="buses" options={{ title: t("buses.navTitle") }} />

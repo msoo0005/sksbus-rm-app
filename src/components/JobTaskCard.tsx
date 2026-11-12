@@ -16,6 +16,7 @@ import type { TaskPart } from "../api/client";
 import { api } from "../api/client";
 import ImagePickerField, { LocalMedia } from "./ImagePicker";
 import ImageViewerOverlay from "./ImageViewerOverlay";
+import { busSystemLabel } from "../utils/busSystems";
 
 export type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -23,6 +24,9 @@ export type JobTaskLike = {
   task_id: number;
   task_name: string;
   task_desc: string | null;
+  task_remark?: string | null;
+  task_job_type?: "repair" | "maintenance" | null;
+  task_category?: string | null;
   task_status: TaskStatus;
   task_order: number;
   completed_at?: string | null;
@@ -227,6 +231,16 @@ export default function JobTaskCard({ task, jobId, editable, onUpdated }: Props)
           <Text style={s.taskName} numberOfLines={expanded ? undefined : 1}>
             {task.task_name}
           </Text>
+          {!!(task.task_job_type || task.task_category) && (
+            <Text style={s.taskMeta} numberOfLines={expanded ? undefined : 1}>
+              {[
+                task.task_job_type ? t(`taskEditor.type_${task.task_job_type}`) : null,
+                task.task_category ? busSystemLabel(task.task_category, t) : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </Text>
+          )}
           <Text style={[s.statusText, { color: conf.color }]}>
             {conf.label}
             {task.completed_at ? ` · ${formatDateTime(task.completed_at)}` : ""}
@@ -293,6 +307,13 @@ export default function JobTaskCard({ task, jobId, editable, onUpdated }: Props)
             </View>
           )}
 
+          {!!task.task_remark && (
+            <View style={s.remarkBox}>
+              <Text style={s.detailLabel}>{t("taskEditor.remark")}</Text>
+              <Text style={[s.detailValue, { fontWeight: "700" }]}>{task.task_remark}</Text>
+            </View>
+          )}
+
           {/* Parts used */}
           <View style={{ marginBottom: 12 }}>
             <Text style={s.detailLabel}>{t("jobTask.partsUsed")}</Text>
@@ -309,7 +330,10 @@ export default function JobTaskCard({ task, jobId, editable, onUpdated }: Props)
                       ({p.part_brand ? `${p.part_brand} · ` : ""}{p.part_code})
                     </Text>
                   </Text>
-                  <Text style={s.partQty}>×{p.qty}</Text>
+                  <Text style={s.partQty}>
+                    ×{Number(p.qty)}
+                    {p.part_unit && p.part_unit !== "pc" ? ` ${p.part_unit}` : ""}
+                  </Text>
                 </View>
               ))
             )}
@@ -543,4 +567,6 @@ const s = StyleSheet.create({
     backgroundColor: "#F9FAFB",
   },
   editBtnText: { fontSize: 12, fontWeight: "700", color: "#374151" },
+  taskMeta: { fontSize: 12, fontWeight: "600", color: "#4B5563", marginTop: 2 },
+  remarkBox: { marginBottom: 12, padding: 10, borderRadius: 10, backgroundColor: "#F3F4F6" },
 });

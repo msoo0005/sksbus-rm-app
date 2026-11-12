@@ -50,3 +50,49 @@ export async function uploadVerificationSelfie(
   if (!put.ok) throw new Error(`Selfie upload failed (${put.status})`);
   return presign.s3_key;
 }
+
+// One job photo: presign → PUT to S3 → confirm. With a taskId it belongs to
+// that task (the task's completion photos); without, it is an "after repair"
+// photo of the bus.
+export async function uploadJobPhoto(
+  jobId: number,
+  media: { localUri: string; mime_type: string },
+  taskId?: number,
+) {
+  const presign = await api.presignJobMedia(jobId, media.mime_type, taskId != null ? { taskId } : undefined);
+  const blob = await (await fetch(media.localUri)).blob();
+  const put = await fetch(presign.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": media.mime_type },
+    body: blob,
+  });
+  if (!put.ok) throw new Error(`Photo upload failed (${put.status})`);
+  await api.confirmJobMedia(jobId, {
+    s3_key: presign.s3_key,
+    mime_type: media.mime_type,
+    size_bytes: blob.size,
+    ...(taskId != null ? { task_id: taskId } : {}),
+  });
+}
+
+// The completion sign-off selfie, stored on the job with the typed name.
+export async function uploadJobCompletionSelfie(
+  jobId: number,
+  selfie: { localUri: string; mime_type: string },
+  verifiedName: string,
+) {
+  const presign = await api.presignJobSelfie(jobId, selfie.mime_type);
+  const blob = await (await fetch(selfie.localUri)).blob();
+  const put = await fetch(presign.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": selfie.mime_type },
+    body: blob,
+  });
+  if (!put.ok) throw new Error(`Selfie upload failed (${put.status})`);
+  await api.confirmJobSelfie(jobId, {
+    s3_key: presign.s3_key,
+    mime_type: selfie.mime_type,
+    size_bytes: blob.size,
+    verified_name: verifiedName,
+  });
+}

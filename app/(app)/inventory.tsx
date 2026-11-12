@@ -23,7 +23,7 @@ import {
   View,
 } from 'react-native';
 
-import { api, CatalogPart, PartInput } from '@/api/client';
+import { api, CatalogPart, PART_UNITS, PartInput, PartUnit } from '@/api/client';
 import { useI18n } from '@/i18n/i18n-ctx';
 
 const formatPrice = (v: CatalogPart['part_cost']) => {
@@ -32,8 +32,8 @@ const formatPrice = (v: CatalogPart['part_cost']) => {
   return Number.isFinite(n) ? `RM ${n.toFixed(2)}` : null;
 };
 
-type FormState = { name: string; code: string; brand: string; price: string; stock: string };
-const EMPTY_FORM: FormState = { name: '', code: '', brand: '', price: '', stock: '' };
+type FormState = { name: string; code: string; brand: string; unit: PartUnit; price: string; stock: string };
+const EMPTY_FORM: FormState = { name: '', code: '', brand: '', unit: 'pc', price: '', stock: '' };
 
 const stockOf = (p: CatalogPart) => {
   const n = Number(p.part_stock);
@@ -93,6 +93,7 @@ export default function Inventory() {
       name: p.part_name ?? '',
       code: p.part_code ?? '',
       brand: p.part_brand ?? '',
+      unit: (p.part_unit as PartUnit) ?? 'pc',
       price: p.part_cost == null ? '' : String(Number(p.part_cost)),
       stock: String(stockOf(p)),
     });
@@ -133,6 +134,7 @@ export default function Inventory() {
       part_name: name,
       part_code: code,
       part_brand: brand || null,
+      part_unit: form.unit,
       part_cost: price,
       part_stock: stock,
     };
@@ -163,6 +165,7 @@ export default function Inventory() {
           <Text style={s.partName} numberOfLines={2}>{item.part_name}</Text>
           <Text style={s.partMeta} numberOfLines={1}>
             {item.part_code} · {item.part_brand || t('inventory.noBrand')}
+            {item.part_unit && item.part_unit !== 'pc' ? ` · ${t('inventory.perUnit', { unit: item.part_unit })}` : ''}
           </Text>
           <View style={[s.stockPill, stock === 0 && s.stockPillEmpty]}>
             <Text style={[s.stockText, stock === 0 && s.stockTextEmpty]}>
@@ -271,6 +274,22 @@ export default function Inventory() {
               onChange={(v) => setForm((f) => ({ ...f, brand: v }))}
               editable={!saving}
             />
+            <Text style={s.unitLabel}>{t('inventory.partUnit')}</Text>
+            <View style={s.unitRow}>
+              {PART_UNITS.map((u) => {
+                const active = form.unit === u;
+                return (
+                  <Pressable
+                    key={u}
+                    onPress={() => setForm((f) => ({ ...f, unit: u }))}
+                    disabled={saving}
+                    style={[s.unitChip, active && s.unitChipActive]}
+                  >
+                    <Text style={[s.unitChipText, active && s.unitChipTextActive]}>{t(`inventory.unit_${u}`)}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
             <Field
               label={t('inventory.partPrice')}
               value={form.price}
@@ -401,6 +420,12 @@ const s = StyleSheet.create({
   partPrice: { fontSize: 14, fontWeight: '800', color: '#111827' },
   partPriceMissing: { color: '#9CA3AF', fontWeight: '600' },
   stats: { flexDirection: 'row', gap: 24 },
+  unitLabel: { fontSize: 12, fontWeight: '700', color: '#374151', marginBottom: 6, marginTop: 4 },
+  unitRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  unitChip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: '#D1D5DB' },
+  unitChipActive: { backgroundColor: '#111827', borderColor: '#111827' },
+  unitChipText: { fontSize: 13, fontWeight: '600', color: '#111827' },
+  unitChipTextActive: { color: '#fff' },
   stockPill: {
     alignSelf: 'flex-start',
     marginTop: 6,

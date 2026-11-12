@@ -61,6 +61,14 @@ const MODULE_DEFS = [
     accentLight: "#F0F9FF",
   },
   {
+    id: "performance",
+    titleKey: "performance.homeTitle",
+    descKey: "performance.homeDescription",
+    icon: "chart-bar",
+    accent: "#34873F",
+    accentLight: "#F0FDF4",
+  },
+  {
     id: "tyres",
     titleKey: "adminHome.tyresTitle",
     descKey: "adminHome.tyresDesc",
@@ -102,7 +110,7 @@ export default function HomeScreen() {
       // first, from when that was the only thing guaranteeing a project was
       // chosen; the gate does that now, and admin has already passed it to be
       // looking at this console at all.
-      router.push("/fleet-manager" as any);
+      router.push("/fleet-manager-home" as any);
     } else if (moduleId === "rm-manager") {
       router.push("/rm-manager-home" as any);
     } else if (moduleId === "technician") {

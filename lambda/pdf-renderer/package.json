@@ -1,0 +1,10 @@
+{
+  "name": "sksbus-pdf-renderer",
+  "private": true,
+  "type": "module",
+  "description": "Renders SKS Chassis PDF reports (Job Completion Report, fleet exports) from pdf-queue/ in S3.",
+  "dependencies": {
+    "@sparticuz/chromium": "~131.0.1",
+    "puppeteer-core": "~23.11.1"
+  }
+}

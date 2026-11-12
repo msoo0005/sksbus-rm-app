@@ -1,8 +1,7 @@
 // RMManagerScreen.tsx
-import { FontAwesome5 } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
-import { Alert, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, RefreshControl, ScrollView, Text, View } from "react-native";
 
 import { api } from "@/api/client";
 import { uploadVerificationSelfie } from "@/api/media";
@@ -12,12 +11,14 @@ import DeclineReasonModal from "@/components/DeclineReasonModal";
 import JobDetailsModal from "@/components/JobDetailsModal";
 import ReportCard from "@/components/ReportCard";
 import SegmentedTabs from "@/components/SegmentedTabs";
+import SortChips from "@/components/SortChips";
 import { useSession } from "@/ctx";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { Report } from "@/types/report";
+import { DEFAULT_SORT, SortState, sortReports } from "@/utils/reportSort";
 
-type Tab = "pending" | "open" | "closed" | "kpi";
+type Tab = "pending" | "open" | "closed";
 
 type JobSummary = {
   job_id: number;
@@ -38,6 +39,8 @@ type JobSummary = {
   report_location?: string | null;
   report_uploaded_at?: string | null;
   bus_id?: string | null;
+  bus_ev_no?: string | null;
+  report_issue_type?: string | null;
   reporter_name?: string | null;
   reporter_email?: string | null;
   job_accept_verified_name?: string | null;
@@ -65,7 +68,7 @@ function normaliseStatusToUi(raw?: string | null): Report["status"] {
 
 function normaliseType(raw?: string | null): Report["type"] {
   const s = toLower(raw);
-  if (s === "problem" || s === "repair" || s === "accident") return s;
+  if (s === "problem" || s === "repair" || s === "accident" || s === "job_order") return s;
   return "problem";
 }
 
@@ -115,6 +118,8 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
     type: normaliseType(r?.report_type ?? job?.report_type),
     severity: normaliseSeverity(r?.report_priority ?? job?.report_priority),
     vehicle: String(r?.bus_id ?? job?.bus_id ?? "—"),
+    evNumber: r?.bus_ev_no ?? job?.bus_ev_no ?? null,
+    issueType: r?.report_issue_type ?? job?.report_issue_type ?? null,
     location: String(r?.report_location ?? job?.report_location ?? "—"),
     lat: r?.report_lat ?? null,
     lng: r?.report_lng ?? null,
@@ -139,310 +144,6 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
   };
 }
 
-// ── KPI helpers ──────────────────────────────────────────────────────────────
-
-function avgCompletionHours(jobs: JobSummary[]): number | null {
-  const durations: number[] = [];
-  for (const j of jobs) {
-    const start = j.job_accepted_at ?? j.job_created_at;
-    const end = j.job_completed_at;
-    if (!start || !end) continue;
-    const ms = new Date(end).getTime() - new Date(start).getTime();
-    if (ms > 0) durations.push(ms / 3_600_000);
-  }
-  if (!durations.length) return null;
-  return durations.reduce((a, b) => a + b, 0) / durations.length;
-}
-
-const COMPLETED_STATUSES = new Set(["completed", "closed", "done"]);
-const ACTIVE_STATUSES = new Set(["open", "assigned", "in_progress", "in progress", "active"]);
-
-function jobCompletionHours(j: JobSummary): number | null {
-  const start = j.job_accepted_at ?? j.job_created_at;
-  const end = j.job_completed_at;
-  if (!start || !end) return null;
-  const ms = new Date(end).getTime() - new Date(start).getTime();
-  return ms > 0 ? ms / 3_600_000 : null;
-}
-
-function formatShortDate(isoLike?: string | null) {
-  if (!isoLike) return "—";
-  const d = new Date(isoLike);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString();
-}
-
-type BadgeVariant = "filled-red" | "filled-dark" | "filled-blue" | "outline";
-
-function getBadgeVariant(value: string): BadgeVariant {
-  const v = toLower(value);
-  if (v === "problem" || v === "high" || v === "critical") return "filled-red";
-  if (v === "repair" || v === "medium" || v === "completed" || v === "in_progress" || v === "in progress") return "filled-dark";
-  if (v === "open" || v === "assigned") return "filled-blue";
-  return "outline";
-}
-
-const STATUS_LABEL_KEYS: Record<string, string> = {
-  problem: "statusBadge.problem",
-  repair: "statusBadge.repair",
-  accident: "statusBadge.accident",
-  low: "statusBadge.low",
-  medium: "statusBadge.medium",
-  high: "statusBadge.high",
-  critical: "statusBadge.critical",
-  pending: "statusBadge.pending",
-  open: "statusBadge.open",
-  closed: "statusBadge.closed",
-  approved: "statusBadge.approved",
-  declined: "statusBadge.declined",
-  assigned: "statusBadge.assigned",
-  in_progress: "statusBadge.inProgress",
-  "in progress": "statusBadge.inProgress",
-  completed: "statusBadge.completed",
-  done: "statusBadge.done",
-};
-
-function statusLabel(value: string, t: (key: string) => string): string {
-  const key = STATUS_LABEL_KEYS[toLower(value)];
-  return key ? t(key) : value.replace(/_/g, " ");
-}
-
-function Badge({ label, neutral }: { label: string; neutral?: boolean }) {
-  const { t } = useI18n();
-  const variant = neutral ? "outline" : getBadgeVariant(label);
-  const bg =
-    variant === "filled-red" ? "#EF4444"
-    : variant === "filled-dark" ? "#111827"
-    : variant === "filled-blue" ? "#3B82F6"
-    : "transparent";
-  const textCol = variant === "outline" ? "#374151" : "#fff";
-  const border = variant === "outline" ? "#D1D5DB" : bg;
-
-  return (
-    <View style={[tblStyles.badge, { backgroundColor: bg, borderColor: border }]}>
-      <Text style={[tblStyles.badgeText, { color: textCol }]}>{statusLabel(label, t)}</Text>
-    </View>
-  );
-}
-
-function JobsTable({ jobs }: { jobs: JobSummary[] }) {
-  const { t } = useI18n();
-  const cols = [
-    t("reports.colJobId"),
-    t("reports.colVehicle"),
-    t("reports.colCategory"),
-    t("reports.colPriority"),
-    t("reports.colStatus"),
-    t("reports.colSubmitted"),
-    t("reports.colCompletion"),
-    t("reports.colTechnician"),
-    t("reports.colReporter"),
-  ];
-  const colWidths = [64, 80, 100, 90, 120, 100, 100, 130, 130];
-
-  return (
-    <View style={kpiStyles.section}>
-      <Text style={kpiStyles.sectionTitle}>{t("reports.allJobs")}</Text>
-      {jobs.length === 0 ? (
-        <Text style={kpiStyles.empty}>{t("reports.noJobsYet")}</Text>
-      ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View>
-            {/* Header */}
-            <View style={[tblStyles.row, tblStyles.headerRow]}>
-              {cols.map((c, i) => (
-                <Text key={c} style={[tblStyles.headerCell, { width: colWidths[i] }]}>{c}</Text>
-              ))}
-            </View>
-            {/* Rows */}
-            {jobs.map((j, idx) => {
-              const hrs = jobCompletionHours(j);
-              return (
-                <View key={j.job_id} style={[tblStyles.row, idx % 2 === 1 && tblStyles.rowAlt]}>
-                  <Text style={[tblStyles.cell, { width: colWidths[0] }]}>#{j.job_id}</Text>
-                  <Text style={[tblStyles.cell, { width: colWidths[1] }]}>{j.bus_id ?? "—"}</Text>
-                  <View style={{ width: colWidths[2], justifyContent: "center" }}>
-                    {j.report_type ? <Badge label={j.report_type} neutral /> : <Text style={tblStyles.cell}>—</Text>}
-                  </View>
-                  <View style={{ width: colWidths[3], justifyContent: "center" }}>
-                    {j.report_priority ? <Badge label={j.report_priority} /> : <Text style={tblStyles.cell}>—</Text>}
-                  </View>
-                  <View style={{ width: colWidths[4], justifyContent: "center" }}>
-                    {j.job_status ? <Badge label={j.job_status} /> : <Text style={tblStyles.cell}>—</Text>}
-                  </View>
-                  <Text style={[tblStyles.cell, { width: colWidths[5] }]}>
-                    {formatShortDate(j.report_uploaded_at ?? j.job_created_at)}
-                  </Text>
-                  <Text style={[tblStyles.cell, { width: colWidths[6] }]}>
-                    {hrs != null ? `${hrs.toFixed(1)}h` : "—"}
-                  </Text>
-                  <Text style={[tblStyles.cell, { width: colWidths[7] }]}>
-                    {j.technician_name ?? "—"}
-                  </Text>
-                  <Text style={[tblStyles.cell, { width: colWidths[8] }]}>
-                    {j.reporter_name ?? "—"}
-                  </Text>
-                </View>
-              );
-            })}
-          </View>
-        </ScrollView>
-      )}
-    </View>
-  );
-}
-
-// ── Sub-components ────────────────────────────────────────────────────────────
-
-function KpiCard({
-  icon,
-  label,
-  value,
-  sub,
-  color = "#111827",
-}: {
-  icon: string;
-  label: string;
-  value: string;
-  sub: string;
-  color?: string;
-}) {
-  return (
-    <View style={kpiStyles.card}>
-      <View style={kpiStyles.cardHeader}>
-        <Text style={kpiStyles.cardLabel}>{label}</Text>
-        <FontAwesome5 name={icon} size={14} color="#9CA3AF" />
-      </View>
-      <Text style={[kpiStyles.cardValue, { color }]}>{value}</Text>
-      <Text style={kpiStyles.cardSub}>{sub}</Text>
-    </View>
-  );
-}
-
-function KpiTab({
-  reports,
-  jobs,
-}: {
-  reports: Report[];
-  jobs: JobSummary[];
-}) {
-  const { t } = useI18n();
-  const totalJobs = jobs.length;
-  const pendingCount = reports.filter((r) => r.status === "pending").length;
-  const inProgressCount = jobs.filter((j) =>
-    ACTIVE_STATUSES.has(toLower(j.job_status))
-  ).length;
-  const completedCount = jobs.filter((j) =>
-    COMPLETED_STATUSES.has(toLower(j.job_status))
-  ).length;
-  const openCasesCount = reports.filter((r) => r.status === "open").length;
-
-  const avgHrs = avgCompletionHours(jobs);
-  const avgLabel = avgHrs == null ? "—" : `${avgHrs.toFixed(1)}h`;
-
-  const completionRate = totalJobs > 0 ? completedCount / totalJobs : 0;
-  const completionPct = `${(completionRate * 100).toFixed(1)}%`;
-
-  // Report type breakdown
-  const byType = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const r of reports) {
-      counts[r.type] = (counts[r.type] ?? 0) + 1;
-    }
-    return counts;
-  }, [reports]);
-
-  const totalReports = reports.length;
-
-  return (
-    <View style={kpiStyles.page}>
-      {/* ── Row 1: stat cards ── */}
-      <View style={kpiStyles.cardRow}>
-        <KpiCard icon="chart-bar" label={t("reports.totalJobs")} value={String(totalJobs)} sub={t("reports.allTime")} />
-        <KpiCard icon="clock" label={t("reports.pendingApproval")} value={String(pendingCount)} sub={t("reports.requiresReview")} color="#D97706" />
-      </View>
-      <View style={kpiStyles.cardRow}>
-        <KpiCard icon="chart-line" label={t("reports.inProgress")} value={String(inProgressCount)} sub={t("reports.inProgressActiveJobs")} color="#2563EB" />
-        <KpiCard icon="calendar-check" label={t("reports.avgCompletion")} value={avgLabel} sub={t("reports.perJob")} color="#059669" />
-      </View>
-
-      {/* ── Completion Rate ── */}
-      <View style={kpiStyles.section}>
-        <Text style={kpiStyles.sectionTitle}>{t("reports.completionRate")}</Text>
-
-        <View style={kpiStyles.progressRow}>
-          <Text style={kpiStyles.progressLabel}>{t("reports.overallProgress")}</Text>
-          <Text style={kpiStyles.progressPct}>{completionPct}</Text>
-        </View>
-        <View style={kpiStyles.progressTrack}>
-          <View style={[kpiStyles.progressFill, { flex: completionRate }]} />
-          <View style={{ flex: 1 - completionRate }} />
-        </View>
-
-        <View style={kpiStyles.summaryRow}>
-          <View style={kpiStyles.summaryCard}>
-            <Text style={kpiStyles.summaryLabel}>{t("reports.completed")}</Text>
-            <Text style={kpiStyles.summaryValue}>{completedCount}</Text>
-          </View>
-          <View style={kpiStyles.summaryCard}>
-            <Text style={kpiStyles.summaryLabel}>{t("reports.inProgress")}</Text>
-            <Text style={kpiStyles.summaryValue}>{inProgressCount}</Text>
-          </View>
-          <View style={kpiStyles.summaryCard}>
-            <Text style={kpiStyles.summaryLabel}>{t("reports.openCases")}</Text>
-            <Text style={kpiStyles.summaryValue}>{openCasesCount}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* ── Report Breakdown ── */}
-      <View style={kpiStyles.section}>
-        <Text style={kpiStyles.sectionTitle}>{t("reports.reportsByType")}</Text>
-        {totalReports === 0 ? (
-          <Text style={kpiStyles.empty}>{t("reports.noReportsYet")}</Text>
-        ) : (
-          Object.entries(byType).map(([type, count]) => {
-            const pct = count / totalReports;
-            return (
-              <View key={type} style={{ marginBottom: 14 }}>
-                <View style={kpiStyles.barLabelRow}>
-                  <Text style={kpiStyles.barLabel}>
-                    {statusLabel(type, t)}
-                  </Text>
-                  <Text style={kpiStyles.barCount}>{count}</Text>
-                </View>
-                <View style={kpiStyles.progressTrack}>
-                  <View style={[kpiStyles.progressFill, kpiStyles.typeFill, { flex: pct }]} />
-                  <View style={{ flex: 1 - pct }} />
-                </View>
-              </View>
-            );
-          })
-        )}
-      </View>
-
-      {/* ── Report Status Overview ── */}
-      <View style={kpiStyles.section}>
-        <Text style={kpiStyles.sectionTitle}>{t("reports.reportStatusOverview")}</Text>
-        {[
-          { label: t("reports.pendingApproval"), count: pendingCount, color: "#F59E0B" },
-          { label: t("reports.openInProgress"), count: openCasesCount, color: "#3B82F6" },
-          { label: t("statusBadge.closed"), count: reports.filter((r) => r.status === "closed").length, color: "#10B981" },
-        ].map(({ label, count, color }) => (
-          <View key={label} style={kpiStyles.statusRow}>
-            <View style={[kpiStyles.dot, { backgroundColor: color }]} />
-            <Text style={kpiStyles.statusLabel}>{label}</Text>
-            <Text style={kpiStyles.statusCount}>{count}</Text>
-          </View>
-        ))}
-      </View>
-
-      {/* ── All Jobs table ── */}
-      <JobsTable jobs={jobs} />
-    </View>
-  );
-}
-
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function RMManagerScreen() {
@@ -455,7 +156,6 @@ export default function RMManagerScreen() {
 
   const [tab, setTab] = useState<Tab>("pending");
   const [allReports, setAllReports] = useState<Report[]>([]);
-  const [rawJobs, setRawJobs] = useState<JobSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -485,7 +185,6 @@ export default function RMManagerScreen() {
       ]);
 
       const jobs = Array.isArray(jobRows) ? (jobRows as JobSummary[]) : [];
-      setRawJobs(jobs);
 
       const mapped = Array.isArray(reportRows)
         ? reportRows.map((r: any) => {
@@ -512,9 +211,12 @@ export default function RMManagerScreen() {
     }, [loadAllReports]),
   );
 
+  // Kept across tab switches for the life of the screen.
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+
   const reports = useMemo(() => {
-    return allReports.filter((r) => r.status === tab);
-  }, [allReports, tab]);
+    return sortReports(allReports.filter((r) => r.status === tab), sort);
+  }, [allReports, tab, sort]);
 
   const counts = useMemo(
     () => ({
@@ -694,13 +396,12 @@ export default function RMManagerScreen() {
             { key: "pending", label: t("reports.tabPending"), alertCount: counts.pending },
             { key: "open", label: t("reports.tabOpen"), alertCount: counts.open },
             { key: "closed", label: `${t("reports.tabClosed")} (${counts.closed})` },
-            { key: "kpi", label: t("reports.tabKpi"), icon: "chart-bar" },
           ]}
         />
 
-        {tab === "kpi" ? (
-          <KpiTab reports={allReports} jobs={rawJobs} />
-        ) : loading ? (
+        <SortChips value={sort} onChange={setSort} />
+
+        {loading ? (
           <View style={{ padding: 16 }}>
             <Text style={{ color: "#666" }}>{t("reports.loading")}</Text>
           </View>
@@ -750,102 +451,3 @@ export default function RMManagerScreen() {
     </>
   );
 }
-
-// ── Styles ────────────────────────────────────────────────────────────────────
-
-const kpiStyles = StyleSheet.create({
-  page: { padding: 16, gap: 16, paddingBottom: 40 },
-
-  cardRow: { flexDirection: "row", gap: 12 },
-  card: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    padding: 16,
-    gap: 6,
-  },
-  cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  cardLabel: { fontSize: 13, fontWeight: "600", color: "#6B7280" },
-  cardValue: { fontSize: 32, fontWeight: "800", color: "#111827" },
-  cardSub: { fontSize: 12, color: "#9CA3AF", fontWeight: "500" },
-
-  section: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    padding: 16,
-    gap: 12,
-  },
-  sectionTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
-
-  progressRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  progressLabel: { fontSize: 13, fontWeight: "600", color: "#6B7280" },
-  progressPct: { fontSize: 13, fontWeight: "700", color: "#111827" },
-  progressTrack: {
-    flexDirection: "row",
-    height: 10,
-    borderRadius: 999,
-    backgroundColor: "#E5E7EB",
-    overflow: "hidden",
-  },
-  progressFill: { backgroundColor: "#111827", borderRadius: 999 },
-  typeFill: { backgroundColor: "#3B82F6" },
-
-  summaryRow: { flexDirection: "row", gap: 10 },
-  summaryCard: {
-    flex: 1,
-    backgroundColor: "#F9FAFB",
-    borderRadius: 12,
-    padding: 12,
-    alignItems: "center",
-    gap: 4,
-  },
-  summaryLabel: { fontSize: 12, fontWeight: "600", color: "#6B7280" },
-  summaryValue: { fontSize: 22, fontWeight: "800", color: "#111827" },
-
-  barLabelRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  barLabel: { fontSize: 13, fontWeight: "600", color: "#374151" },
-  barCount: { fontSize: 13, fontWeight: "700", color: "#111827" },
-
-  statusRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#F3F4F6" },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  statusLabel: { flex: 1, fontSize: 14, color: "#374151", fontWeight: "600" },
-  statusCount: { fontSize: 14, fontWeight: "800", color: "#111827" },
-
-  empty: { fontSize: 13, color: "#9CA3AF", fontWeight: "500" },
-});
-
-const tblStyles = StyleSheet.create({
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F3F4F6",
-  },
-  headerRow: { borderBottomWidth: 1, borderBottomColor: "#E5E7EB" },
-  rowAlt: { backgroundColor: "#FAFAFA" },
-  headerCell: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#6B7280",
-    paddingRight: 8,
-  },
-  cell: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#111827",
-    paddingRight: 8,
-  },
-  badge: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  badgeText: { fontSize: 11, fontWeight: "700" },
-});

@@ -36,9 +36,16 @@ export type TaskPart = {
   part_name: string;
   part_code: string;
   part_brand?: string | null;
+  part_unit?: PartUnit | null;
   part_cost: number | null;
   part_stock: number | null;
 };
+
+// Units a part is counted in. "pc" and "set" are whole numbers; the others
+// may be fractional (1.5 L of coolant).
+export type PartUnit = "pc" | "set" | "L" | "kg" | "m";
+export const PART_UNITS: PartUnit[] = ["pc", "set", "L", "kg", "m"];
+export const isWholeUnit = (u?: string | null) => !u || u === "pc" || u === "set";
 
 // A row of the parts catalogue (GET /parts). part_stock is the quantity on
 // hand — shown and edited in Parts Admin, not yet deducted by jobs.
@@ -47,6 +54,7 @@ export type CatalogPart = {
   part_name: string;
   part_code: string;
   part_brand: string | null;
+  part_unit?: PartUnit | null;
   part_cost: number | string | null;
   part_stock: number | null;
 };
@@ -55,9 +63,89 @@ export type PartInput = {
   part_name: string;
   part_code: string;
   part_brand: string | null;
+  part_unit: PartUnit;
   part_cost: number | null;
   part_stock: number;
 };
+
+// Categories are the 29 bus systems (src/utils/busSystems.ts); counts may
+// also include "uncategorised".
+export type IssueType = string;
+export type TaskJobType = "repair" | "maintenance";
+
+export type KpiBucket = { start: string; end: string; opened: number; closed: number };
+export type KpiIssueCount = { issue_type: IssueType; count: number };
+
+export type KpiOverview = {
+  from: string;
+  to: string;
+  jobs_closed: number;
+  prev_jobs_closed: number;
+  jobs_opened: number;
+  avg_turnaround_ms: number | null;
+  prev_avg_turnaround_ms: number | null;
+  avg_approval_ms: number | null;
+  avg_accept_ms: number | null;
+  avg_travel_ms: number | null;
+  avg_repair_ms: number | null;
+  bucket_unit: "day" | "week" | "month";
+  buckets: KpiBucket[];
+  issues: KpiIssueCount[];
+  top_buses: { bus_id: string; bus_ev_no: string | null; jobs: number }[];
+};
+
+export type KpiBusRow = {
+  bus_id: string;
+  bus_ev_no: string | null;
+  bus_model: string | null;
+  jobs: number;
+  downtime_ms: number;
+  last_issue: string | null;
+  last_report_at: string | null;
+};
+
+export type KpiBuses = { from: string; to: string; buses: KpiBusRow[]; total_jobs: number };
+
+export type KpiReportRow = {
+  report_id: number;
+  job_id: number | null;
+  job_ref_no: string | null;
+  report_type: string;
+  issue_type: IssueType;
+  issue: string | null;
+  priority: string | null;
+  status: string;
+  reported_at: string;
+  completed_at: string | null;
+  technician_name: string | null;
+  turnaround_ms: number | null;
+};
+
+export type KpiBusHistory = {
+  from: string;
+  to: string;
+  bus: Bus & { latest_odometer: number | null; reports_all_time: number };
+  jobs: number;
+  downtime_ms: number;
+  avg_turnaround_ms: number | null;
+  issues: KpiIssueCount[];
+  reports: KpiReportRow[];
+};
+
+export type PdfStatus =
+  | { status: "pending"; filename?: string; ref_no?: string }
+  | { status: "ready"; url: string; filename: string; ref_no?: string };
+
+export type ExportRequest =
+  | {
+      kind: "range";
+      from: string;
+      to: string;
+      project_id?: string | null;
+      bus_ids?: string[];
+      status?: "all" | "open" | "closed";
+    }
+  | { kind: "bus"; bus_id: string; from?: string | null; to?: string | null; project_id?: string | null };
 
 // The two sign-offs whose selfie is uploaded ahead of the action itself.
 export type VerificationKind = "report-review" | "job-accept";
@@ -117,6 +205,14 @@ export type Tyre = {
   tyre_tread_count: number;
   tyre_status: TyreStatus;
   tyre_bought_date?: string | null;
+  // Groove readings (mm) taken when the tyre was added to stock (migration
+  // 023). Null on tyres added before then. See intakeReadings().
+  intake_thickness_1?: number | string | null;
+  intake_thickness_2?: number | string | null;
+  intake_thickness_3?: number | string | null;
+  intake_thickness_4?: number | string | null;
+  intake_measured_at?: string | null;
+  intake_measured_by?: number | null;
   created_at: string;
   updated_at: string;
 
@@ -140,6 +236,7 @@ export type TyreMounting = {
   tyre_mounting_id: number;
   tyre_id: number;
   bus_id: string;
+  bus_ev_no?: string | null;
   axle_number: number;
   axle_side: TyreAxleSide;
   wheel_position: TyreWheelPosition;
@@ -696,6 +793,12 @@ export type DbMe = {
 export type ReportStatus = "submitted" | "open" | "closed";
 export type ReviewAction = "approved" | "declined";
 
+function kpiQuery(p: { from: string; to: string; project_id?: string | null }) {
+  const qs = new URLSearchParams({ from: p.from, to: p.to });
+  if (p.project_id) qs.set("project_id", p.project_id);
+  return qs.toString();
+}
+
 /** `?project_id=…`, or nothing at all when no project is selected. */
 const projectQuery = (projectId?: string | null) =>
   projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
@@ -1024,6 +1127,60 @@ export const api = {
   // Expose request for any special cases
   request,
 
+  // ===== JOB ORDERS =====
+  // A job a technician logs directly for any bus, saved as completed (see
+  // createJobOrder in the Lambda). Tasks, photos and the close then go
+  // through the normal job endpoints.
+  createJobOrder: (body: {
+    bus_id: string;
+    // The first task's category (bus system key).
+    category: string;
+    // The first task's issue; empty for maintenance (the server names it).
+    description: string;
+    odometer: number;
+    location?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+  }) =>
+    requestWithIdToken<{ success: true; report_id: number; job_id: number }>("/job-orders", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // R&M correcting a report's issue type.
+  setReportIssueType: (reportId: number, issueType: IssueType) =>
+    requestWithIdToken<{ success: true }>(`/reports/${reportId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ report_issue_type: issueType }),
+    }),
+
+  // ===== PERFORMANCE & KPIs =====
+  kpiOverview: (p: { from: string; to: string; project_id?: string | null }) =>
+    requestWithIdToken<KpiOverview>(`/kpis/overview?${kpiQuery(p)}`),
+
+  kpiBuses: (p: { from: string; to: string; project_id?: string | null; issue_type?: IssueType | null }) =>
+    requestWithIdToken<KpiBuses>(
+      `/kpis/buses?${kpiQuery(p)}${p.issue_type ? `&issue_type=${encodeURIComponent(p.issue_type)}` : ""}`,
+    ),
+
+  kpiBus: (busId: string, p: { from: string; to: string; project_id?: string | null }) =>
+    requestWithIdToken<KpiBusHistory>(`/kpis/buses/${encodeURIComponent(busId)}?${kpiQuery(p)}`),
+
+  // ===== PDF REPORTS =====
+  // The Job Completion Report for a closed job. "pending" while the server
+  // renders it; poll until "ready".
+  jobReportPdf: (jobId: number) =>
+    requestWithIdToken<PdfStatus>(`/jobs/${jobId}/report-pdf`),
+
+  createExport: (body: ExportRequest) =>
+    requestWithIdToken<{ export_id: string; filename: string }>("/exports", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  getExport: (exportId: string, filename: string) =>
+    requestWithIdToken<PdfStatus>(`/exports/${exportId}?filename=${encodeURIComponent(filename)}`),
+
   // ===== JOB TASKS =====
   listJobTasks: (jobId: number) =>
     requestWithIdToken<any[]>(`/jobs/${jobId}/tasks`),
@@ -1121,6 +1278,8 @@ export const api = {
     retread_sticker_s3_key?: string;
     tyre_tread_count?: number;
     tyre_bought_date?: string;
+    /** One reading per groove (mm), required: the tyre is measured as it enters stock. */
+    intake_thickness: number[];
   }) =>
     requestWithIdToken<{ tyre_id: number }>("/tyres", {
       method: "POST",
@@ -1139,6 +1298,8 @@ export const api = {
       tyre_tread_count?: number;
       tyre_bought_date?: string;
       tyre_status?: Exclude<TyreStatus, "mounted">;
+      /** Corrects the readings taken when the tyre was added to stock. */
+      intake_thickness?: number[];
     },
   ) =>
     requestWithIdToken<{ success: true }>(`/tyres/${tyreId}`, {
@@ -1258,3 +1419,13 @@ export const api = {
   getTyreInspectionSession: (sessionId: number) =>
     requestWithIdToken<TyreInspectionDetail>(`/tyre-inspections/${sessionId}`),
 };
+
+/** The readings taken when a tyre entered stock, in groove order, or null. */
+export function intakeReadings(t: Partial<Tyre> | null | undefined): number[] | null {
+  if (!t) return null;
+  const count = Number(t.tyre_tread_count) || 4;
+  const vals = [t.intake_thickness_1, t.intake_thickness_2, t.intake_thickness_3, t.intake_thickness_4]
+    .slice(0, count)
+    .map((v) => (v == null || v === "" ? NaN : Number(v)));
+  return vals.every((n) => Number.isFinite(n)) ? vals : null;
+}

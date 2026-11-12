@@ -10,10 +10,13 @@ import {
   View,
 } from "react-native";
 import { api } from "../api/client";
+import { formatBusLabel } from "../utils/busLabel";
 import { useProjectFilter } from "../hooks/useProjectFilter";
 
 type BusRow = {
   bus_id: string;
+  bus_ev_no?: string | null;
+  bus_route_number?: string | null;
   bus_route?: string | null;
   bus_model?: string | null;
   project_id?: string | null;
@@ -66,7 +69,9 @@ export default function BusDetailsModal({ visible, busId, onClose }: Props) {
             <View style={styles.iconWrap}>
               <FontAwesome5 name="bus" size={16} color="#111827" />
             </View>
-            <Text style={styles.title}>Bus {busId}</Text>
+            <Text style={styles.title}>
+              {t("busDetails.title", { value: formatBusLabel(busId, bus?.bus_ev_no) })}
+            </Text>
             <Pressable onPress={onClose} hitSlop={10} style={styles.closeBtn}>
               <FontAwesome5 name="times" size={14} color="#374151" />
             </Pressable>
@@ -83,8 +88,18 @@ export default function BusDetailsModal({ visible, busId, onClose }: Props) {
           ) : (
             <View style={{ gap: 10 }}>
               <View style={styles.row}>
+                <Text style={styles.rowLabel}>{t("busDetails.evNo")}</Text>
+                <Text style={styles.rowValue}>{bus?.bus_ev_no || "—"}</Text>
+              </View>
+              <View style={styles.row}>
                 <Text style={styles.rowLabel}>{t("buses.routeNumber")}</Text>
-                <Text style={styles.rowValue}>{bus?.bus_route || "—"}</Text>
+                <Text style={styles.rowValue}>{bus?.bus_route_number || "—"}</Text>
+              </View>
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>{t("busDetails.route")}</Text>
+                <Text style={[styles.rowValue, styles.rowValueWrap]} numberOfLines={2}>
+                  {bus?.bus_route || "—"}
+                </Text>
               </View>
               <View style={styles.row}>
                 <Text style={styles.rowLabel}>{t("buses.model")}</Text>
@@ -141,4 +156,5 @@ const styles = StyleSheet.create({
   },
   rowLabel: { fontSize: 13, fontWeight: "700", color: "#6B7280" },
   rowValue: { fontSize: 14, fontWeight: "600", color: "#111827" },
+  rowValueWrap: { flexShrink: 1, textAlign: "right", marginLeft: 16 },
 });

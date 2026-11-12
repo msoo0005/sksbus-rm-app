@@ -73,13 +73,29 @@ ROUTES=(
   # sidewall photos, not just swap photos. The older /tyres/swap/photo/presign
   # route still works and is still handled, so app builds in the field are fine.
   "GET /tyres/photo/presign"
+
+  # Approve / accept sign-off selfies (migration 020).
+  "GET /verification/selfie/presign"
+
+  # Migration 021: issue-type correction, job orders, Performance & KPIs, and
+  # the PDF reports (Job Completion Report + fleet exports).
+  "PATCH /reports/{report_id}"
+  "POST /job-orders"
+  "GET /kpis/overview"
+  "GET /kpis/buses"
+  "GET /kpis/buses/{bus_id}"
+  "GET /jobs/{job_id}/report-pdf"
+  "POST /exports"
+  "GET /exports/{export_id}"
 )
 
 EXISTING="$(aws apigatewayv2 get-routes --api-id "$API_ID" --region "$REGION" \
   --query 'Items[].RouteKey' --output text)"
 
 for key in "${ROUTES[@]}"; do
-  if grep -qF -- "$key" <<<"$EXISTING"; then
+  # Whole-line match: "PATCH /reports/{report_id}" must not count as present
+  # just because "PATCH /reports/{report_id}/status" is.
+  if tr '\t' '\n' <<<"$EXISTING" | grep -qxF -- "$key"; then
     echo "  exists   $key"
     continue
   fi

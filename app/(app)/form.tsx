@@ -33,6 +33,9 @@ import MapSelector, { LocationValue } from "@/components/map";
 import DraftRestoreBar from "@/components/DraftRestoreBar";
 import VerificationModal from "@/components/VerificationModal";
 import { useFormDraft } from "@/hooks/useFormDraft";
+import BusSystemPicker from "@/components/BusSystemPicker";
+import { normaliseBusSystem } from "@/utils/busSystems";
+import type { IssueType } from "@/api/client";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { useProject } from "@/project-ctx";
 import { reportTypeTitleLabel } from "@/utils/reportType";
@@ -373,6 +376,7 @@ export default function ReportFormScreen() {
   const [exteriorPhoto, setExteriorPhoto] = useState<LocalMedia[]>([]);
   const [issuePhotos, setIssuePhotos] = useState<LocalMedia[]>([]);
   const [description, setDescription] = useState("");
+  const [issueType, setIssueType] = useState<IssueType | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
@@ -383,16 +387,17 @@ export default function ReportFormScreen() {
   // are local file URIs from the image picker, and a stale one would fail at
   // upload time with a far more confusing error than simply re-adding it.
   const draftValue = useMemo(
-    () => ({ vehicle, priority, description, locationDesc, locationEditedManually, mapLocation }),
-    [vehicle, priority, description, locationDesc, locationEditedManually, mapLocation],
+    () => ({ vehicle, priority, description, issueType, locationDesc, locationEditedManually, mapLocation }),
+    [vehicle, priority, description, issueType, locationDesc, locationEditedManually, mapLocation],
   );
   const isDirty = useMemo(
     () =>
       !!vehicle ||
       description.trim() !== "" ||
+      issueType != null ||
       locationDesc.trim() !== "" ||
       priority !== "medium",
-    [vehicle, description, locationDesc, priority],
+    [vehicle, description, issueType, locationDesc, priority],
   );
   const draft = useFormDraft(
     projectId ? `report-form:${projectId}:${reportType}` : null,
@@ -406,6 +411,7 @@ export default function ReportFormScreen() {
     setVehicle(v.vehicle ?? null);
     setPriority(v.priority ?? "medium");
     setDescription(v.description ?? "");
+    setIssueType(normaliseBusSystem(v.issueType));
     setLocationDesc(v.locationDesc ?? "");
     setLocationEditedManually(!!v.locationEditedManually);
     setMapLocation(v.mapLocation ?? null);
@@ -503,6 +509,7 @@ export default function ReportFormScreen() {
         project_id: projectId,
         report_type: reportType,
         report_desc: description.trim(),
+        report_issue_type: issueType,
         report_location: locationDesc.trim() || null,
         report_lat: mapLocation?.latitude ?? null,
         report_lng: mapLocation?.longitude ?? null,
@@ -549,6 +556,7 @@ export default function ReportFormScreen() {
     if (!projectId) return t("reportForm.validationProjectNotSelected");
     if (!vehicle) return t("reportForm.validationVehicleRequired");
     if (!description.trim()) return t("reportForm.validationDescriptionRequired");
+    if (!issueType) return t("reportForm.validationCategoryRequired");
     if (dashboardPhoto.length === 0) return t("reportForm.validationDashboardPhotoRequired");
     if (exteriorPhoto.length === 0) return t("reportForm.validationExteriorPhotoRequired");
     if (issuePhotos.length === 0) return t("reportForm.validationIssuePhotoRequired");
@@ -573,7 +581,7 @@ export default function ReportFormScreen() {
       setUploadingIndex(null);
 
       const fieldsKey = JSON.stringify([
-        projectId, reportType, description.trim(), locationDesc.trim(),
+        projectId, reportType, description.trim(), issueType, locationDesc.trim(),
         mapLocation?.latitude ?? null, mapLocation?.longitude ?? null, priority, vehicle,
       ]);
       if (!submitProgress.current || submitProgress.current.fieldsKey !== fieldsKey) {
@@ -829,6 +837,9 @@ export default function ReportFormScreen() {
         onChangeText={setDescription}
         editable={!submitting}
       />
+
+      <Text style={styles.label}>{t("reportForm.categoryLabel")}</Text>
+      <BusSystemPicker value={issueType} onChange={setIssueType} disabled={submitting} accent="#2563EB" />
 
       <View style={styles.buttonRow}>
         <TouchableOpacity

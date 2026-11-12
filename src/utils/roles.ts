@@ -52,8 +52,10 @@ export const ROLE_LABEL: Record<string, string> = {
 export const ROLE_COLORS: Record<string, { accent: string; light: string }> = {
   admin: { accent: "#4338CA", light: "#EEF2FF" },
   fleet_manager: { accent: "#2563EB", light: "#EFF6FF" },
-  rm_manager: { accent: "#16A34A", light: "#F0FDF4" },
-  technician: { accent: "#EA580C", light: "#FFF7ED" },
+  // R&M green and technician orange were darkened (from #16A34A / #EA580C) so
+  // white text on their buttons and badges is easier to read.
+  rm_manager: { accent: "#34873F", light: "#F0FDF4" },
+  technician: { accent: "#C4501A", light: "#FFF7ED" },
   inventory_manager: { accent: "#7C3AED", light: "#F5F3FF" },
   driver: { accent: "#2563EB", light: "#EFF6FF" },
 };
@@ -64,3 +66,13 @@ export const roleColorsFor = (role?: string | null) =>
   ROLE_COLORS[role ?? ""] ?? DEFAULT_ROLE_COLOR;
 
 export const roleLabelFor = (role?: string | null) => ROLE_LABEL[role ?? ""] ?? "User";
+
+// The icon on each role's badge (FontAwesome5).
+export const ROLE_ICONS: Record<string, string> = {
+  admin: "user-shield",
+  fleet_manager: "bus",
+  rm_manager: "user-tie",
+  technician: "wrench",
+  inventory_manager: "boxes",
+  driver: "id-card",
+};

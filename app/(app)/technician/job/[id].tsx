@@ -14,12 +14,13 @@ import {
   View,
 } from "react-native";
 
-import type { JobMedia, ReportMedia } from "@/api/client";
+import type { JobMedia, PartUnit, ReportMedia } from "@/api/client";
 import { api } from "@/api/client";
 import AfterPhotoSlots from "@/components/AfterPhotoSlots";
 import BusDetailsModal from "@/components/BusDetailsModal";
 import type { LocalMedia } from "@/components/ImagePicker";
-import ImagePickerField from "@/components/ImagePicker";
+import TaskEditorCard, { emptyTaskDraft, taskDraftProblem, taskNameFor, type TaskDraft } from "@/components/TaskEditorCard";
+import { busSystemLabel } from "@/utils/busSystems";
 import ImageViewerOverlay from "@/components/ImageViewerOverlay";
 import InstrumentClusterIcon from "@/components/icons/InstrumentClusterIcon";
 import JobTaskCard from "@/components/JobTaskCard";
@@ -32,7 +33,9 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { openDirections } from "@/utils/directions";
 import { computeJobPendingStage } from "@/utils/jobPendingStage";
 import { buildJobSignoffs, buildJobTimelineEvents, ODOMETER_TASK_NAME } from "@/utils/jobSignoffs";
+import { formatBusLabel } from "@/utils/busLabel";
 import { reportTypeTitleLabel } from "@/utils/reportType";
+import { usePdfDownload } from "@/hooks/usePdfDownload";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -76,6 +79,7 @@ type JobListItem = {
   report_type: string | null;
   report_priority: string | null;
   bus_id: string | null;
+  bus_ev_no?: string | null;
   reporter_name: string | null;
   technician_name?: string | null;
   job_verified_name?: string | null;
@@ -115,16 +119,12 @@ type JobTask = {
 
 // Brand · how many are in stock. No price: technicians don't need it, so
 // it's shown only in Parts Admin.
-function partMetaLine(p: { part_brand?: string | null; part_stock?: number | null }) {
-  const stock = `Stock: ${p.part_stock ?? 0}`;
-  return [p.part_brand, stock].filter(Boolean).join(" · ");
-}
-
 type PartRow = {
   part_id: number;
   part_name: string;
   part_code: string;
   part_brand?: string | null;
+  part_unit?: PartUnit | null;
   part_cost: number | string | null;
   part_stock: number | null;
 };
@@ -196,6 +196,7 @@ export default function TechnicianJobDetailsScreen() {
   const canEdit = mode !== "view";
   const jobId = useMemo(() => Number(id), [id]);
   const { t } = useI18n();
+  const pdf = usePdfDownload();
   const afterPhotoSlotDefs = useMemo(() => buildAfterPhotoSlots(t), [t]);
 
   const scrollRef = useRef<ScrollView>(null);
@@ -206,18 +207,12 @@ export default function TechnicianJobDetailsScreen() {
   const [report, setReport] = useState<ReportDto | null>(null);
   const [tasks, setTasks] = useState<JobTask[]>([]);
 
-  const [issue, setIssue] = useState("");
-  const [solution, setSolution] = useState("");
-  const [newTaskPhotos, setNewTaskPhotos] = useState<LocalMedia[]>([]);
+  // The task being written in "Add task" (see TaskEditorCard).
+  const [taskDraft, setTaskDraft] = useState<TaskDraft>(emptyTaskDraft);
   const [savingTask, setSavingTask] = useState(false);
 
   const [parts, setParts] = useState<PartRow[]>([]);
   const [loadingParts, setLoadingParts] = useState(false);
-  const [selectedParts, setSelectedParts] = useState<Record<number, number>>(
-    {},
-  );
-  const [partsOpen, setPartsOpen] = useState(false);
-  const [partsSearch, setPartsSearch] = useState("");
 
   const [odometerInput, setOdometerInput] = useState("");
   const [savingOdometer, setSavingOdometer] = useState(false);
@@ -456,88 +451,35 @@ export default function TechnicianJobDetailsScreen() {
     );
   };
 
-  const partsById = useMemo(() => {
-    const m = new Map<number, PartRow>();
-    for (const p of parts) m.set(p.part_id, p);
-    return m;
-  }, [parts]);
-
-  const filteredDropdownParts = useMemo(() => {
-    const q = partsSearch.trim().toLowerCase();
-    const list = Array.isArray(parts) ? parts : [];
-    if (!q) return list.slice(0, 50);
-    return list
-      .filter(
-        (p) =>
-          String(p.part_name ?? "")
-            .toLowerCase()
-            .includes(q) ||
-          String(p.part_code ?? "")
-            .toLowerCase()
-            .includes(q) ||
-          String(p.part_brand ?? "")
-            .toLowerCase()
-            .includes(q),
-      )
-      .slice(0, 50);
-  }, [parts, partsSearch]);
-
-  const selectedPartIds = useMemo(
-    () =>
-      Object.keys(selectedParts)
-        .map(Number)
-        .filter((pid) => Number.isFinite(pid) && (selectedParts[pid] ?? 0) > 0),
-    [selectedParts],
-  );
-
-  const addOrIncPart = (partId: number) =>
-    setSelectedParts((prev) => ({
-      ...prev,
-      [partId]: (prev[partId] ?? 0) + 1,
-    }));
-  const changeQty = (partId: number, delta: number) =>
-    setSelectedParts((prev) => {
-      const cur = prev[partId] ?? 0;
-      const next = cur + delta;
-      const copy = { ...prev };
-      if (next <= 0) delete copy[partId];
-      else copy[partId] = next;
-      return copy;
-    });
-  const removePart = (partId: number) =>
-    setSelectedParts((prev) => {
-      const next = { ...prev };
-      delete next[partId];
-      return next;
-    });
-
   const doCreateTask = async () => {
+    const d = taskDraft;
     setSavingTask(true);
     try {
       const nextOrder = tasks.length
         ? Math.max(...tasks.map((x) => x.task_order ?? 0)) + 1
         : 1;
       const created = await api.createJobTask(jobId, {
-        task_name: issue.trim(),
-        task_desc: solution.trim() || null,
+        task_name: taskNameFor(d),
+        task_job_type: d.jobType,
+        task_category: d.category,
+        task_desc: d.workDone.trim(),
+        task_remark: d.remark.trim() || null,
+        task_no_parts: d.noParts,
         task_status: "done",
         task_order: nextOrder,
       });
       const taskId = Number((created as { task_id?: number }).task_id);
 
-      const partEntries = Object.entries(selectedParts)
+      const partEntries = Object.entries(d.parts)
         .map(([k, qty]) => ({ part_id: Number(k), qty: Number(qty) }))
-        .filter(
-          (x) => Number.isFinite(x.part_id) && x.part_id > 0 && x.qty > 0,
-        );
+        .filter((x) => Number.isFinite(x.part_id) && x.part_id > 0 && x.qty > 0);
       if (taskId && partEntries.length) {
-        for (const p of partEntries)
-          await api.addTaskPart(taskId, { part_id: p.part_id, qty: p.qty });
+        for (const p of partEntries) await api.addTaskPart(taskId, { part_id: p.part_id, qty: p.qty });
       }
 
-      if (taskId && newTaskPhotos.length) {
+      if (taskId && d.photos.length) {
         try {
-          await uploadAfterPhotos(jobId, newTaskPhotos, taskId);
+          await uploadAfterPhotos(jobId, d.photos, taskId);
         } catch (e: unknown) {
           // The task itself was created fine — a photo upload hiccup
           // shouldn't look like the whole action failed.
@@ -547,12 +489,7 @@ export default function TechnicianJobDetailsScreen() {
         }
       }
 
-      setIssue("");
-      setSolution("");
-      setSelectedParts({});
-      setPartsSearch("");
-      setPartsOpen(false);
-      setNewTaskPhotos([]);
+      setTaskDraft(emptyTaskDraft());
       await fetchAll();
     } catch (e: unknown) {
       handleApiError(e, t("jobDetail.failedToAddTask"));
@@ -567,17 +504,18 @@ export default function TechnicianJobDetailsScreen() {
       handleOdometerRequired();
       return;
     }
-    const issueText = issue.trim();
-    if (!issueText) {
-      Alert.alert(
-        t("jobDetail.taskIssueRequiredTitle"),
-        t("jobDetail.taskIssueRequiredMessage"),
-      );
+    // Every task needs the full record (it is printed on the Job Completion
+    // Report): issue, work done, parts or "no parts used", and a photo.
+    const problem = taskDraftProblem(taskDraft, t);
+    if (problem) {
+      Alert.alert(t("taskEditor.incompleteTitle"), problem);
       return;
     }
-    const photoNote = newTaskPhotos.length
-      ? t("jobDetail.photoNote", { count: newTaskPhotos.length })
-      : "";
+    const issueText =
+      taskDraft.jobType === "maintenance"
+        ? `${t("taskEditor.type_maintenance")} · ${busSystemLabel(taskDraft.category, t)}`
+        : taskDraft.issue.trim();
+    const photoNote = t("jobDetail.photoNote", { count: taskDraft.photos.length });
     Alert.alert(
       t("jobDetail.addTaskButton"),
       t("jobDetail.addTaskConfirmMessage", { issue: issueText, photoNote }),
@@ -811,8 +749,24 @@ export default function TechnicianJobDetailsScreen() {
             <View style={s.heroTop}>
               <View style={s.heroLeft}>
                 <Text style={s.heroId}>
-                  {reportTypeTitleLabel(jobSummary?.report_type, t)} Job #{jobId}
+                  {jobSummary?.report_type === "job_order"
+                  ? `${t("jobOrder.title")} #${jobId}`
+                  : `${reportTypeTitleLabel(jobSummary?.report_type, t)} Job #${jobId}`}
                 </Text>
+                {/* The vehicle, right under the title. Tap for bus details. */}
+                {jobSummary?.bus_id && (
+                  <Pressable
+                    style={({ pressed }) => [s.heroVehicle, pressed && { opacity: 0.6 }]}
+                    onPress={() => setBusDetailsVisible(true)}
+                    hitSlop={6}
+                  >
+                    <FontAwesome5 name="bus" size={13} color="#2563EB" />
+                    <Text style={s.heroVehicleText}>
+                      {formatBusLabel(jobSummary.bus_id, jobSummary.bus_ev_no)}
+                    </Text>
+                    <FontAwesome5 name="chevron-right" size={10} color="#2563EB" />
+                  </Pressable>
+                )}
                 {loading && <Text style={s.loadingText}>{t("common.loading")}</Text>}
               </View>
               <View style={s.badgeStack}>
@@ -822,17 +776,8 @@ export default function TechnicianJobDetailsScreen() {
               </View>
             </View>
 
-            {(jobSummary?.bus_id || report?.report_location) && (
+            {report?.report_location && (
               <View style={s.heroSubRow}>
-                {jobSummary?.bus_id && (
-                  <Pressable
-                    style={({ pressed }) => [s.chip, s.chipTappable, pressed && { opacity: 0.6 }]}
-                    onPress={() => setBusDetailsVisible(true)}
-                  >
-                    <FontAwesome5 name="bus" size={11} color="#2563EB" />
-                    <Text style={[s.chipText, { color: "#2563EB" }]}>{jobSummary.bus_id}</Text>
-                  </Pressable>
-                )}
                 {report?.report_location && (
                   <Pressable
                     style={({ pressed }) => [
@@ -1038,225 +983,21 @@ export default function TechnicianJobDetailsScreen() {
               <Text style={s.helperText}>
                 {t("jobDetail.addTaskLockedHelper")}
               </Text>
-
-              <Text style={s.inputLabel}>{t("jobDetail.taskIssue")}</Text>
-              <View style={s.inputWrap}>
-                <TextInput
-                  value={issue}
-                  onChangeText={setIssue}
-                  placeholder={t("jobDetail.taskIssuePlaceholder")}
-                  placeholderTextColor="#9CA3AF"
-                  style={s.input}
-                  editable={!jobLocked}
-                  onFocus={() => jobLocked && handleOdometerRequired()}
+              <View style={{ marginTop: 12 }}>
+                <TaskEditorCard
+                  index={visibleTasks.length + 1}
+                  value={taskDraft}
+                  onChange={setTaskDraft}
+                  parts={parts}
+                  loadingParts={loadingParts}
+                  locked={jobLocked}
+                  onLockedPress={handleOdometerRequired}
+                  disabled={savingTask}
+                  confirmLabel={t("jobDetail.addTaskButton")}
+                  onConfirm={createTask}
+                  saving={savingTask}
                 />
               </View>
-
-              <Text style={[s.inputLabel, { marginTop: 12 }]}>
-                {t("jobDetail.taskSolution")}
-              </Text>
-              <View style={s.inputWrap}>
-                <TextInput
-                  value={solution}
-                  onChangeText={setSolution}
-                  placeholder={t("jobDetail.taskSolutionPlaceholder")}
-                  placeholderTextColor="#9CA3AF"
-                  style={s.textarea}
-                  multiline
-                  editable={!jobLocked}
-                  onFocus={() => jobLocked && handleOdometerRequired()}
-                />
-              </View>
-
-              <View style={[s.rowBetween, { marginTop: 14 }]}>
-                <Text style={s.inputLabel}>{t("partsUsed.title")}</Text>
-                <View style={s.countPill}>
-                  <Text style={s.countPillText}>
-                    {selectedPartIds.length} selected
-                  </Text>
-                </View>
-              </View>
-
-              <Pressable
-                style={[s.dropdownTrigger, jobLocked && { opacity: 0.6 }]}
-                onPress={() => {
-                  if (jobLocked) return handleOdometerRequired();
-                  setPartsOpen((v) => !v);
-                }}
-              >
-                <Text style={s.dropdownTriggerText}>
-                  {loadingParts
-                    ? "Loading parts…"
-                    : partsOpen
-                      ? "Close parts list"
-                      : "Select parts (search)"}
-                </Text>
-                <FontAwesome5
-                  name={partsOpen ? "chevron-up" : "chevron-down"}
-                  size={12}
-                  color="#6B7280"
-                />
-              </Pressable>
-
-              {partsOpen && (
-                <View style={s.dropdownPanel}>
-                  <View style={s.inputWrap}>
-                    <TextInput
-                      value={partsSearch}
-                      onChangeText={setPartsSearch}
-                      placeholder={t("partsUsed.searchByNameOrCode")}
-                      placeholderTextColor="#9CA3AF"
-                      style={s.input}
-                      autoCorrect={false}
-                      editable={!jobLocked}
-                    />
-                  </View>
-                  <ScrollView
-                    style={{ maxHeight: 240, marginTop: 10 }}
-                    nestedScrollEnabled
-                    keyboardShouldPersistTaps="handled"
-                  >
-                    {filteredDropdownParts.length === 0 ? (
-                      <Text style={s.mutedText}>
-                        {loadingParts ? "Loading parts…" : "No matching parts."}
-                      </Text>
-                    ) : (
-                      filteredDropdownParts.map((p) => {
-                        const qty = selectedParts[p.part_id] ?? 0;
-                        return (
-                          <Pressable
-                            key={p.part_id}
-                            style={[
-                              s.dropdownItem,
-                              qty > 0 && s.dropdownItemSelected,
-                            ]}
-                            onPress={() => {
-                              if (jobLocked) return handleOdometerRequired();
-                              addOrIncPart(p.part_id);
-                            }}
-                          >
-                            <View style={{ flex: 1 }}>
-                              <Text style={s.partName}>
-                                {p.part_name}{" "}
-                                <Text style={s.partCode}>({p.part_code})</Text>
-                              </Text>
-                              <Text style={s.partMeta}>
-                                {partMetaLine(p)}
-                              </Text>
-                            </View>
-                            {qty > 0 && (
-                              <View style={s.qtyBadge}>
-                                <Text style={s.qtyBadgeText}>×{qty}</Text>
-                              </View>
-                            )}
-                          </Pressable>
-                        );
-                      })
-                    )}
-                  </ScrollView>
-                </View>
-              )}
-
-              <View style={{ marginTop: 12, gap: 10 }}>
-                {selectedPartIds.length === 0 ? (
-                  <Text style={s.mutedText}>{t("partsUsed.noPartsSelected")}</Text>
-                ) : (
-                  selectedPartIds.map((pid) => {
-                    const p = partsById.get(pid);
-                    const qty = selectedParts[pid] ?? 0;
-                    if (!p) return null;
-                    return (
-                      <View key={pid} style={s.selectedCard}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={s.partName}>
-                            {p.part_name}{" "}
-                            <Text style={s.partCode}>({p.part_code})</Text>
-                          </Text>
-                          <Text style={s.partMeta}>
-                            {partMetaLine(p)}
-                          </Text>
-                        </View>
-                        <View style={s.qtyRow}>
-                          <Pressable
-                            style={s.qtyBtn}
-                            onPress={() =>
-                              jobLocked
-                                ? handleOdometerRequired()
-                                : changeQty(pid, -1)
-                            }
-                            disabled={jobLocked}
-                          >
-                            <Text style={s.qtyBtnText}>−</Text>
-                          </Pressable>
-                          <Text style={s.qtyValue}>{qty}</Text>
-                          <Pressable
-                            style={s.qtyBtn}
-                            onPress={() =>
-                              jobLocked
-                                ? handleOdometerRequired()
-                                : changeQty(pid, +1)
-                            }
-                            disabled={jobLocked}
-                          >
-                            <Text style={s.qtyBtnText}>+</Text>
-                          </Pressable>
-                          <Pressable
-                            style={s.removeBtn}
-                            onPress={() =>
-                              jobLocked
-                                ? handleOdometerRequired()
-                                : removePart(pid)
-                            }
-                            disabled={jobLocked}
-                          >
-                            <Text style={s.removeBtnText}>{t("common.remove")}</Text>
-                          </Pressable>
-                        </View>
-                      </View>
-                    );
-                  })
-                )}
-              </View>
-
-              <View style={{ marginTop: 14 }}>
-                {jobLocked ? (
-                  <Pressable onPress={handleOdometerRequired}>
-                    <ImagePickerField
-                      title={t("photoSlots.taskPhotos")}
-                      value={newTaskPhotos}
-                      onChange={setNewTaskPhotos}
-                      captureLabel="Capture Photo"
-                      uploadLabel="Upload Photo"
-                      showUploadButton
-                      readOnly
-                    />
-                  </Pressable>
-                ) : (
-                  <ImagePickerField
-                    title={t("photoSlots.taskPhotos")}
-                    value={newTaskPhotos}
-                    onChange={setNewTaskPhotos}
-                    captureLabel="Capture Photo"
-                    uploadLabel="Upload Photo"
-                    showUploadButton
-                  />
-                )}
-              </View>
-
-              <Pressable
-                style={[
-                  s.btn,
-                  s.btnDark,
-                  { marginTop: 14 },
-                  (jobLocked || savingTask) && { opacity: 0.6 },
-                ]}
-                onPress={createTask}
-                disabled={jobLocked || savingTask}
-              >
-                <Text style={s.btnText}>
-                  {savingTask ? t("common.saving") : t("jobDetail.addTaskButton")}
-                </Text>
-              </Pressable>
 
               {jobLocked && (
                 <Text style={s.helperText}>
@@ -1264,6 +1005,21 @@ export default function TechnicianJobDetailsScreen() {
                 </Text>
               )}
             </SectionCard>
+          )}
+
+          {/* The Job Completion Report, once the job is closed. Made on the
+              server; this downloads it and opens the share sheet. */}
+          {!!jobSummary?.job_completed_at && (
+            <Pressable
+              style={({ pressed }) => [pdfStyles.btn, (pdf.busy || pressed) && { opacity: 0.7 }]}
+              onPress={() => pdf.run(() => api.jobReportPdf(jobId))}
+              disabled={pdf.busy}
+            >
+              <FontAwesome5 name="file-pdf" size={15} color="#fff" />
+              <Text style={pdfStyles.text}>
+                {pdf.busy ? t("pdf.preparing") : t("pdf.jobReport")}
+              </Text>
+            </Pressable>
           )}
 
           {/* ── Sign-offs: who reported, approved, accepted, completed ── */}
@@ -1467,6 +1223,8 @@ const s = StyleSheet.create({
     flexWrap: "wrap",
     justifyContent: "flex-end",
   },
+  heroVehicle: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 6, alignSelf: "flex-start" },
+  heroVehicleText: { fontSize: 16, fontWeight: "800", color: "#2563EB" },
   heroSubRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14 },
   chip: {
     flexDirection: "row",
@@ -1710,4 +1468,18 @@ const s = StyleSheet.create({
     backgroundColor: "#FEF2F2",
   },
   removeBtnText: { fontSize: 12, fontWeight: "700", color: "#DC2626" },
+});
+
+const pdfStyles = StyleSheet.create({
+  btn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: "#111827",
+    marginBottom: 12,
+  },
+  text: { color: "#fff", fontSize: 15, fontWeight: "800" },
 });

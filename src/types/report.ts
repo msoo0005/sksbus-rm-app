@@ -26,14 +26,21 @@ export type ReportAudit = {
 export type Report = {
   id: number;
 
-  // From DB: report_type
-  type: "repair" | "problem" | "accident";
+  // From DB: report_type. "job_order" is a job a technician logged directly
+  // (no breakdown report, no approval).
+  type: "repair" | "problem" | "accident" | "job_order";
 
   // From DB: report_priority (you’ve been using "severity" in UI)
   severity: "low" | "medium" | "high" | "critical";
 
-  // From DB: bus_id
+  // From DB: bus_id (the plate)
   vehicle: string;
+  // From DB: bus_ev_no, the bus's own fleet number. Shown after the plate:
+  // "VMQ6372 (EV012)" — see utils/busLabel.
+  evNumber?: string | null;
+
+  // From DB: report_issue_type (null on reports filed before issue types).
+  issueType?: string | null;
 
   // From DB: report_location
   location: string;

@@ -18,6 +18,8 @@ import VerificationModal from "@/components/VerificationModal";
 import JobDetailsModal from "@/components/JobDetailsModal";
 import ReportCard from "@/components/ReportCard";
 import SegmentedTabs from "@/components/SegmentedTabs";
+import SortChips from "@/components/SortChips";
+import { DEFAULT_SORT, SortState, sortReports } from "@/utils/reportSort";
 import { useSession } from "@/ctx";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
@@ -44,6 +46,8 @@ type JobListItem = {
   report_uploaded_at?: string | null;
 
   bus_id: string | null;
+  bus_ev_no?: string | null;
+  report_issue_type?: string | null;
   reporter_name: string | null;
   reporter_email?: string | null;
   report_verified_name?: string | null;
@@ -59,6 +63,32 @@ function assigneeOf(job: JobListItem) {
     name: job.job_accept_verified_name ?? null,
     username: job.technician_name ?? null,
     selfieUrl: job.job_accept_selfie_view_url ?? null,
+  };
+}
+
+// A job as the report-card shape ReportCard and JobDetailsModal take.
+function toReportLike(job: JobListItem) {
+  return {
+    id: job.report_id ?? job.job_id,
+    type: job.report_type ?? "repair",
+    severity: job.report_priority ?? "medium",
+    vehicle: job.bus_id ?? "—",
+    evNumber: job.bus_ev_no ?? null,
+    issueType: job.report_issue_type ?? null,
+    location: job.report_location ?? "—",
+    description: job.report_desc ?? job.job_desc ?? "",
+    date: formatDate(job.report_uploaded_at ?? job.job_created_at),
+    dateIso: job.report_uploaded_at ?? job.job_created_at ?? null,
+    closedAt: job.job_completed_at ?? null,
+    status: job.job_status === "closed" ? "closed" : "open",
+    reportedBy: job.reporter_name ?? "—",
+    reporter: {
+      name: job.report_verified_name ?? null,
+      username: job.reporter_name ?? null,
+      selfieUrl: job.report_selfie_view_url ?? null,
+    },
+    assigned: job.technician_name ?? undefined,
+    assignee: assigneeOf(job),
   };
 }
 
@@ -160,12 +190,18 @@ export default function TechnicianScreen() {
     [availableJobs.length, myOpenJobs.length, othersJobs.length, myClosedJobs.length],
   );
 
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+
+  // Each job as a report card row, sorted by the chosen chip.
   const filtered = useMemo(() => {
-    if (tab === "available") return availableJobs;
-    if (tab === "myJobs") return myOpenJobs;
-    if (tab === "assigned") return othersJobs;
-    return myClosedJobs;
-  }, [tab, availableJobs, myOpenJobs, othersJobs, myClosedJobs]);
+    const list =
+      tab === "available" ? availableJobs
+      : tab === "myJobs" ? myOpenJobs
+      : tab === "assigned" ? othersJobs
+      : myClosedJobs;
+    const rows = list.map((job) => ({ ...toReportLike(job), job }));
+    return sortReports(rows, sort);
+  }, [tab, availableJobs, myOpenJobs, othersJobs, myClosedJobs, sort]);
 
   const requestAccept = (job: JobListItem) => {
     setAcceptTarget(job);
@@ -237,6 +273,8 @@ export default function TechnicianScreen() {
           ]}
         />
 
+        <SortChips value={sort} onChange={setSort} />
+
         {showTopSpinner && (
           <View
             style={{
@@ -258,33 +296,12 @@ export default function TechnicianScreen() {
             <Text style={{ color: "#666" }}>{t("jobsList.empty")}</Text>
           </View>
         ) : (
-          filtered.map((job) => {
-            const reportLike: any = {
-              id: job.report_id ?? job.job_id,
-              type: job.report_type ?? "repair",
-              severity: job.report_priority ?? "medium",
-              vehicle: job.bus_id ?? "—",
-              location: job.report_location ?? "—",
-              description: job.report_desc ?? job.job_desc ?? "",
-              date: formatDate(job.report_uploaded_at ?? job.job_created_at),
-              dateIso: job.report_uploaded_at ?? job.job_created_at ?? null,
-              closedAt: job.job_completed_at ?? null,
-              status: job.job_status === "closed" ? "closed" : "open",
-              reportedBy: job.reporter_name ?? "—",
-              reporter: {
-                name: job.report_verified_name ?? null,
-                username: job.reporter_name ?? null,
-                selfieUrl: job.report_selfie_view_url ?? null,
-              },
-              assigned: job.technician_name ?? undefined,
-              assignee: assigneeOf(job),
-            };
-
+          filtered.map(({ job, ...reportLike }) => {
             return (
               <Pressable key={job.job_id} onPress={() => goToJobScreen(job)}>
                 <View pointerEvents="box-none">
                   <ReportCard
-                    report={reportLike}
+                    report={reportLike as any}
                     currentTech={dbUser?.user_name}
                     onViewDetails={() => goToJobScreen(job)}
                     onAccept={
@@ -302,27 +319,7 @@ export default function TechnicianScreen() {
         visible={detailsVisible}
         report={
           selectedJob
-            ? ({
-                id: selectedJob.report_id ?? selectedJob.job_id,
-                type: selectedJob.report_type ?? "repair",
-                severity: selectedJob.report_priority ?? "medium",
-                vehicle: selectedJob.bus_id ?? "—",
-                location: selectedJob.report_location ?? "—",
-                description:
-                  selectedJob.report_desc ?? selectedJob.job_desc ?? "",
-                date: formatDate(
-                  selectedJob.report_uploaded_at ?? selectedJob.job_created_at,
-                ),
-                status: selectedJob.job_status === "closed" ? "closed" : "open",
-                reportedBy: selectedJob.reporter_name ?? "—",
-                reporter: {
-                  name: selectedJob.report_verified_name ?? null,
-                  username: selectedJob.reporter_name ?? null,
-                  selfieUrl: selectedJob.report_selfie_view_url ?? null,
-                },
-                assigned: selectedJob.technician_name ?? undefined,
-                assignee: assigneeOf(selectedJob),
-              } as any)
+            ? (toReportLike(selectedJob) as any)
             : null
         }
         onClose={() => setDetailsVisible(false)}

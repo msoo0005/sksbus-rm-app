@@ -1,9 +1,13 @@
 import { useRouter } from "expo-router";
 import RoleHomeScreen from "@/components/RoleHomeScreen";
+import TyreIcon from "@/components/icons/TyreIcon";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useOutstandingCount } from "@/hooks/useOutstandingCount";
 import { useTyreAttention } from "@/hooks/useTyreAttention";
 import { useI18n } from "@/i18n/i18n-ctx";
+import { ROLE_COLORS, ROLE_ICONS } from "@/utils/roles";
+
+const { accent, light } = ROLE_COLORS.rm_manager;
 
 export default function RmManagerHomeScreen() {
   const router = useRouter();
@@ -19,39 +23,51 @@ export default function RmManagerHomeScreen() {
   return (
     <RoleHomeScreen
       roleLabel={t("roles.rm_manager")}
+      roleIcon={ROLE_ICONS.rm_manager}
       actionTitle={t("rmManagerHome.actionTitle")}
       ctaLabel={t("rmManagerHome.ctaLabel")}
       actionDescription={t("rmManagerHome.actionDescription")}
       actionIcon="clipboard-check"
-      accent="#16A34A"
-      accentLight="#F0FDF4"
+      accent={accent}
+      accentLight={light}
       // Straight to the module — the gate has already secured a project. See
       // fleet-manager-home for why this no longer detours via the selector.
       onPress={() => router.push("/rm-manager" as any)}
       alertCount={outstanding}
+      // Daily work only; performance figures have their own row below.
       highlights={[
         { icon: "check-circle", label: t("rmManagerHome.highlight1") },
         { icon: "tasks", label: t("rmManagerHome.highlight2") },
-        { icon: "chart-bar", label: t("rmManagerHome.highlight3") },
       ]}
       secondaryAction={{
-        title: t("rmManagerHome.secondaryTitle"),
-        description: t("rmManagerHome.secondaryDescription"),
-        icon: "dot-circle",
-        accent: "#16A34A",
-        accentLight: "#F0FDF4",
-        // Tyre management is a main job for this role, not a side trip.
+        title: t("performance.homeTitle"),
+        description: t("performance.homeDescription"),
+        icon: "chart-bar",
+        accent,
+        accentLight: light,
         prominent: true,
-        badge: waiting > 0 ? t("tyres.section.homeBadge", { count: waiting }) : null,
-        onPress: () => router.push("/tyres" as any),
+        onPress: () => router.push("/performance" as any),
       }}
       extraActions={[
         {
+          title: t("rmManagerHome.secondaryTitle"),
+          description: t("rmManagerHome.secondaryDescription"),
+          icon: "dot-circle",
+          iconElement: <TyreIcon size={20} color={accent} />,
+          accent,
+          accentLight: light,
+          // Tyre management is a main job for this role, not a side trip.
+          prominent: true,
+          badge: waiting > 0 ? t("tyres.section.homeBadge", { count: waiting }) : null,
+          onPress: () => router.push("/tyres" as any),
+        },
+        {
           title: t("rmManagerHome.partsTitle"),
           description: t("rmManagerHome.partsDescription"),
-          icon: "cogs",
-          accent: "#16A34A",
-          accentLight: "#F0FDF4",
+          icon: "box-open",
+          accent,
+          accentLight: light,
+          prominent: true,
           onPress: () => router.push("/inventory" as any),
         },
       ]}

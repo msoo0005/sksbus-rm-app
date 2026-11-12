@@ -6,6 +6,7 @@ export function reportTypeTitleLabel(
   t: (key: string) => string,
 ): string {
   const v = String(type ?? "").toLowerCase();
+  if (v === "job_order") return t("jobOrder.title");
   if (v === "repair") return t("reportForm.typeRepair");
   if (v === "accident") return t("reportForm.typeAccident");
   return t("reportForm.typeProblem");

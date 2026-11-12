@@ -14,6 +14,8 @@ type SecondaryAction = {
   title: string;
   description: string;
   icon: string;
+  // Drawn instead of the FontAwesome icon when given (e.g. TyreIcon).
+  iconElement?: React.ReactNode;
   accent: string;
   accentLight: string;
   onPress: () => void;
@@ -37,6 +39,7 @@ type SecondaryAction = {
 
 type Props = {
   roleLabel: string;
+  roleIcon?: string;
   actionTitle: string;
   actionDescription: string;
   actionIcon: string;
@@ -59,6 +62,7 @@ type Props = {
 
 export default function RoleHomeScreen({
   roleLabel,
+  roleIcon,
   actionTitle,
   actionDescription,
   actionIcon,
@@ -79,7 +83,7 @@ export default function RoleHomeScreen({
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <HomeHeader roleLabel={roleLabel} roleColor={accent} roleColorLight={accentLight} />
+      <HomeHeader roleLabel={roleLabel} roleIcon={roleIcon} roleColor={accent} roleColorLight={accentLight} />
 
       <Text style={styles.sectionLabel}>{t("roleHome.getStarted")}</Text>
 
@@ -152,7 +156,7 @@ function SecondaryCard({ action }: { action: SecondaryAction }) {
           { backgroundColor: action.prominent ? "#FFFFFF" : action.accentLight },
         ]}
       >
-        <FontAwesome5 name={action.icon as any} size={18} color={action.accent} />
+        {action.iconElement ?? <FontAwesome5 name={action.icon as any} size={18} color={action.accent} />}
       </View>
       <View style={{ flex: 1 }}>
         <Text style={styles.secondaryTitle}>{action.title}</Text>

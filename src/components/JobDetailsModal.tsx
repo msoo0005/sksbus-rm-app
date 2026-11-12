@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useI18n } from "../i18n/i18n-ctx";
 import { openDirections } from "../utils/directions";
+import { formatBusLabel } from "../utils/busLabel";
 import { reportTypeTitleLabel } from "../utils/reportType";
 import { Report } from "../types/report";
 import ImageViewerOverlay from "./ImageViewerOverlay";
@@ -151,6 +152,10 @@ export default function JobDetailsModal({
             <Text style={s.headerTitle}>
               {reportTypeTitleLabel(report.type, t)} #{report.id}
             </Text>
+            <View style={s.headerVehicle}>
+              <FontAwesome5 name="bus" size={12} color="#374151" />
+              <Text style={s.headerVehicleText}>{formatBusLabel(report.vehicle, report.evNumber)}</Text>
+            </View>
           </View>
           <View style={s.headerRight}>
             <Chip label={t(sevConf.labelKey)} color={sevConf.color} bg={sevConf.bg} />
@@ -182,7 +187,7 @@ export default function JobDetailsModal({
             </View>
             <View style={s.cardDivider} />
 
-            <Field label={t("jobDetailsModal.vehicle")} value={report.vehicle} />
+            <Field label={t("jobDetailsModal.vehicle")} value={formatBusLabel(report.vehicle, report.evNumber)} />
 
             {/* Location — tappable when coordinates are available */}
             {report.lat != null && report.lng != null ? (
@@ -348,6 +353,8 @@ const s = StyleSheet.create({
     gap: 12,
   },
   headerLeft: { flex: 1 },
+  headerVehicle: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
+  headerVehicleText: { fontSize: 15, fontWeight: "800", color: "#111827" },
   headerTitle: {
     fontSize: 22,
     fontWeight: "800",

@@ -1,10 +1,10 @@
 import { FontAwesome5 } from "@expo/vector-icons";
-import { usePathname, useRouter } from "expo-router";
 import React from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { useI18n } from "../i18n/i18n-ctx";
 import { ALL_PROJECTS, useProject } from "../project-ctx";
 import { getProjectLogo } from "../utils/projectLogos";
+import { useOpenProjectSelector } from "../hooks/useOpenProjectSelector";
 
 /**
  * Which project you are looking at, and the way to change it.
@@ -20,8 +20,7 @@ import { getProjectLogo } from "../utils/projectLogos";
  */
 export default function ProjectChip() {
   const { t } = useI18n();
-  const router = useRouter();
-  const pathname = usePathname();
+  const openSelector = useOpenProjectSelector();
   const { projectId, hasChosen } = useProject();
 
   // Nothing to show before a choice exists — and in that state the gate is
@@ -33,15 +32,7 @@ export default function ProjectChip() {
 
   return (
     <Pressable
-      onPress={() =>
-        // `from=chip` tells the selector it was PUSHED onto this screen and can
-        // dismiss itself by going back, rather than replacing itself with the
-        // screen it is already sitting on top of — which would leave that
-        // screen in the stack twice and make the first back press look dead.
-        router.push(
-          `/project-selector?returnTo=${encodeURIComponent(pathname)}&from=chip` as any,
-        )
-      }
+      onPress={openSelector}
       style={({ pressed }) => [s.chip, pressed && s.pressed]}
       accessibilityRole="button"
       accessibilityLabel={t("projectChip.switch")}

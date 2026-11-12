@@ -22,6 +22,8 @@ import ImagePickerField, { type LocalMedia } from "../../ImagePicker";
 import DraftRestoreBar from "../../DraftRestoreBar";
 import FilterChipRow from "../../FilterChipRow";
 import TyreListRow from "../TyreListRow";
+import ThicknessInputRow, { emptyThicknessCells, parseThicknessCells } from "../ThicknessInputRow";
+import TyreTreadProfile from "../../TyreTreadProfile";
 import { useFormDraft } from "../../../hooks/useFormDraft";
 import { useI18n } from "../../../i18n/i18n-ctx";
 import { uploadTyrePhoto } from "../../../utils/tyrePhotoUpload";
@@ -48,6 +50,8 @@ const EMPTY_FORM = {
   tyre_retread_count: "0",
   tyre_tread_count: "4",
   tyre_bought_date: "",
+  // One cell per groove: the tyre's thickness as it enters stock.
+  intake_thickness: emptyThicknessCells(4),
 };
 
 type Props = {
@@ -77,7 +81,14 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
   );
   const restoreDraft = () => {
     const v = draft.restore();
-    if (v) setForm(v);
+    if (v) {
+      // Drafts saved before readings existed have none: give them empty cells.
+      const count = Number(v.tyre_tread_count) || 4;
+      const cells = Array.isArray(v.intake_thickness) && v.intake_thickness.length === count
+        ? v.intake_thickness
+        : emptyThicknessCells(count);
+      setForm({ ...v, intake_thickness: cells });
+    }
   };
 
   const inventory = useMemo(() => {
@@ -121,6 +132,11 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
       Alert.alert(t("common.validation"), "Groove count must be 3 or 4.");
       return;
     }
+    const intake = parseThicknessCells(form.intake_thickness);
+    if (!intake || intake.length !== treadCount) {
+      Alert.alert(t("common.validation"), t("tyres.addTyre.thicknessRequired", { count: treadCount }));
+      return;
+    }
     const retreadCount = toRetreadBucket(Number(form.tyre_retread_count));
     if (retreadCount > 0 && !retreadSticker.length) {
       Alert.alert(t("common.validation"), t("tyres.addTyre.retreadStickerRequired"));
@@ -141,6 +157,7 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
         retread_sticker_s3_key,
         tyre_tread_count: treadCount,
         tyre_bought_date: form.tyre_bought_date.trim() || undefined,
+        intake_thickness: intake,
       });
       draft.clear();
       setRetreadSticker([]);
@@ -306,7 +323,16 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
                       key={n}
                       style={[s.grooveBtn, Number(form.tyre_tread_count) === n && s.grooveBtnActive]}
                       disabled={submitting}
-                      onPress={() => setForm((f) => ({ ...f, tyre_tread_count: String(n) }))}
+                      // Re-shapes the thickness cells; readings typed for the
+                      // other groove count are dropped, not mis-assigned.
+                      onPress={() =>
+                        setForm((f) => ({
+                          ...f,
+                          tyre_tread_count: String(n),
+                          intake_thickness:
+                            f.intake_thickness.length === n ? f.intake_thickness : emptyThicknessCells(n),
+                        }))
+                      }
                     >
                       <Text
                         style={[
@@ -319,6 +345,18 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
                     </Pressable>
                   ))}
                 </View>
+
+                <Text style={s.label}>
+                  {t("tyres.addTyre.thickness")} <Text style={{ color: "#DC2626" }}>*</Text>
+                </Text>
+                <ThicknessInputRow
+                  values={form.intake_thickness}
+                  onChange={(next) => setForm((f) => ({ ...f, intake_thickness: next }))}
+                  editable={!submitting}
+                  showGrooveLabels
+                />
+                <Text style={s.thicknessHint}>{t("tyres.addTyre.thicknessHint")}</Text>
+                <TyreTreadProfile readings={form.intake_thickness} showUnevenWear={false} />
 
                 <Text style={s.label}>{t("tyres.addTyre.boughtDate")}</Text>
                 <TextInput
@@ -446,6 +484,7 @@ const s = StyleSheet.create({
     color: "#111827",
     backgroundColor: "#F9FAFB",
   },
+  thicknessHint: { fontSize: 12, color: "#6B7280", marginTop: 6, marginBottom: 4 },
   grooveRow: { flexDirection: "row", gap: 10 },
   grooveBtn: {
     flex: 1,

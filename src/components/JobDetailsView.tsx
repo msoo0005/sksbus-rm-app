@@ -16,6 +16,7 @@ import { api } from "../api/client";
 import { useI18n } from "../i18n/i18n-ctx";
 import { computeJobPendingStage } from "../utils/jobPendingStage";
 import { buildJobSignoffs, buildJobTimelineEvents, ODOMETER_TASK_NAME } from "../utils/jobSignoffs";
+import { formatBusLabel } from "../utils/busLabel";
 import { reportTypeTitleLabel } from "../utils/reportType";
 import BusDetailsModal from "./BusDetailsModal";
 import ImageViewerOverlay from "./ImageViewerOverlay";
@@ -24,6 +25,7 @@ import JobTimeline, { TimelineEvent } from "./JobTimeline";
 import SignoffCard from "./SignoffCard";
 import type { StatusType } from "./StatusBadge";
 import StatusBadge from "./StatusBadge";
+import { usePdfDownload } from "../hooks/usePdfDownload";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -45,6 +47,8 @@ type JobListItem = {
   report_type: string | null;
   report_priority: string | null;
   bus_id: string | null;
+  bus_ev_no?: string | null;
+  job_ref_no?: string | null;
   reporter_name: string | null;
   technician_name?: string | null;
   job_verified_name?: string | null;
@@ -151,6 +155,7 @@ export default function JobDetailsView({
   headerHint?: string;
 }) {
   const { t } = useI18n();
+  const pdf = usePdfDownload();
   const [loading, setLoading] = useState(false);
   const [jobSummary, setJobSummary] = useState<JobListItem | null>(null);
   const [report, setReport] = useState<ReportDto | null>(null);
@@ -315,8 +320,23 @@ export default function JobDetailsView({
           <View style={s.heroTop}>
             <View style={s.heroLeft}>
               <Text style={s.heroId}>
-                {reportTypeTitleLabel(jobSummary?.report_type, t)} Job #{jobId}
+                {jobSummary?.report_type === "job_order"
+                  ? `${t("jobOrder.title")} #${jobId}`
+                  : `${reportTypeTitleLabel(jobSummary?.report_type, t)} Job #${jobId}`}
               </Text>
+              {/* The vehicle, right under the title: plate (EV no.). Tap for
+                  the bus's details. */}
+              {jobSummary?.bus_id && (
+                <Pressable
+                  style={({ pressed }) => [s.heroVehicle, pressed && { opacity: 0.6 }]}
+                  onPress={() => setBusDetailsVisible(true)}
+                  hitSlop={6}
+                >
+                  <FontAwesome5 name="bus" size={13} color="#2563EB" />
+                  <Text style={s.heroVehicleText}>{formatBusLabel(jobSummary.bus_id, jobSummary.bus_ev_no)}</Text>
+                  <FontAwesome5 name="chevron-right" size={10} color="#2563EB" />
+                </Pressable>
+              )}
               {loading && <Text style={s.loadingText}>{t("common.loading")}</Text>}
             </View>
             <View style={s.badgeStack}>
@@ -324,17 +344,8 @@ export default function JobDetailsView({
             </View>
           </View>
 
-          {(jobSummary?.bus_id || report?.report_location) && (
+          {report?.report_location && (
             <View style={s.heroSubRow}>
-              {jobSummary?.bus_id && (
-                <Pressable
-                  style={({ pressed }) => [s.heroChip, s.heroChipTappable, pressed && { opacity: 0.6 }]}
-                  onPress={() => setBusDetailsVisible(true)}
-                >
-                  <FontAwesome5 name="bus" size={11} color="#2563EB" />
-                  <Text style={[s.heroChipText, { color: "#2563EB" }]}>{jobSummary.bus_id}</Text>
-                </Pressable>
-              )}
               {report?.report_location && (
                 <Pressable
                   style={({ pressed }) => [s.heroChip, report.report_lat != null && s.heroChipTappable, pressed && { opacity: 0.6 }]}
@@ -366,6 +377,21 @@ export default function JobDetailsView({
             </View>
           )}
         </View>
+
+        {/* The Job Completion Report, once the job is closed. Made on the
+            server; this downloads it and opens the share sheet. */}
+        {!!jobSummary?.job_completed_at && (
+          <Pressable
+            style={({ pressed }) => [pdfStyles.btn, (pdf.busy || pressed) && { opacity: 0.7 }]}
+            onPress={() => pdf.run(() => api.jobReportPdf(jobId))}
+            disabled={pdf.busy}
+          >
+            <FontAwesome5 name="file-pdf" size={15} color="#fff" />
+            <Text style={pdfStyles.text}>
+              {pdf.busy ? t("pdf.preparing") : t("pdf.jobReport")}
+            </Text>
+          </Pressable>
+        )}
 
         {/* ── Meta row ── */}
         <View style={s.metaRow}>
@@ -578,6 +604,8 @@ const s = StyleSheet.create({
   },
   badgeStack: { flexDirection: "row", gap: 6, paddingTop: 4, flexWrap: "wrap", justifyContent: "flex-end" },
 
+  heroVehicle: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 6, alignSelf: "flex-start" },
+  heroVehicleText: { fontSize: 16, fontWeight: "800", color: "#2563EB" },
   heroSubRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -764,4 +792,18 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
 
+});
+
+const pdfStyles = StyleSheet.create({
+  btn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: "#111827",
+    marginBottom: 12,
+  },
+  text: { color: "#fff", fontSize: 15, fontWeight: "800" },
 });

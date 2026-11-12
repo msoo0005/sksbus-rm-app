@@ -29,6 +29,9 @@ export type StatusType =
 type StatusBadgeProps = {
   label?: string;
   type: StatusType;
+  // "sm" matches the ElapsedTimer pill, for cards that stack the two.
+  size?: "md" | "sm";
+  style?: ViewStyle;
 };
 
 const STATUS_STYLES: Record<
@@ -55,8 +58,9 @@ const STATUS_STYLES: Record<
     container: { backgroundColor: "#4CAF50" },
     text: { color: "#FFFFFF" },
   },
+  // Darker amber (was #F59E0B) so the white text is readable.
   medium: {
-    container: { backgroundColor: "#F59E0B" },
+    container: { backgroundColor: "#B45309" },
     text: { color: "#FFFFFF" },
   },
   high: {
@@ -120,13 +124,14 @@ const STATUS_LABEL_KEYS: Record<StatusType, string> = {
   declined: "statusBadge.declined",
 };
 
-export default function StatusBadge({ label, type }: StatusBadgeProps) {
+export default function StatusBadge({ label, type, size = "md", style: extra }: StatusBadgeProps) {
   const { t } = useI18n();
   const style = STATUS_STYLES[type];
+  const sm = size === "sm";
 
   return (
-    <View style={[styles.badge, style.container]}>
-      <Text style={[styles.text, style.text]}>
+    <View style={[styles.badge, sm && styles.badgeSm, style.container, extra]}>
+      <Text style={[styles.text, sm && styles.textSm, style.text]}>
         {label ?? t(STATUS_LABEL_KEYS[type])}
       </Text>
     </View>
@@ -142,5 +147,15 @@ const styles = StyleSheet.create({
   text: {
     fontSize: 13,
     fontWeight: "800",
+  },
+  badgeSm: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
+  textSm: {
+    fontSize: 12,
   },
 });
