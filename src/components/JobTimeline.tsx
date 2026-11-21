@@ -32,6 +32,8 @@ export type PendingTimelineStage = {
   icon: string;
   color: string;
   colorLight: string;
+  /** When the timer starts; defaults to the last completed event. */
+  since?: string | null;
 };
 
 function formatDateTime(iso: string) {
@@ -98,7 +100,7 @@ export default function JobTimeline({
 
   // The pending stage begins right after whatever the last completed step
   // was — falls back to null (renders no timer) if there's no history yet.
-  const pendingSince = sorted.length ? sorted[sorted.length - 1].at : null;
+  const pendingSince = pendingStage?.since ?? (sorted.length ? sorted[sorted.length - 1].at : null);
 
   return (
     <View>

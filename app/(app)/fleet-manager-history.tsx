@@ -16,7 +16,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api } from "@/api/client";
-import JobDetailsView from "@/components/JobDetailsView";
+import JobReviewView from "@/components/job/JobReviewView";
 import ReportCard from "@/components/ReportCard";
 import SegmentedTabs from "@/components/SegmentedTabs";
 import { useSession } from "@/ctx";
@@ -302,10 +302,8 @@ export default function FleetManagerHistoryScreen() {
           <View style={styles.modalDivider} />
 
           {selectedJobId ? (
-            <JobDetailsView
-              jobId={selectedJobId}
-              headerHint="View only (opened from My Report History)"
-            />
+            // C16–C17: the closed job in Fleet Manager blue, with remarks.
+            <JobReviewView key={selectedJobId} jobId={selectedJobId} />
           ) : (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyText}>{t("fleetManagerHistory.noJobSelected")}</Text>

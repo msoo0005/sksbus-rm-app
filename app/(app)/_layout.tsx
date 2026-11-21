@@ -11,15 +11,11 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/api/client";
+import AccountMenu from "@/components/AccountMenu";
+import UserAvatar from "@/components/UserAvatar";
 import { useSession } from "@/ctx";
 import { useProject } from "@/project-ctx";
-import {
-  DEFAULT_ROLE_COLOR,
-  ROLE_COLORS,
-  ROLE_HOME,
-  ROLE_LABEL,
-  type RoleKey,
-} from "@/utils/roles";
+import { ROLE_HOME, type RoleKey } from "@/utils/roles";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { LANGUAGE_LABELS, Language } from "@/i18n/translations";
 
@@ -30,13 +26,13 @@ const HEADER_TITLE_MAX_WIDTH = 190;
 
 
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
-  admin: ["/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres", "/performance", "/puspakom"],
+  admin: ["/profile", "/job/", "/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres", "/performance", "/puspakom"],
   // /rm-manager/job: "View report" from a bus history opens the job (read-only).
-  fleet_manager: ["/fleet-manager-home", "/fleet-manager", "/form", "/project-selector", "/performance", "/rm-manager/job", "/puspakom", "/notifications"],
-  rm_manager: ["/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory", "/performance", "/puspakom"],
-  technician: ["/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/puspakom"],
-  inventory_manager: ["/inventory", "/project-selector"],
-  driver: ["/form", "/project-selector"],
+  fleet_manager: ["/profile", "/job/", "/fleet-manager-home", "/fleet-manager", "/form", "/project-selector", "/performance", "/rm-manager/job", "/puspakom", "/notifications"],
+  rm_manager: ["/profile", "/job/", "/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory", "/performance", "/puspakom"],
+  technician: ["/profile", "/job/", "/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/puspakom"],
+  inventory_manager: ["/profile", "/inventory", "/project-selector"],
+  driver: ["/profile", "/form", "/project-selector"],
 };
 
 // Roles that receive in-app notifications (per the feature's scope).
@@ -45,15 +41,6 @@ const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
 const NOTIFIABLE_ROLES = new Set(["admin", "rm_manager", "technician", "fleet_manager"]);
 
 
-
-function getInitials(name: string) {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0].toUpperCase())
-    .join("");
-}
 
 // EVERY role picks a project before it can reach anything else. The screens
 // below are all scoped to one, so landing on them without a selection would show
@@ -110,13 +97,7 @@ function RouteGuard() {
 // UIBarButtonItem, and the OS unconditionally draws its own "Liquid Glass"
 // pill background behind it with no opt-out. Floating outside the native
 // header sidesteps that entirely.
-function FloatingHeaderButtons({
-  onAvatarPress,
-  onLanguagePress,
-}: {
-  onAvatarPress: () => void;
-  onLanguagePress: () => void;
-}) {
+function FloatingHeaderButtons({ onAvatarPress }: { onAvatarPress: () => void }) {
   const { dbUser } = useSession();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -142,9 +123,6 @@ function FloatingHeaderButtons({
 
   if (!dbUser) return null;
 
-  const initials = getInitials(dbUser.user_name || dbUser.user_email);
-  const color = ROLE_COLORS[dbUser.user_role] ?? DEFAULT_ROLE_COLOR;
-
   return (
     <View
       pointerEvents="box-none"
@@ -153,12 +131,7 @@ function FloatingHeaderButtons({
         { top: insets.top + (HEADER_HEIGHT - 34) / 2 },
       ]}
     >
-      <Pressable
-        onPress={onLanguagePress}
-        style={({ pressed }) => [styles.bellBtn, pressed && { opacity: 0.75 }]}
-      >
-        <Ionicons name="globe-outline" size={19} color="#374151" />
-      </Pressable>
+      {/* v2.0.0: the language globe moved into the account menu (A5). */}
 
       {canSeeNotifications && (
         <Pressable
@@ -169,7 +142,7 @@ function FloatingHeaderButtons({
           {unreadCount > 0 && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>
-                {unreadCount > 9 ? "9+" : unreadCount}
+                {unreadCount > 99 ? "99+" : unreadCount}
               </Text>
             </View>
           )}
@@ -178,96 +151,25 @@ function FloatingHeaderButtons({
 
       <Pressable
         onPress={onAvatarPress}
-        style={({ pressed }) => [
-          styles.avatarBtn,
-          { backgroundColor: color.accent },
-          pressed && { opacity: 0.8 },
-        ]}
+        style={({ pressed }) => [styles.avatarBtn, pressed && { opacity: 0.8 }]}
+        accessibilityRole="button"
+        accessibilityLabel={dbUser.full_name || dbUser.user_name}
       >
-        <Text style={styles.avatarText}>{initials}</Text>
+        <UserAvatar
+          name={dbUser.full_name || dbUser.user_name || dbUser.user_email}
+          photoUrl={dbUser.avatar_url}
+          role={dbUser.user_role}
+          size={34}
+        />
       </Pressable>
     </View>
   );
 }
 
-// Modal lives at layout root level, outside the Stack header tree
-function ProfileModal({
-  visible,
-  onClose,
-}: {
-  visible: boolean;
-  onClose: () => void;
-}) {
-  const router = useRouter();
-  const { dbUser, signOut } = useSession();
-  const insets = useSafeAreaInsets();
-
-  const { t } = useI18n();
-
-  const handleSignOut = async () => {
-    onClose();
-    await signOut();
-    router.replace("/sign-in");
-  };
-
-  if (!dbUser) return null;
-
-  const initials = getInitials(dbUser.user_name || dbUser.user_email);
-  const roleLabel = ROLE_LABEL[dbUser.user_role]
-    ? t(`roles.${dbUser.user_role}`)
-    : dbUser.user_role;
-  const color = ROLE_COLORS[dbUser.user_role] ?? DEFAULT_ROLE_COLOR;
-
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <Pressable
-        style={[styles.backdrop, { paddingTop: insets.top + HEADER_HEIGHT + 6 }]}
-        onPress={onClose}
-      >
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View
-            style={[styles.avatarLarge, { backgroundColor: color.accent }]}
-          >
-            <Text style={styles.avatarLargeText}>{initials}</Text>
-          </View>
-
-          <Text style={styles.name}>{dbUser.user_name}</Text>
-          <Text style={styles.email}>{dbUser.user_email}</Text>
-
-          <View style={[styles.roleBadge, { backgroundColor: color.light }]}>
-            <View style={[styles.roleDot, { backgroundColor: color.accent }]} />
-            <Text style={[styles.roleBadgeText, { color: color.accent }]}>
-              {roleLabel}
-            </Text>
-          </View>
-
-          <View style={styles.divider} />
-
-          <Pressable
-            style={({ pressed }) => [
-              styles.signOutBtn,
-              pressed && { opacity: 0.85 },
-            ]}
-            onPress={handleSignOut}
-          >
-            <Ionicons name="log-out-outline" size={17} color="#DC2626" />
-            <Text style={styles.signOutText}>{t("chrome.signOut")}</Text>
-          </Pressable>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
 const LANGUAGE_OPTIONS: Language[] = ["en", "ms"];
 
-// Modal lives at layout root level, outside the Stack header tree — same
-// pattern as ProfileModal. Persisted language selection takes effect
+// Modal lives at layout root level, outside the Stack header tree, like the
+// account menu. Persisted language selection takes effect
 // immediately across the whole app since every t() call reads from context.
 function LanguagePickerModal({
   visible,
@@ -333,17 +235,50 @@ function LanguagePickerModal({
   );
 }
 
+// A4: while an administrator is inside a role's screens, a thin charcoal bar
+// says whose screens they are in, with a way back to the admin home.
+const ADMIN_VIEW_PREFIXES: { prefix: string; role: RoleKey }[] = [
+  { prefix: "/fleet-manager", role: "fleet_manager" },
+  { prefix: "/form", role: "fleet_manager" },
+  { prefix: "/rm-manager", role: "rm_manager" },
+  { prefix: "/technician", role: "technician" },
+];
+
+function AdminViewingBar() {
+  const { dbUser } = useSession();
+  const insets = useSafeAreaInsets();
+  const pathname = usePathname();
+  const router = useRouter();
+  const { t } = useI18n();
+  if (dbUser?.user_role !== "admin") return null;
+  const hit = ADMIN_VIEW_PREFIXES.find((p) => pathname.startsWith(p.prefix));
+  if (!hit) return null;
+  return (
+    <View style={[styles.adminBar, { top: insets.top + HEADER_HEIGHT }]}>
+      <Ionicons name="shield-checkmark" size={13} color="#fff" />
+      <Text style={styles.adminBarText} numberOfLines={1}>
+        {t("account.viewingAs", { role: t(`roles.${hit.role}`) })}
+      </Text>
+      <Pressable onPress={() => router.replace("/" as any)} hitSlop={8}>
+        <Text style={styles.adminBarLink}>{t("account.backToAdmin")}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export default function RootLayout() {
   const { t } = useI18n();
-  const [profileVisible, setProfileVisible] = React.useState(false);
+  const [menuVisible, setMenuVisible] = React.useState(false);
   const [languageVisible, setLanguageVisible] = React.useState(false);
 
   return (
     <View style={styles.root}>
       <RouteGuard />
-      <ProfileModal
-        visible={profileVisible}
-        onClose={() => setProfileVisible(false)}
+      <AccountMenu
+        visible={menuVisible}
+        topOffset={HEADER_HEIGHT + 6}
+        onClose={() => setMenuVisible(false)}
+        onOpenLanguage={() => setLanguageVisible(true)}
       />
       <LanguagePickerModal
         visible={languageVisible}
@@ -383,6 +318,8 @@ export default function RootLayout() {
         <Stack.Screen name="rm-manager-home" options={{ title: "Home" }} />
         <Stack.Screen name="rm-manager" options={{ title: "R&M Manager" }} />
         <Stack.Screen name="rm-manager/job/[id]" options={{ title: "Job Details" }} />
+        <Stack.Screen name="rm-manager/review/[id]" options={{ title: t("job2.review.title") }} />
+        <Stack.Screen name="job/[id]" options={{ title: t("job2.jobReport") }} />
         <Stack.Screen name="tyres/index" options={{ title: t("tyres.nav.hub") }} />
         {/* These two set their own titles from the bus they are showing — a
             static "Bus Tyres" three levels down says nothing about which bus
@@ -403,6 +340,7 @@ export default function RootLayout() {
         <Stack.Screen name="form" options={{ title: t("reportForm.title") }} />
         <Stack.Screen name="buses" options={{ title: t("buses.navTitle") }} />
         <Stack.Screen name="notifications" options={{ title: t("notifications.navTitle") }} />
+        <Stack.Screen name="profile" options={{ title: t("profile.title") }} />
         <Stack.Screen name="puspakom/index" options={{ title: t("puspakom.title") }} />
         <Stack.Screen name="puspakom/register" options={{ title: t("puspakom.form.title") }} />
         <Stack.Screen name="puspakom/bus/[busId]" options={{ title: t("puspakom.bus.screenTitle") }} />
@@ -417,10 +355,8 @@ export default function RootLayout() {
         <Stack.Screen name="puspakom/tech/[id]/review" options={{ title: t("puspakom.tech.navReview") }} />
         <Stack.Screen name="puspakom/tech/[id]/recheck" options={{ title: t("puspakom.tech.navRecheck") }} />
       </Stack>
-      <FloatingHeaderButtons
-        onAvatarPress={() => setProfileVisible(true)}
-        onLanguagePress={() => setLanguageVisible(true)}
-      />
+      <AdminViewingBar />
+      <FloatingHeaderButtons onAvatarPress={() => setMenuVisible((v) => !v)} />
     </View>
   );
 }
@@ -429,14 +365,27 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
   },
-  // Width reserved for the three floating controls, plus breathing room:
-  // 3 x 34px + 2 x 10px gap + 16px inset, rounded up.
+  // Width reserved for the floating bell + avatar, plus breathing room.
   headerTitle: {
     maxWidth: HEADER_TITLE_MAX_WIDTH,
     fontSize: 17,
     fontWeight: "600",
     color: "#111827",
   },
+  adminBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    zIndex: 30,
+    height: 28,
+    backgroundColor: "#1F2937",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  adminBarText: { flex: 1, color: "#fff", fontSize: 12.5, fontWeight: "700" },
+  adminBarLink: { color: "#D1D5DB", fontSize: 12.5, fontWeight: "800", textDecorationLine: "underline" },
   floatingWrap: {
     position: "absolute",
     right: 16,
@@ -457,12 +406,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 4,
     elevation: 3,
-  },
-  avatarText: {
-    color: "#fff",
-    fontSize: 13,
-    fontWeight: "800",
-    letterSpacing: 0.3,
   },
 
   bellBtn: {
@@ -522,79 +465,10 @@ const styles = StyleSheet.create({
     elevation: 12,
   },
 
-  avatarLarge: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 14,
-  },
-  avatarLargeText: {
-    color: "#fff",
-    fontSize: 24,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-  },
 
-  name: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#111827",
-    textAlign: "center",
-    marginBottom: 3,
-  },
-  email: {
-    fontSize: 13,
-    color: "#6B7280",
-    fontWeight: "500",
-    textAlign: "center",
-    marginBottom: 14,
-  },
 
-  roleBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 13,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  roleDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  roleBadgeText: {
-    fontSize: 12,
-    fontWeight: "800",
-    letterSpacing: 0.3,
-  },
 
-  divider: {
-    width: "100%",
-    height: 1,
-    backgroundColor: "#F3F4F6",
-    marginVertical: 18,
-  },
 
-  signOutBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    width: "100%",
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: "#FEF2F2",
-    borderWidth: 1,
-    borderColor: "#FECACA",
-  },
-  signOutText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#DC2626",
-  },
 
   languageHeaderRow: {
     flexDirection: "row",

@@ -14,10 +14,6 @@ function getGreetingKey() {
   return "greeting.evening";
 }
 
-function getFirstName(name: string) {
-  return name?.split(" ")[0] ?? name;
-}
-
 type Props = {
   roleLabel: string;
   roleColor: string;
@@ -43,14 +39,16 @@ export default function HomeHeader({
 }: Props) {
   const { dbUser } = useSession();
   const { t } = useI18n();
-  const firstName = getFirstName(dbUser?.user_name ?? "");
+  // A1: the name from My profile, not the username. dbUser is replaced when
+  // the profile is saved, so this updates straight away.
+  const displayName = dbUser?.full_name || dbUser?.user_name || "";
 
   return (
     <View style={styles.header}>
       <View style={styles.left}>
         <Text style={styles.greeting}>{t(getGreetingKey())},</Text>
         <Text style={styles.name} numberOfLines={1}>
-          {firstName}
+          {displayName}
         </Text>
 
         <View
@@ -72,7 +70,8 @@ export default function HomeHeader({
   );
 }
 
-function ProjectTile() {
+/** `light`: white label, for the admin home's charcoal band (A4). */
+export function ProjectTile({ light = false }: { light?: boolean } = {}) {
   const { t } = useI18n();
   const openSelector = useOpenProjectSelector();
   const { projectId, hasChosen } = useProject();
@@ -99,10 +98,10 @@ function ProjectTile() {
         )}
       </View>
       <View style={styles.tileLabelRow}>
-        <Text style={styles.tileLabel} numberOfLines={1}>
+        <Text style={[styles.tileLabel, light && { color: "#fff" }]} numberOfLines={1}>
           {name}
         </Text>
-        <FontAwesome5 name="chevron-down" size={10} color="#374151" />
+        <FontAwesome5 name="chevron-down" size={10} color={light ? "#fff" : "#374151"} />
       </View>
     </Pressable>
   );

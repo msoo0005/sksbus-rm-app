@@ -11,7 +11,7 @@ import Pill from "@/components/puspakom/Pill";
 import PuspakomMark from "@/components/puspakom/PuspakomMark";
 import { InfoRow, Section } from "@/components/puspakom/Section";
 import SyncBadge from "@/components/puspakom/SyncBadge";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
 import { useSession } from "@/ctx";
 import { usePrecheck } from "@/hooks/usePrecheck";
 import { useI18n } from "@/i18n/i18n-ctx";
@@ -211,10 +211,11 @@ export default function ReviewSubmit() {
         </View>
       </View>
 
-      <VerificationModal
+      <SignoffSheet
         visible={signing}
+        verb="submitting"
         title={t("puspakom.tech.signTitle")}
-        message={t("puspakom.tech.signMessage", { bus: detail.bus.bus_id })}
+        action={t("puspakom.tech.signMessage", { bus: detail.bus.bus_id })}
         confirmLabel={t("puspakom.tech.submitChecklist")}
         submitting={saving}
         onCancel={() => !saving && setSigning(false)}

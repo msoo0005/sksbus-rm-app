@@ -148,7 +148,177 @@ export type ExportRequest =
   | { kind: "bus"; bus_id: string; from?: string | null; to?: string | null; project_id?: string | null };
 
 // The two sign-offs whose selfie is uploaded ahead of the action itself.
-export type VerificationKind = "report-review" | "job-accept";
+export type VerificationKind =
+  | "report-review"
+  | "job-accept"
+  | "job-complete"
+  | "job-approve"
+  | "job-sendback"
+  | "job-delay";
+
+// ===== v2.0.0 Part C: job details and approval =====
+
+/** approved -> accepted -> arrived -> pending_approval -> closed */
+export type JobState = "approved" | "accepted" | "arrived" | "pending_approval" | "closed";
+export type JobSource = "REPORT" | "FOLLOW_UP" | "TECH_ORDER";
+export type AfterSlot = "dashboard" | "front" | "back" | "left" | "right";
+export const AFTER_SLOTS: AfterSlot[] = ["dashboard", "front", "back", "left", "right"];
+
+export type JobPhoto = {
+  media_id: number;
+  task_id: number | null;
+  followup_id: number | null;
+  kind: "task" | "after" | "followup";
+  slot: AfterSlot | null;
+  mime_type: string;
+  uploaded_at: string;
+  url: string | null;
+};
+
+export type JobPerson = { user_id?: number | null; name: string | null; username: string | null; role?: string | null };
+
+export type JobEvent = {
+  event_id: number;
+  job_id: number | null;
+  type:
+    | "REPORT_SUBMITTED"
+    | "REPORT_APPROVED"
+    | "REPORT_DECLINED"
+    | "JOB_ORDER_ISSUED"
+    | "JOB_ORDER_OPENED"
+    | "ACCEPTED"
+    | "DELAY_UPDATE"
+    | "ARRIVED"
+    | "ODOMETER_CORRECTED"
+    | "TASK_COMPLETED"
+    | "FOLLOWUP_ADDED"
+    | "FOLLOWUP_REMOVED"
+    | "JOB_COMPLETED"
+    | "SENT_BACK"
+    | "CLOSED"
+    | "FM_REMARKS_SAVED"
+    | "FM_REMARKS_EDITED";
+  at: string;
+  by: JobPerson;
+  selfie_url: string | null;
+  detail: any;
+};
+
+export type JobFollowup = {
+  followup_id: number;
+  issue: string;
+  required_action: string;
+  status: "PENDING" | "JOB_ORDER_ISSUED";
+  created_at: string;
+  created_by: JobPerson;
+  photos: JobPhoto[];
+  job_order: {
+    job_id: number;
+    ref_no: string | null;
+    state: JobState;
+    issued_at: string | null;
+    issued_by: string | null;
+    priority: string | null;
+  } | null;
+};
+
+export type JobDetailTask = {
+  task_id: number;
+  no: number;
+  name: string;
+  job_type: "repair" | "maintenance" | null;
+  category: { key: string; no: number; name: string } | null;
+  work_done: string | null;
+  remark: string | null;
+  no_parts: boolean;
+  status: string;
+  completed_at: string | null;
+  parts: { part_id: number; name: string; code: string | null; brand: string | null; unit: string; qty: number }[];
+  photos: JobPhoto[];
+};
+
+export type JobDetails = {
+  now: string;
+  job: {
+    job_id: number;
+    ref_no: string | null;
+    state: JobState;
+    source: JobSource;
+    desc: string | null;
+    priority: string | null;
+    required_action: string | null;
+    remarks: string | null;
+    issued_at: string | null;
+    created_at: string | null;
+    accepted_at: string | null;
+    arrived_at: string | null;
+    completed_at: string | null;
+    approved_at: string | null;
+    odometer: number | null;
+    technician: JobPerson | null;
+    approved_by: (JobPerson & { selfie_url: string | null }) | null;
+    fm_remarks: { text: string; name: string | null; username: string | null; at: string; edited_at: string | null } | null;
+    parent: { job_id: number | null; ref_no: string | null } | null;
+    pdf_ready: boolean;
+  };
+  report: {
+    report_id: number | null;
+    type: string | null;
+    issue_type: string | null;
+    category: { key: string; no: number; name: string } | null;
+    desc: string | null;
+    location: string | null;
+    lat: number | null;
+    lng: number | null;
+    priority: string | null;
+    submitted_at: string | null;
+    reporter: JobPerson;
+    photos: { media_id: number; kind: "issue" | "cluster" | "exterior"; url: string | null; uploaded_at: string }[];
+  };
+  followup_origin: {
+    followup_id: number;
+    issue: string;
+    required_action: string;
+    parent_job_id: number | null;
+    parent_ref_no: string | null;
+    photos: JobPhoto[];
+  } | null;
+  bus: { bus_id: string | null; bus_ev_no: string | null; bus_model: string | null };
+  tasks: JobDetailTask[];
+  followups: JobFollowup[];
+  after_photos: Partial<Record<AfterSlot, JobPhoto>>;
+  after_photos_unslotted: JobPhoto[];
+  events: JobEvent[];
+  sent_back: { reason: string | null; by: JobPerson; at: string } | null;
+  late: {
+    late: boolean;
+    updateDue: boolean;
+    sinceAcceptedMs: number | null;
+    dueSince: number | null;
+    accepted_at: string | null;
+    last_delay_at: string | null;
+    limitMin: number;
+    repeatMin: number;
+  };
+  can: {
+    edit: boolean;
+    save_odometer: boolean;
+    delay_update: boolean;
+    complete: boolean;
+    approve: boolean;
+    send_back: boolean;
+    correct_odometer: boolean;
+    fm_remarks: boolean;
+  };
+};
+
+export type JobOrderEntry = {
+  followup_id: number;
+  issue: string;
+  required_action: string;
+  priority: "low" | "medium" | "high" | "critical";
+  remarks?: string | null;
+};
 
 // The BUS row as every branch of the lambda's getBuses returns it.
 /**
@@ -506,7 +676,14 @@ export type NotificationType =
   | "puspakom_recheck_submitted"
   | "puspakom_not_booked"
   | "puspakom_overdue"
-  | "puspakom_result_needed";
+  | "puspakom_result_needed"
+  // v2.0.0 Part C (migration 026)
+  | "job_approval"
+  | "job_closed"
+  | "job_sent_back"
+  | "job_delay"
+  | "job_late"
+  | "fm_remarks";
 
 export type AppNotification = {
   notification_id: number;
@@ -816,9 +993,18 @@ export class ApiError extends Error {
 export type DbMe = {
   user_id: number;
   user_role: string;
+  /** The name shown everywhere: the My profile name once one is saved. */
   user_name: string;
-  user_email: string;
+  user_email: string | null;
+  /** Cognito username, shown as "@username". Null until the API has seen it. */
+  username?: string | null;
+  /** The name from My profile; fills the greeting and every sign-off card. */
+  full_name?: string | null;
+  avatar_url?: string | null;
 };
+
+export type SortPreference = { key: string; dir: "asc" | "desc" };
+export type UserPreferences = { jobs_sort?: SortPreference | null };
 
 export type ReportStatus = "submitted" | "open" | "closed";
 export type ReviewAction = "approved" | "declined";
@@ -839,6 +1025,22 @@ export const api = {
 
   // auth/user (protected)
   me: () => requestWithIdToken<DbMe>("/me"),
+
+  // My profile (A6)
+  updateMyProfile: (body: { full_name: string }) =>
+    requestWithIdToken<DbMe>("/me", { method: "PATCH", body: JSON.stringify(body) }),
+  presignMyAvatar: (mime: string) =>
+    requestWithIdToken<{ uploadUrl: string; s3_bucket: string; s3_key: string }>(
+      `/me/avatar/presign?mime=${encodeURIComponent(mime)}`
+    ),
+  setMyAvatar: (s3Key: string | null) =>
+    requestWithIdToken<DbMe>("/me/avatar", { method: "PATCH", body: JSON.stringify({ s3_key: s3Key }) }),
+  myPreferences: () => requestWithIdToken<UserPreferences>("/me/preferences"),
+  setMyPreference: <K extends keyof UserPreferences>(key: K, value: UserPreferences[K]) =>
+    requestWithIdToken<{ success: true }>(`/me/preferences/${key}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value }),
+    }),
 
   // projects (protected)
   projects: () =>
@@ -955,9 +1157,11 @@ export const api = {
       report_review_by?: string | null;
       report_review_reason?: string | null;
       report_review_at?: string | null;
-      // Approval sign-off: required when report_review_action is "approved".
+      // Review sign-off: required when approving, and when declining from a
+      // build that sends `signed: true` (v2.0.0+).
       review_verified_name?: string;
       review_selfie_s3_key?: string;
+      signed?: boolean;
     },
   ) =>
     requestWithIdToken<{ success: true }>(`/reports/${reportId}/status`, {
@@ -1096,9 +1300,14 @@ export const api = {
   },
 
   // ✅ FIX: protected → use ID token
-  presignJobMedia: (jobId: number, mime: string, params?: { taskId?: number }) => {
+  presignJobMedia: (
+    jobId: number,
+    mime: string,
+    params?: { taskId?: number; kind?: "after" | "followup" | "delay" },
+  ) => {
     const qs = new URLSearchParams({ mime });
     if (params?.taskId != null) qs.set("task_id", String(params.taskId));
+    if (params?.kind) qs.set("kind", params.kind);
     return requestWithIdToken<{
       uploadUrl: string;
       s3_bucket: string;
@@ -1109,9 +1318,9 @@ export const api = {
   // ✅ FIX: protected → use ID token
   confirmJobMedia: (
     jobId: number,
-    body: { s3_key: string; mime_type: string; size_bytes?: number; task_id?: number },
+    body: { s3_key: string; mime_type: string; size_bytes?: number; task_id?: number; media_slot?: AfterSlot },
   ) =>
-    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/media/confirm`, {
+    requestWithIdToken<{ success: true; media_id?: number }>(`/jobs/${jobId}/media/confirm`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -1199,6 +1408,44 @@ export const api = {
   // ===== PDF REPORTS =====
   // The Job Completion Report for a closed job. "pending" while the server
   // renders it; poll until "ready".
+  // ===== v2.0.0 Part C =====
+  jobDetails: (jobId: number) => requestWithIdToken<JobDetails>(`/jobs/${jobId}/details`),
+  completeJob: (jobId: number, body: { verified_name: string; selfie_s3_key: string }) =>
+    requestWithIdToken<{ success: true; job_state: JobState }>(`/jobs/${jobId}/complete`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  approveJob: (jobId: number, body: { verified_name: string; selfie_s3_key: string; job_orders: JobOrderEntry[] }) =>
+    requestWithIdToken<{ success: true; job_orders: { job_id: number; ref_no: string; followup_id: number }[] }>(
+      `/jobs/${jobId}/approve`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  sendBackJob: (jobId: number, body: { reason: string; verified_name: string; selfie_s3_key: string }) =>
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/send-back`, { method: "POST", body: JSON.stringify(body) }),
+  addFollowup: (jobId: number, body: { issue: string; required_action: string; photo_keys: string[] }) =>
+    requestWithIdToken<{ success: true; followup_id: number }>(`/jobs/${jobId}/followups`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  removeFollowup: (followupId: number) =>
+    requestWithIdToken<{ success: true }>(`/followups/${followupId}`, { method: "DELETE" }),
+  addDelayUpdate: (
+    jobId: number,
+    body: {
+      reason: "TRAFFIC" | "BUS_IN_OPERATION" | "OTHER";
+      note?: string | null;
+      photo_keys: string[];
+      verified_name: string;
+      selfie_s3_key: string;
+    },
+  ) =>
+    requestWithIdToken<{ success: true }>(`/jobs/${jobId}/delay-updates`, { method: "POST", body: JSON.stringify(body) }),
+  saveFmRemarks: (jobId: number, text: string) =>
+    requestWithIdToken<{ success: true; edited: boolean }>(`/jobs/${jobId}/fm-remarks`, {
+      method: "PATCH",
+      body: JSON.stringify({ text }),
+    }),
+
   jobReportPdf: (jobId: number) =>
     requestWithIdToken<PdfStatus>(`/jobs/${jobId}/report-pdf`),
 

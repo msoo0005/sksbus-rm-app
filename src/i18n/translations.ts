@@ -9,6 +9,8 @@
 // t("common.cancel") or t("jobDetail.sectionTasks").
 
 import { PUSPAKOM_STRINGS } from "./puspakom";
+import { JOB_STRINGS } from "./jobs";
+import { V2_STRINGS } from "./v2";
 
 export type Language = "en" | "ms";
 
@@ -2317,3 +2319,19 @@ export const translations: Record<Language, TranslationTree> = {
 // PUSPAKOM keeps its strings in ./puspakom.ts (t("puspakom.…")).
 translations.en.puspakom = PUSPAKOM_STRINGS.en;
 translations.ms.puspakom = PUSPAKOM_STRINGS.ms;
+
+// v2.0.0 parts A and S keep theirs in ./v2.ts (t("account.…"), t("profile.…"),
+// t("signoff.…")).
+// Merged key by key, so v2 can add to an existing area (adminHome) as well as
+// bring its own.
+function mergeTree(into: TranslationTree, from: TranslationTree) {
+  for (const [k, v] of Object.entries(from)) {
+    const cur = into[k];
+    if (typeof v === "object" && cur && typeof cur === "object") mergeTree(cur, v);
+    else into[k] = v;
+  }
+}
+for (const lang of ["en", "ms"] as const) {
+  mergeTree(translations[lang], V2_STRINGS[lang] as TranslationTree);
+  mergeTree(translations[lang], JOB_STRINGS[lang]);
+}

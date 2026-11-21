@@ -1,98 +1,73 @@
 import { FontAwesome5 } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import React from "react";
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
-import HomeHeader from "@/components/HomeHeader";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { api } from "@/api/client";
+import AlertBubble from "@/components/AlertBubble";
+import { ProjectTile } from "@/components/HomeHeader";
 import { useSession } from "@/ctx";
+import { useProjectFilter } from "@/hooks/useProjectFilter";
+import { usePuspakomCount } from "@/hooks/usePuspakomCount";
 import { useI18n } from "@/i18n/i18n-ctx";
-import { ROLE_HOME, type RoleKey } from "@/utils/roles";
+import { ROLE_COLORS, ROLE_HOME, ROLE_ICONS, type RoleKey } from "@/utils/roles";
 
+const ADMIN = ROLE_COLORS.admin;
 
+type Waiting = { label: string; count: number };
 
-const ADMIN_ACCENT = "#4338CA";
-const ADMIN_ACCENT_LIGHT = "#EEF2FF";
+/**
+ * A4: the numbers behind each role row, for the whole project, so they are the
+ * same numbers the role homes show. Charger & Depot (G) and low parts stock (H)
+ * join the lines when those parts are built.
+ */
+function useAdminCounts(projectId: string | null) {
+  const fmPuspakom = usePuspakomCount("fleet_manager", projectId);
+  const techPuspakom = usePuspakomCount("technician", projectId);
+  const [reports, setReports] = React.useState({ pending: 0, open: 0 });
 
-const MODULE_DEFS = [
-  {
-    id: "fleet-manager",
-    titleKey: "adminHome.fleetManagerTitle",
-    descKey: "adminHome.fleetManagerDesc",
-    icon: "truck",
-    accent: "#2563EB",
-    accentLight: "#EFF6FF",
-  },
-  {
-    id: "rm-manager",
-    titleKey: "adminHome.rmManagerTitle",
-    descKey: "adminHome.rmManagerDesc",
-    icon: "clipboard-check",
-    accent: "#16A34A",
-    accentLight: "#F0FDF4",
-  },
-  {
-    id: "technician",
-    titleKey: "adminHome.technicianTitle",
-    descKey: "adminHome.technicianDesc",
-    icon: "wrench",
-    accent: "#EA580C",
-    accentLight: "#FFF7ED",
-  },
-  {
-    id: "inventory",
-    titleKey: "adminHome.inventoryTitle",
-    descKey: "adminHome.inventoryDesc",
-    icon: "boxes",
-    accent: "#7C3AED",
-    accentLight: "#F5F3FF",
-  },
-  {
-    id: "buses",
-    titleKey: "adminHome.busesTitle",
-    descKey: "adminHome.busesDesc",
-    icon: "bus",
-    accent: "#0284C7",
-    accentLight: "#F0F9FF",
-  },
-  {
-    id: "performance",
-    titleKey: "performance.homeTitle",
-    descKey: "performance.homeDescription",
-    icon: "chart-bar",
-    accent: "#34873F",
-    accentLight: "#F0FDF4",
-  },
-  {
-    id: "tyres",
-    titleKey: "adminHome.tyresTitle",
-    descKey: "adminHome.tyresDesc",
-    icon: "dot-circle",
-    accent: "#16A34A",
-    accentLight: "#F0FDF4",
-  },
+  const reload = React.useCallback(async () => {
+    try {
+      const project = projectId ? { project_id: projectId } : {};
+      const [pending, open] = await Promise.all([
+        api.listReports({ status: "submitted", ...project }),
+        api.listReports({ status: "open", ...project }),
+      ]);
+      setReports({ pending: pending?.length ?? 0, open: open?.length ?? 0 });
+    } catch {
+      // keep the last numbers
+    }
+  }, [projectId]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      reload();
+    }, [reload]),
+  );
+
+  return {
+    fleet_manager: [
+      { label: "PUSPAKOM", count: fmPuspakom },
+      { label: "reports", count: reports.pending + reports.open },
+    ],
+    rm_manager: [{ label: "breakdowns", count: reports.pending }],
+    technician: [{ label: "preInspection", count: techPuspakom }],
+  } as Record<"fleet_manager" | "rm_manager" | "technician", Waiting[]>;
+}
+
+const ROLE_ROWS: { role: "fleet_manager" | "rm_manager" | "technician"; route: string }[] = [
+  { role: "fleet_manager", route: "/fleet-manager-home" },
+  { role: "rm_manager", route: "/rm-manager-home" },
+  { role: "technician", route: "/technician-home" },
 ];
 
 const CONTENT_MAX_WIDTH = 720;
-const CONTENT_H_PADDING = 20;
-const GRID_GAP = 14;
 
 export default function HomeScreen() {
   const { dbUser } = useSession();
   const router = useRouter();
-  const { width: windowWidth } = useWindowDimensions();
   const { t } = useI18n();
-
-  const modules = MODULE_DEFS.map((mod) => ({
-    ...mod,
-    title: t(mod.titleKey),
-    description: t(mod.descKey),
-  }));
+  const projectId = useProjectFilter();
+  const counts = useAdminCounts(projectId);
 
   const role = (dbUser?.user_role ?? "driver") as RoleKey;
   // Admin's home IS this screen, so it alone has nowhere to be sent.
@@ -100,176 +75,141 @@ export default function HomeScreen() {
 
   React.useEffect(() => {
     if (redirect) router.replace(redirect as any);
-  }, [redirect]);
+  }, [redirect, router]);
 
   if (redirect) return null;
 
-  const handlePress = (moduleId: string) => {
-    if (moduleId === "fleet-manager") {
-      // Straight to the module. This card used to open the project selector
-      // first, from when that was the only thing guaranteeing a project was
-      // chosen; the gate does that now, and admin has already passed it to be
-      // looking at this console at all.
-      router.push("/fleet-manager-home" as any);
-    } else if (moduleId === "rm-manager") {
-      router.push("/rm-manager-home" as any);
-    } else if (moduleId === "technician") {
-      router.push("/technician-home" as any);
-    } else {
-      router.push(`./${moduleId}` as any);
-    }
-  };
-
-  // Responsive columns: 2 on phones, more as the screen (or split-view pane) widens.
-  const contentWidth =
-    Math.min(windowWidth, CONTENT_MAX_WIDTH) - CONTENT_H_PADDING * 2;
-  const columns = windowWidth >= 900 ? 4 : windowWidth >= 600 ? 3 : 2;
-  const cardWidth = (contentWidth - GRID_GAP * (columns - 1)) / columns;
+  const hour = new Date().getHours();
+  const greeting = t(hour < 12 ? "greeting.morning" : hour < 17 ? "greeting.afternoon" : "greeting.evening");
+  const name = dbUser?.full_name || dbUser?.user_name || "";
 
   return (
-    <ScrollView
-      style={styles.page}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
-      <HomeHeader
-        roleLabel={t("roles.admin")}
-        roleColor={ADMIN_ACCENT}
-        roleColorLight={ADMIN_ACCENT_LIGHT}
-      />
-
-      <Text style={styles.sectionLabel}>{t("adminHome.quickAccess")}</Text>
-
-      <View style={styles.grid}>
-        {modules.map((mod) => (
-          <Pressable
-            key={mod.id}
-            style={{ width: cardWidth }}
-            onPress={() => handlePress(mod.id)}
-          >
-            {({ pressed }) => (
-              <View
-                style={[
-                  styles.card,
-                  {
-                    backgroundColor: mod.accentLight,
-                    borderColor: `${mod.accent}33`,
-                  },
-                  pressed && styles.cardPressed,
-                ]}
-              >
-                <View style={styles.iconBox}>
-                  <FontAwesome5
-                    name={mod.icon as any}
-                    size={20}
-                    color={mod.accent}
-                  />
-                </View>
-
-                <Text style={styles.cardTitle} numberOfLines={1}>
-                  {mod.title}
-                </Text>
-                <Text style={styles.cardDesc} numberOfLines={2}>
-                  {mod.description}
-                </Text>
-
-                <View style={styles.cardFooter}>
-                  <Text style={[styles.openText, { color: mod.accent }]}>
-                    {t("adminHome.open")}
-                  </Text>
-                  <FontAwesome5
-                    name="arrow-right"
-                    size={10}
-                    color={mod.accent}
-                  />
-                </View>
+    <ScrollView style={styles.page} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <View style={styles.band}>
+        <View style={[styles.circle, styles.circleA]} />
+        <View style={[styles.circle, styles.circleB]} />
+        <View style={styles.bandInner}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.greeting}>{greeting},</Text>
+            <Text style={styles.name} numberOfLines={1}>{name}</Text>
+            <View style={styles.crownPill}>
+              <View style={styles.crownIcon}>
+                <FontAwesome5 name="crown" size={11} color="#1F2937" />
               </View>
-            )}
-          </Pressable>
-        ))}
+              <Text style={styles.crownText}>{t("adminHome.fullAccess")}</Text>
+            </View>
+          </View>
+          <View style={styles.tileBox}>
+            <ProjectTile light />
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.sheet}>
+        <Text style={styles.sectionLabel}>{t("adminHome.openARole")}</Text>
+        <View style={styles.rowsCard}>
+          {ROLE_ROWS.map(({ role: r, route }, i) => {
+            const color = ROLE_COLORS[r];
+            const waiting = counts[r].filter((w) => w.count > 0);
+            const total = counts[r].reduce((sum, w) => sum + w.count, 0);
+            return (
+              <Pressable
+                key={r}
+                onPress={() => router.push(route as any)}
+                style={({ pressed }) => [styles.roleRow, i > 0 && styles.roleRowBorder, pressed && { opacity: 0.75 }]}
+              >
+                <View style={[styles.roleIcon, { backgroundColor: color.accent }]}>
+                  <FontAwesome5 name={ROLE_ICONS[r] as any} size={18} color="#fff" />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.roleTitle}>{t(`roles.${r}`)}</Text>
+                  {waiting.length > 0 && (
+                    <Text style={styles.waiting} numberOfLines={1}>
+                      {waiting.map((w) => `${t(`adminHome.waiting.${w.label}`)} ${w.count}`).join(" · ")}
+                    </Text>
+                  )}
+                </View>
+                <AlertBubble count={total} size={22} />
+                <FontAwesome5 name="chevron-right" size={12} color="#9CA3AF" />
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.toolsHead}>
+          <Text style={styles.sectionLabel}>{t("adminHome.adminTools")}</Text>
+          <Text style={styles.toolsHint}>{t("adminHome.onlyAdmins")}</Text>
+        </View>
+        <Pressable
+          onPress={() => router.push("/buses" as any)}
+          style={({ pressed }) => [styles.toolRow, pressed && { opacity: 0.75 }]}
+        >
+          <View style={[styles.roleIcon, { backgroundColor: ADMIN.accent }]}>
+            <FontAwesome5 name="bus" size={17} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.roleTitle}>{t("adminHome.busFleetTitle")}</Text>
+            <Text style={styles.waiting}>{t("adminHome.busFleetDesc")}</Text>
+          </View>
+          <FontAwesome5 name="chevron-right" size={12} color="#9CA3AF" />
+        </Pressable>
       </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  page: {
-    flex: 1,
+  page: { flex: 1, backgroundColor: "#F9FAFB" },
+  content: { width: "100%", maxWidth: CONTENT_MAX_WIDTH, alignSelf: "center", paddingBottom: 40 },
+  band: { backgroundColor: ADMIN.accent, paddingHorizontal: 20, paddingTop: 22, paddingBottom: 48, overflow: "hidden" },
+  circle: { position: "absolute", borderRadius: 999, backgroundColor: "rgba(255,255,255,0.05)" },
+  circleA: { width: 220, height: 220, right: -60, top: -40 },
+  circleB: { width: 140, height: 140, right: 70, bottom: -70 },
+  bandInner: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  greeting: { fontSize: 16, color: "#D1D5DB", fontWeight: "500" },
+  name: { fontSize: 32, fontWeight: "800", color: "#fff", letterSpacing: -0.5, marginTop: 2 },
+  crownPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 8,
+    marginTop: 12,
+    paddingLeft: 4,
+    paddingRight: 14,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  crownIcon: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  crownText: { color: "#fff", fontWeight: "800", fontSize: 14 },
+  tileBox: {},
+  sheet: {
+    marginTop: -28,
     backgroundColor: "#F9FAFB",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
   },
-  content: {
-    width: "100%",
-    maxWidth: CONTENT_MAX_WIDTH,
-    alignSelf: "center",
-    paddingHorizontal: CONTENT_H_PADDING,
-    paddingTop: 8,
-    paddingBottom: 32,
-  },
-
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#9CA3AF",
-    letterSpacing: 1.5,
-    marginBottom: 14,
-  },
-
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: GRID_GAP,
-  },
-  card: {
-    minHeight: 172,
-    borderRadius: 22,
-    borderWidth: 1.5,
-    padding: 18,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  cardPressed: {
-    transform: [{ scale: 0.97 }],
-    shadowOpacity: 0.03,
-  },
-
-  iconBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 14,
-    backgroundColor: "#FFFFFF",
-  },
-
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 4,
-    lineHeight: 20,
-  },
-  cardDesc: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: "#4B5563",
-    lineHeight: 17,
-    // Reserve space for 2 lines regardless of actual length, so cards stay
-    // the same height whether the description wraps or not.
-    minHeight: 34,
-  },
-
-  cardFooter: {
+  sectionLabel: { fontSize: 12, fontWeight: "800", color: "#6B7280", letterSpacing: 1, marginBottom: 10 },
+  rowsCard: { backgroundColor: "#fff", borderRadius: 18, borderWidth: 1, borderColor: "#F3F4F6" },
+  roleRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14 },
+  roleRowBorder: { borderTopWidth: 1, borderTopColor: "#F3F4F6" },
+  roleIcon: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  roleTitle: { fontSize: 16, fontWeight: "800", color: "#111827" },
+  waiting: { fontSize: 12.5, color: "#6B7280", marginTop: 2 },
+  toolsHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginTop: 22 },
+  toolsHint: { fontSize: 12, color: "#9CA3AF" },
+  toolRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    marginTop: 16,
-  },
-  openText: {
-    fontSize: 12,
-    fontWeight: "800",
+    gap: 12,
+    padding: 14,
+    backgroundColor: "#fff",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#F3F4F6",
   },
 });

@@ -7,6 +7,10 @@
 #   PUSPAKOM reminders and alerts (hourly; each alert is sent once):
 #     FN=<lambda-name> TASK=puspakom_tick RULE=sksbus-puspakom-hourly \
 #       SCHEDULE='cron(5 * * * ? *)' ./add_scheduled_trigger.sh
+#   Late arrival (C15): every minute, flags accepted jobs with no odometer
+#   after 90 min and asks the technician for a delay update:
+#     FN=<lambda-name> TASK=job_late_tick RULE=sksbus-job-late-minutely \
+#       SCHEDULE='rate(1 minute)' ./add_scheduled_trigger.sh
 #
 # ⚠️ This is NOT an API Gateway route. add_missing_apigw_routes.sh cannot do
 # this and this cannot do that — they are different integrations. An HTTP route

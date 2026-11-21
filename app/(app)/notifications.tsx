@@ -39,6 +39,12 @@ const TYPE_CONFIG: Record<
   puspakom_not_booked: PUSPAKOM_STYLE,
   puspakom_overdue: { icon: "exclamation-circle", color: "#DC2626", colorLight: "#FEF2F2" },
   puspakom_result_needed: PUSPAKOM_STYLE,
+  job_approval: { icon: "user-check", color: "#D97706", colorLight: "#FFFBEB" },
+  job_closed: { icon: "flag-checkered", color: "#16A34A", colorLight: "#F0FDF4" },
+  job_sent_back: { icon: "undo", color: "#DC2626", colorLight: "#FEF2F2" },
+  job_delay: { icon: "clock", color: "#DC2626", colorLight: "#FEF2F2" },
+  job_late: { icon: "exclamation-triangle", color: "#DC2626", colorLight: "#FEF2F2" },
+  fm_remarks: { icon: "comment-alt", color: "#2563EB", colorLight: "#EFF6FF" },
 };
 
 function formatWhen(iso: string) {
@@ -143,6 +149,26 @@ export default function NotificationsScreen() {
     if (n.notification_type === "new_job" && role === "technician") {
       router.push("/technician");
       return;
+    }
+
+    // v2.0.0: "waiting for your approval" opens the review (C8); a send-back
+    // or late-arrival prompt opens the technician's own job to act on; anything
+    // else about a job opens the job itself.
+    if (n.job_id != null) {
+      const id = String(n.job_id);
+      if (n.notification_type === "job_approval" && (role === "admin" || role === "rm_manager")) {
+        router.push(`/rm-manager/review/${id}` as any);
+        return;
+      }
+      if (role === "technician") {
+        const mine = n.notification_type === "job_sent_back" || n.notification_type === "job_late";
+        router.push({ pathname: "/technician/job/[id]", params: { id, mode: mine ? "edit" : "view" } } as any);
+        return;
+      }
+      if (role === "fleet_manager") {
+        router.push(`/job/${id}` as any);
+        return;
+      }
     }
 
     if (n.job_id != null && (role === "admin" || role === "rm_manager")) {

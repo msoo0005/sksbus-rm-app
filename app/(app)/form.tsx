@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
+  Image,
   Modal,
   Platform,
   ScrollView,
@@ -31,7 +32,7 @@ import ImagePickerField, { LocalMedia } from "@/components/ImagePicker";
 import InstrumentClusterIcon from "@/components/icons/InstrumentClusterIcon";
 import MapSelector, { LocationValue } from "@/components/map";
 import DraftRestoreBar from "@/components/DraftRestoreBar";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
 import { useFormDraft } from "@/hooks/useFormDraft";
 import BusSystemPicker from "@/components/BusSystemPicker";
 import { normaliseBusSystem } from "@/utils/busSystems";
@@ -40,7 +41,7 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { useProject } from "@/project-ctx";
 import { reportTypeTitleLabel } from "@/utils/reportType";
 import { getRouteColourHex, routeColourNeedsBorder } from "@/utils/routeColours";
-import ProjectChip from "@/components/ProjectChip";
+import { getProjectLogo } from "@/utils/projectLogos";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 
 type Priority = "low" | "medium" | "high" | "critical";
@@ -525,6 +526,7 @@ export default function ReportFormScreen() {
     reportId: number,
     localUri: string,
     mime_type: string,
+    media_kind: "issue" | "cluster" | "exterior",
   ) => {
     const presign = await api.request<PresignResponse>(
       `/reports/${reportId}/media/presign?mime=${encodeURIComponent(mime_type)}`,
@@ -547,6 +549,7 @@ export default function ReportFormScreen() {
         s3_key: presign.s3_key,
         mime_type,
         size_bytes: blob.size,
+        media_kind,
       }),
     });
   };
@@ -554,12 +557,13 @@ export default function ReportFormScreen() {
   const validateForm = (): string | null => {
     if (projectLoading) return t("reportForm.validationLoadingProject");
     if (!projectId) return t("reportForm.validationProjectNotSelected");
+    // C18, in form order. Category and the bus exterior photo are optional
+    // now; the instrument cluster takes 1–5 photos and the issue 1–10.
     if (!vehicle) return t("reportForm.validationVehicleRequired");
+    if (!mapLocation) return t("reportForm.validationLocationRequired");
     if (!description.trim()) return t("reportForm.validationDescriptionRequired");
-    if (!issueType) return t("reportForm.validationCategoryRequired");
-    if (dashboardPhoto.length === 0) return t("reportForm.validationDashboardPhotoRequired");
-    if (exteriorPhoto.length === 0) return t("reportForm.validationExteriorPhotoRequired");
     if (issuePhotos.length === 0) return t("reportForm.validationIssuePhotoRequired");
+    if (dashboardPhoto.length === 0) return t("reportForm.validationDashboardPhotoRequired");
     return null;
   };
 
@@ -621,7 +625,13 @@ export default function ReportFormScreen() {
         progress.selfieName = verifiedName;
       }
 
-      const photos = [...dashboardPhoto, ...exteriorPhoto, ...issuePhotos];
+      // Each photo says what it is (C18), so the job screens and the PDF can
+      // show the instrument cluster apart from the issue photos.
+      const photos: (LocalMedia & { kind: "issue" | "cluster" | "exterior" })[] = [
+        ...issuePhotos.map((p) => ({ ...p, kind: "issue" as const })),
+        ...dashboardPhoto.map((p) => ({ ...p, kind: "cluster" as const })),
+        ...exteriorPhoto.map((p) => ({ ...p, kind: "exterior" as const })),
+      ];
 
       for (let i = 0; i < photos.length; i++) {
         if (progress.photoUris.has(photos[i].localUri)) continue;
@@ -630,6 +640,7 @@ export default function ReportFormScreen() {
           reportId,
           photos[i].localUri,
           photos[i].mime_type,
+          photos[i].kind,
         );
         progress.photoUris.add(photos[i].localUri);
       }
@@ -651,6 +662,21 @@ export default function ReportFormScreen() {
       setSubmitting(false);
       setUploadingIndex(null);
     }
+  };
+
+  // C18: asks first when anything is filled in.
+  const confirmCancel = () => {
+    const filled =
+      !!vehicle || !!description.trim() || !!locationDesc.trim() || !!issueType ||
+      issuePhotos.length > 0 || dashboardPhoto.length > 0 || exteriorPhoto.length > 0;
+    if (!filled) {
+      router.back();
+      return;
+    }
+    Alert.alert(t("reportForm.discardTitle"), t("reportForm.discardBody"), [
+      { text: t("reportForm.keepEditing"), style: "cancel" },
+      { text: t("reportForm.discard"), style: "destructive", onPress: () => { draft.clear(); router.back(); } },
+    ]);
   };
 
   const onSubmit = () => {
@@ -704,17 +730,17 @@ export default function ReportFormScreen() {
       {/* Was a read-only pill naming the project. Now the shared chip, which
           says the same thing and can also change it — this screen does not use
           HomeHeader, so a driver had no route back to the selector at all. */}
-      {projectLoading ? (
-        <View style={styles.projectPill}>
-          <Text style={styles.projectPillText}>
-            {t("reportForm.projectPrefix")} {t("reportForm.loadingEllipsis")}
-          </Text>
-        </View>
-      ) : (
-        <View style={{ marginBottom: 6 }}>
-          <ProjectChip />
-        </View>
-      )}
+      {/* C18: a fixed label for the user's project; it can't be changed here. */}
+      <View style={styles.projectPill}>
+        {!!projectId && !!getProjectLogo(projectId) && (
+          <Image source={getProjectLogo(projectId)!} style={styles.projectLogo} resizeMode="contain" />
+        )}
+        <Text style={styles.projectPillText}>
+          {projectLoading ? t("reportForm.loadingEllipsis") : String(projectId ?? "—")}
+        </Text>
+      </View>
+
+      <Text style={styles.sectionHead}>{t("reportForm.section1")}</Text>
 
       <Text style={styles.label}>{t("reportForm.vehicleLabel")}</Text>
       <TouchableOpacity
@@ -760,44 +786,22 @@ export default function ReportFormScreen() {
           setLocationEditedManually(true);
           setLocationDesc(text);
         }}
+        maxLength={120}
         editable={!submitting}
       />
 
-      <Text style={styles.label}>{t("reportForm.photosSectionLabel")}</Text>
+      <Text style={styles.sectionHead}>{t("reportForm.section2")}</Text>
 
-      <Text style={styles.photoHint}>{t("reportForm.dashboardPhotoHint")}</Text>
-      <ImagePickerField
-        title={t("reportForm.dashboardPhotoTitle")}
-        icon={<InstrumentClusterIcon size={18} color="#2563EB" />}
-        iconAccentLight="#EFF6FF"
-        required
-        maxItems={1}
-        value={dashboardPhoto}
-        onChange={setDashboardPhoto}
-        disabled={submitting}
-      />
-
-      <Text style={[styles.photoHint, styles.photoHintSpaced]}>{t("reportForm.exteriorPhotoHint")}</Text>
-      <ImagePickerField
-        title={t("reportForm.exteriorPhotoTitle")}
-        icon={<Bus size={18} color="#16A34A" />}
-        iconAccentLight="#F0FDF4"
-        required
-        maxItems={1}
-        value={exteriorPhoto}
-        onChange={setExteriorPhoto}
-        disabled={submitting}
-      />
-
-      <Text style={[styles.photoHint, styles.photoHintSpaced]}>{t("reportForm.issuePhotosHint")}</Text>
-      <ImagePickerField
-        title={t("reportForm.issuePhotosTitle")}
-        icon={<Camera size={18} color="#7C3AED" />}
-        iconAccentLight="#F5F3FF"
-        required
-        value={issuePhotos}
-        onChange={setIssuePhotos}
-        disabled={submitting}
+      <Text style={styles.label}>{t("reportForm.descriptionLabel")}</Text>
+      <TextInput
+        style={styles.textArea}
+        placeholder={t("reportForm.descriptionPlaceholder")}
+        placeholderTextColor="#9CA3AF"
+        multiline
+        value={description}
+        onChangeText={setDescription}
+        maxLength={1000}
+        editable={!submitting}
       />
 
       <Text style={styles.label}>{t("reportForm.priorityLabel")}</Text>
@@ -827,24 +831,49 @@ export default function ReportFormScreen() {
         onClose={() => setPriorityModalVisible(false)}
       />
 
-      <Text style={styles.label}>{t("reportForm.descriptionLabel")}</Text>
-      <TextInput
-        style={styles.textArea}
-        placeholder={t("reportForm.descriptionPlaceholder")}
-        placeholderTextColor="#9CA3AF"
-        multiline
-        value={description}
-        onChangeText={setDescription}
-        editable={!submitting}
-      />
-
       <Text style={styles.label}>{t("reportForm.categoryLabel")}</Text>
       <BusSystemPicker value={issueType} onChange={setIssueType} disabled={submitting} accent="#2563EB" />
+      <Text style={styles.photoHint}>{t("reportForm.categoryOptionalHint")}</Text>
+
+      <Text style={styles.sectionHead}>{t("reportForm.section3")}</Text>
+
+      <Text style={styles.photoHint}>{t("reportForm.issuePhotosHint")}</Text>
+      <ImagePickerField
+        title={t("reportForm.issuePhotosTitle")}
+        icon={<Camera size={18} color="#7C3AED" />}
+        iconAccentLight="#F5F3FF"
+        required
+        value={issuePhotos}
+        onChange={(m) => setIssuePhotos(m.slice(0, 10))}
+        disabled={submitting}
+      />
+
+      <Text style={[styles.photoHint, styles.photoHintSpaced]}>{t("reportForm.clusterPhotosHint")}</Text>
+      <ImagePickerField
+        title={t("reportForm.dashboardPhotoTitle")}
+        icon={<InstrumentClusterIcon size={18} color="#2563EB" />}
+        iconAccentLight="#EFF6FF"
+        required
+        value={dashboardPhoto}
+        onChange={(m) => setDashboardPhoto(m.slice(0, 5))}
+        disabled={submitting}
+      />
+
+      <Text style={[styles.photoHint, styles.photoHintSpaced]}>{t("reportForm.exteriorOptionalHint")}</Text>
+      <ImagePickerField
+        title={t("reportForm.exteriorPhotoTitle")}
+        icon={<Bus size={18} color="#16A34A" />}
+        iconAccentLight="#F0FDF4"
+        value={exteriorPhoto}
+        onChange={(m) => setExteriorPhoto(m.slice(0, 4))}
+        disabled={submitting}
+      />
+
 
       <View style={styles.buttonRow}>
         <TouchableOpacity
           style={styles.cancelButton}
-          onPress={() => router.back()}
+          onPress={confirmCancel}
           disabled={submitting}
         >
           <Text style={styles.cancelText}>{t("common.cancel")}</Text>
@@ -862,10 +891,11 @@ export default function ReportFormScreen() {
         </TouchableOpacity>
       </View>
 
-      <VerificationModal
+      <SignoffSheet
         visible={verifyVisible}
-        title={t("verification.submitReportTitle")}
-        message={t("verification.submitReportMessage")}
+        verb="submitting"
+        action={t("signoff.actions.submitReport")}
+        detail={vehicle ? splitVehicleLabel(vehicles.find((v) => v.value === vehicle)?.label ?? vehicle).title : null}
         submitting={submitting}
         onCancel={() => setVerifyVisible(false)}
         onConfirm={({ selfie, name }) => doSubmit(selfie, name)}
@@ -893,11 +923,23 @@ const styles = StyleSheet.create({
   },
   projectPill: {
     alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     backgroundColor: "#EEF2FF",
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 6,
     marginBottom: 6,
+  },
+  projectLogo: { width: 40, height: 18 },
+  sectionHead: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#2563EB",
+    letterSpacing: 0.4,
+    marginTop: 18,
+    marginBottom: 4,
   },
   projectPillText: {
     fontSize: 13,

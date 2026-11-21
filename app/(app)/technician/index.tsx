@@ -14,7 +14,8 @@ import {
 import { api } from "@/api/client";
 import { uploadVerificationSelfie } from "@/api/media";
 import type { LocalMedia } from "@/components/ImagePicker";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
+import { formatBusLabel } from "@/utils/busLabel";
 import JobDetailsModal from "@/components/JobDetailsModal";
 import ReportCard from "@/components/ReportCard";
 import SegmentedTabs from "@/components/SegmentedTabs";
@@ -325,11 +326,11 @@ export default function TechnicianScreen() {
         onClose={() => setDetailsVisible(false)}
       />
 
-      <VerificationModal
+      <SignoffSheet
         visible={acceptVisible}
-        title={t("jobsList.acceptTitle")}
-        message={t("verification.acceptJobMessage")}
-        confirmLabel={t("jobsList.acceptConfirm")}
+        verb="accepting"
+        action={t("signoff.actions.acceptJob")}
+        detail={acceptTarget ? formatBusLabel(acceptTarget.bus_id ?? "—", acceptTarget.bus_ev_no) : null}
         submitting={accepting}
         onCancel={() => {
           if (accepting) return;

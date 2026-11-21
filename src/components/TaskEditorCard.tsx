@@ -398,17 +398,9 @@ export default function TaskEditorCard({
             <Text style={s.checkText}>{t("taskEditor.noParts")}</Text>
           </Pressable>
 
-          <Text style={s.label}>{t("taskEditor.remark")}</Text>
-          <TextInput
-            value={value.remark}
-            onChangeText={(v) => set({ remark: v })}
-            placeholder={t("taskEditor.remarkPlaceholder")}
-            placeholderTextColor="#9CA3AF"
-            style={[s.input, s.multi]}
-            multiline
-            editable={editable}
-            onFocus={() => locked && onLockedPress?.()}
-          />
+          {/* v2.0.0 (C3): "Follow-up / Remark" left the task form. Work that
+              still needs doing is now a Follow-up of its own, which the R&M
+              Manager turns into a job order. Old tasks' remarks still show. */}
 
           <View style={{ marginTop: 14 }}>
             <Pressable onPress={locked ? onLockedPress : undefined} disabled={!locked}>

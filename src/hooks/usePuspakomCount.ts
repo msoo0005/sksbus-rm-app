@@ -19,7 +19,8 @@ export function usePuspakomCount(role: "fleet_manager" | "technician", projectId
 
   const reload = useCallback(async () => {
     try {
-      const c = await puspakomApi.counts(projectId);
+      // "as" only matters to an admin; the server ignores it for everyone else.
+      const c = await puspakomApi.counts(projectId, role === "technician" ? "technician" : undefined);
       setCount(role === "technician" ? c.technician_todo ?? 0 : c.action ?? 0);
     } catch {
       // keep the previous count

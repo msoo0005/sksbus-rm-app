@@ -15,6 +15,8 @@ type ReportCardProps = {
   onAccept?: (report: Report) => void;
   onApprove?: (report: Report) => void;
   onDecline?: (report: Report) => void;
+  /** C6: a job awaiting completion approval shows Review & Approve instead of View Details. */
+  onReview?: (report: Report) => void;
   currentTech?: string;
 };
 
@@ -24,6 +26,7 @@ export default function ReportCard({
   onAccept,
   onApprove,
   onDecline,
+  onReview,
   currentTech,
 }: ReportCardProps) {
   const { t } = useI18n();
@@ -43,6 +46,12 @@ export default function ReportCard({
 
   const declineReason = report.audit?.reason?.trim();
   const isJobOrder = report.type === "job_order";
+  const awaitingApproval = !!onReview && report.jobState === "pending_approval";
+  const titleText = report.refNo
+    ? isJobOrder
+      ? t("job2.jobOrder")
+      : t("job2.problemReportJob")
+    : `${reportTypeTitleLabel(report.type, t)} #${report.id}`;
 
   return (
     <View style={styles.card}>
@@ -50,9 +59,8 @@ export default function ReportCard({
           and the open timer sit top-right, same size, priority first. */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Text style={styles.title}>
-            {reportTypeTitleLabel(report.type, t)} #{report.id}
-          </Text>
+          <Text style={styles.title}>{titleText}</Text>
+          {!!report.refNo && <Text style={styles.ref}>{report.refNo}</Text>}
           <View style={styles.vehicleRow}>
             <FontAwesome5 name="bus" size={13} color="#374151" />
             <Text style={styles.vehicle}>
@@ -74,12 +82,19 @@ export default function ReportCard({
         </View>
 
         <View style={styles.headerRight}>
-          {!isJobOrder && <StatusBadge type={report.severity} size="sm" style={styles.rightPill} />}
+          {(!isJobOrder || report.jobSource === "FOLLOW_UP") && (
+            <StatusBadge type={report.severity} size="sm" style={styles.rightPill} />
+          )}
           <ElapsedTimer
-            since={report.dateIso}
-            until={report.status === "closed" ? report.closedAt : null}
+            since={report.clockStart ?? report.dateIso}
+            until={report.status === "closed" ? (report.clockEnd ?? report.closedAt ?? report.dateIso) : null}
             style={styles.rightPill}
           />
+          {report.late && (
+            <View style={[styles.rightPill, styles.latePill]}>
+              <Text style={styles.latePillText}>{t("job2.late.latePill")}</Text>
+            </View>
+          )}
         </View>
       </View>
 
@@ -116,12 +131,16 @@ export default function ReportCard({
             size={36}
           />
         </View>
+      ) : report.assigned ? (
+        <Text style={styles.meta}>
+          {t("reportCard.assignedTo", {
+            value: report.assigned === currentTech ? t("reportCard.you") : report.assigned,
+          })}
+        </Text>
       ) : (
-        !!report.assigned && (
+        report.status === "open" && (
           <Text style={styles.meta}>
-            {t("reportCard.assignedTo", {
-              value: report.assigned === currentTech ? t("reportCard.you") : report.assigned,
-            })}
+            {t("job2.assignedTo")}: {t("job2.notAcceptedYet")}
           </Text>
         )
       )}
@@ -145,13 +164,20 @@ export default function ReportCard({
 
       {/* Actions */}
       <View style={styles.actionRow}>
-        <Pressable
-          style={styles.button}
-          onPress={() => onViewDetails?.(report)}
-        >
-          <Eye size={16} color="#111827" />
-          <Text style={styles.buttonText}>{t("reportCard.viewDetails")}</Text>
-        </Pressable>
+        {awaitingApproval ? (
+          <Pressable style={[styles.button, styles.reviewButton]} onPress={() => onReview?.(report)}>
+            <FontAwesome5 name="clipboard-check" size={14} color="#34873F" />
+            <Text style={[styles.buttonText, { color: "#34873F" }]}>{t("job2.review.reviewAndApprove")}</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            style={styles.button}
+            onPress={() => onViewDetails?.(report)}
+          >
+            <Eye size={16} color="#111827" />
+            <Text style={styles.buttonText}>{t("reportCard.viewDetails")}</Text>
+          </Pressable>
+        )}
 
         {showAccept && (
           <Pressable
@@ -199,8 +225,21 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   headerLeft: { flex: 1 },
-  headerRight: { alignItems: "stretch", gap: 6, minWidth: 104 },
-  rightPill: { justifyContent: "center" },
+  headerRight: { alignItems: "flex-end", gap: 6 },
+  // C2: priority and time pills are exactly the same size, text centred.
+  rightPill: {
+    width: 112,
+    height: 28,
+    paddingVertical: 0,
+    paddingHorizontal: 6,
+    justifyContent: "center",
+    alignItems: "center",
+    alignSelf: "flex-end",
+  },
+  latePill: { borderRadius: 999, backgroundColor: "#FEE2E2", borderWidth: 1, borderColor: "#FECACA" },
+  latePillText: { fontSize: 12, fontWeight: "800", color: "#B91C1C" },
+  ref: { fontSize: 12.5, fontWeight: "800", color: "#6B7280", marginTop: 2 },
+  reviewButton: { borderWidth: 1.5, borderColor: "#34873F", backgroundColor: "#fff" },
 
   vehicleRow: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 4 },
   vehicle: { fontSize: 16, fontWeight: "800", color: "#111827" },

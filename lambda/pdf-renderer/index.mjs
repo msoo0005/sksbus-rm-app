@@ -80,6 +80,12 @@ export async function buildHtml(job) {
       report_photos: await embedPhotos(job.report_photos, bucket),
       after_photos: await embedPhotos(job.after_photos, bucket),
       tasks: await Promise.all((job.tasks ?? []).map(async (t) => ({ ...t, photos: await embedPhotos(t.photos, bucket) }))),
+      // v2.0.0: follow-up photos, the 5 labelled after photos, sign-off selfies.
+      after_slots: await embedPhotos(job.after_slots, bucket),
+      followups: await Promise.all((job.followups ?? []).map(async (f) => ({ ...f, photos: await embedPhotos(f.photos, bucket) }))),
+      signoffs: await Promise.all(
+        (job.signoffs ?? []).map(async (x) => ({ ...x, selfie: x.selfie ? (await embedPhotos([x.selfie], bucket))[0] : null }))
+      ),
     };
     return buildJobCompletionHtml(data, { ...assets, generatedAt: new Date() });
   }
@@ -99,7 +105,9 @@ async function handleOne(Bucket, Key) {
   const outBucket = job.out_bucket || Bucket;
   if (!job.out_key) throw new Error("out_key missing");
 
-  if ((job.kind === "job" || job.kind === "puspakom") && (await exists(outBucket, job.out_key))) {
+  // A "force" job (Fleet Manager remarks saved after closing) renders again
+  // over the existing file, same name.
+  if (!job.force && (job.kind === "job" || job.kind === "puspakom") && (await exists(outBucket, job.out_key))) {
     log("skip.exists", { key: Key, out: job.out_key });
     return;
   }

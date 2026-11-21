@@ -13,13 +13,15 @@ const REFRESH_MS = 60_000;
  *   job not yet closed) in the current project.
  * - technician: open jobs that are either still up for grabs or already
  *   accepted by this technician.
+ * - fleet_manager: the user's own problem reports not yet Completed (A1, the
+ *   My Report History row): Submitted or Open.
  *
  * Refetched on focus and every minute while mounted, so the bubble stays on
  * for as long as the count is above 0 and clears itself when it reaches 0.
  * Best-effort: a failed fetch keeps the last count rather than flashing 0.
  */
 export function useOutstandingCount(
-  role: "rm_manager" | "technician",
+  role: "rm_manager" | "technician" | "fleet_manager",
   projectId: string | null,
 ): number {
   const { dbUser } = useSession() as any;
@@ -33,6 +35,12 @@ export function useOutstandingCount(
         const [pending, open] = await Promise.all([
           api.listReports({ status: "submitted", ...project }),
           api.listReports({ status: "open", ...project }),
+        ]);
+        setCount((pending?.length ?? 0) + (open?.length ?? 0));
+      } else if (role === "fleet_manager") {
+        const [pending, open] = await Promise.all([
+          api.listReports({ status: "submitted", mine: true, ...project }),
+          api.listReports({ status: "open", mine: true, ...project }),
         ]);
         setCount((pending?.length ?? 0) + (open?.length ?? 0));
       } else {

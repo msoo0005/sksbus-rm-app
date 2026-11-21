@@ -1,4 +1,4 @@
-import { api, VerificationKind } from "./client";
+import { AfterSlot, api, VerificationKind } from "./client";
 
 export async function uploadReportImage(
   reportId: number,
@@ -95,4 +95,32 @@ export async function uploadJobCompletionSelfie(
     size_bytes: blob.size,
     verified_name: verifiedName,
   });
+}
+
+// v2.0.0: a job photo of a given kind, uploaded straight away. Returns the
+// key, which a follow-up or delay update then sends with its own request. An
+// after photo names its slot and is confirmed here (a retake replaces it).
+export async function uploadJobKindPhoto(
+  jobId: number,
+  kind: "after" | "followup" | "delay",
+  media: { localUri: string; mime_type: string },
+  slot?: AfterSlot,
+) {
+  const presign = await api.presignJobMedia(jobId, media.mime_type, { kind });
+  const blob = await (await fetch(media.localUri)).blob();
+  const put = await fetch(presign.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": media.mime_type },
+    body: blob,
+  });
+  if (!put.ok) throw new Error(`Photo upload failed (${put.status})`);
+  if (kind === "after") {
+    await api.confirmJobMedia(jobId, {
+      s3_key: presign.s3_key,
+      mime_type: media.mime_type,
+      size_bytes: blob.size,
+      ...(slot ? { media_slot: slot } : {}),
+    });
+  }
+  return presign.s3_key;
 }

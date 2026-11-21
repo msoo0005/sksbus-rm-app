@@ -3,20 +3,8 @@ import React from "react";
 import { StyleProp, StyleSheet, Text, View, ViewStyle } from "react-native";
 import { formatElapsed, useElapsedMs } from "../utils/elapsedTime";
 
-const HOUR = 3_600_000;
-
-// Urgency bands for how long a report has been open — same palette used
-// elsewhere for type/severity chips (JobDetailsModal's TYPE_CONFIG etc).
-const COLOR_STOPS: { maxMs: number; fg: string; bg: string; border: string }[] = [
-  { maxMs: 4 * HOUR, fg: "#16A34A", bg: "#F0FDF4", border: "#BBF7D0" },
-  { maxMs: 24 * HOUR, fg: "#D97706", bg: "#FFFBEB", border: "#FDE68A" },
-  { maxMs: 72 * HOUR, fg: "#EA580C", bg: "#FFF7ED", border: "#FED7AA" },
-  { maxMs: Infinity, fg: "#DC2626", bg: "#FEF2F2", border: "#FECACA" },
-];
-
-function colorFor(ms: number) {
-  return COLOR_STOPS.find((stop) => ms < stop.maxMs) ?? COLOR_STOPS[COLOR_STOPS.length - 1];
-}
+// C2 (v2.0.0): the same orange pill at any age; no colour bands.
+const ORANGE = { fg: "#C2410C", bg: "#FFF7ED", border: "#FED7AA" };
 
 type Props = {
   since?: string | null;
@@ -26,18 +14,20 @@ type Props = {
   style?: StyleProp<ViewStyle>;
 };
 
-// Elapsed-time badge: live-ticking HH:MM:SS since `since`, colored by how
-// long that's been, or a frozen duration once `until` is provided.
+// Elapsed-time badge: live "hh:mm:ss" (then "1d 0h 42m") since `since`, or a
+// frozen duration once `until` is provided.
 export default function ElapsedTimer({ since, until, style }: Props) {
   const elapsedMs = useElapsedMs(since, until);
   if (elapsedMs == null) return null;
 
-  const color = colorFor(elapsedMs);
+  const color = ORANGE;
 
   return (
     <View style={[styles.pill, { backgroundColor: color.bg, borderColor: color.border }, style]}>
       <Clock size={12} color={color.fg} />
-      <Text style={[styles.text, { color: color.fg }]}>{formatElapsed(elapsedMs)}</Text>
+      <Text style={[styles.text, { color: color.fg }]} numberOfLines={1}>
+        {formatElapsed(elapsedMs)}
+      </Text>
     </View>
   );
 }

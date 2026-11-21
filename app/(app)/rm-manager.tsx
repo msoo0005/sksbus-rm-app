@@ -6,17 +6,17 @@ import { Alert, RefreshControl, ScrollView, Text, View } from "react-native";
 import { api } from "@/api/client";
 import { uploadVerificationSelfie } from "@/api/media";
 import type { LocalMedia } from "@/components/ImagePicker";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
+import { formatBusLabel } from "@/utils/busLabel";
 import DeclineReasonModal from "@/components/DeclineReasonModal";
 import JobDetailsModal from "@/components/JobDetailsModal";
 import ReportCard from "@/components/ReportCard";
 import SegmentedTabs from "@/components/SegmentedTabs";
-import SortChips from "@/components/SortChips";
-import { useSession } from "@/ctx";
+import SortMenu, { useJobSort } from "@/components/SortMenu";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { Report } from "@/types/report";
-import { DEFAULT_SORT, SortState, sortReports } from "@/utils/reportSort";
+import { sortJobs } from "@/utils/jobSort";
 
 type Tab = "pending" | "open" | "closed";
 
@@ -45,6 +45,15 @@ type JobSummary = {
   reporter_email?: string | null;
   job_accept_verified_name?: string | null;
   job_accept_selfie_view_url?: string | null;
+  // v2.0.0
+  job_state?: string | null;
+  job_ref_no?: string | null;
+  job_source?: string | null;
+  job_issued_at?: string | null;
+  job_approved_at?: string | null;
+  job_late_flag?: number | null;
+  technician_username?: string | null;
+  reporter_username?: string | null;
 };
 
 function formatDate(isoLike?: string | null) {
@@ -111,10 +120,20 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
   return {
     id: safeId,
     reporter: {
-      name: r?.report_verified_name ?? null,
-      username: reporterName ?? null,
+      name: r?.report_verified_name ?? reporterName ?? null,
+      username: r?.reporter_username ?? job?.reporter_username ?? null,
       selfieUrl: r?.report_selfie_view_url ?? null,
     },
+    refNo: job?.job_ref_no ?? r?.report_ref_no ?? r?.job_ref_no ?? null,
+    jobId: job?.job_id ?? r?.job_id ?? null,
+    jobState: job?.job_state ?? null,
+    jobSource: job?.job_source ?? null,
+    clockStart:
+      job?.job_source === "FOLLOW_UP"
+        ? job?.job_issued_at ?? null
+        : r?.report_uploaded_at ?? job?.report_uploaded_at ?? null,
+    clockEnd: job?.job_approved_at ?? null,
+    late: !!Number(job?.job_late_flag ?? 0) && job?.job_state === "accepted",
     type: normaliseType(r?.report_type ?? job?.report_type),
     severity: normaliseSeverity(r?.report_priority ?? job?.report_priority),
     vehicle: String(r?.bus_id ?? job?.bus_id ?? "—"),
@@ -135,8 +154,8 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
     assignee:
       job?.technician_user_id != null || r?.technician_user_id != null
         ? {
-            name: job?.job_accept_verified_name ?? r?.job_accept_verified_name ?? null,
-            username: job?.technician_name ?? r?.technician_name ?? null,
+            name: job?.job_accept_verified_name ?? job?.technician_name ?? r?.job_accept_verified_name ?? r?.technician_name ?? null,
+            username: job?.technician_username ?? r?.technician_username ?? null,
             selfieUrl: job?.job_accept_selfie_view_url ?? r?.job_accept_selfie_view_url ?? null,
           }
         : undefined,
@@ -148,11 +167,8 @@ function mapApiRowToReport(r: any, job: JobSummary | null | undefined, t: (key: 
 
 export default function RMManagerScreen() {
   const router = useRouter();
-  const { dbUser } = useSession() as any;
   const projectId = useProjectFilter();
   const { t } = useI18n();
-
-  const MANAGER_NAME = dbUser?.user_name ?? t("adminHome.rmManagerTitle");
 
   const [tab, setTab] = useState<Tab>("pending");
   const [allReports, setAllReports] = useState<Report[]>([]);
@@ -165,6 +181,10 @@ export default function RMManagerScreen() {
 
   const [declineTarget, setDeclineTarget] = useState<Report | null>(null);
   const [declineVisible, setDeclineVisible] = useState(false);
+  // Declining is signed too (v2.0.0, "Who is declining?"): the reason is typed
+  // first, then the sign-off card opens with it held here.
+  const [declineReason, setDeclineReason] = useState<string | null>(null);
+  const [declining, setDeclining] = useState(false);
 
   const [detailsReport, setDetailsReport] = useState<Report | null>(null);
   const [detailsVisible, setDetailsVisible] = useState(false);
@@ -212,10 +232,10 @@ export default function RMManagerScreen() {
   );
 
   // Kept across tab switches for the life of the screen.
-  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  const [sort, setSort] = useJobSort();
 
   const reports = useMemo(() => {
-    return sortReports(allReports.filter((r) => r.status === tab), sort);
+    return sortJobs(allReports.filter((r) => r.status === tab), sort);
   }, [allReports, tab, sort]);
 
   const counts = useMemo(
@@ -335,50 +355,43 @@ export default function RMManagerScreen() {
     setDeclineVisible(true);
   };
 
-  const submitDecline = async (reason: string) => {
+  const submitDecline = (reason: string) => {
     if (!declineTarget) return;
+    setDeclineVisible(false);
+    setDeclineReason(reason);
+  };
+
+  const confirmDecline = async ({ selfie, name }: { selfie: LocalMedia; name: string }) => {
+    if (!declineTarget || declineReason == null || declining) return;
 
     const reportId = declineTarget.id;
-
     if (!Number.isFinite(reportId) || reportId <= 0) {
       Alert.alert(t("reports.declineFailedTitle"), t("reports.invalidReportId"));
-      setDeclineVisible(false);
+      setDeclineReason(null);
       setDeclineTarget(null);
       return;
     }
 
-    setAllReports((prev) =>
-      prev.map((r) =>
-        r.id === reportId
-          ? {
-              ...r,
-              status: "closed",
-              audit: {
-                action: "declined",
-                by: MANAGER_NAME,
-                at: new Date().toISOString(),
-                reason,
-              },
-            }
-          : r,
-      ),
-    );
-
-    setDeclineVisible(false);
-    setDeclineTarget(null);
-
+    setDeclining(true);
+    let step = "selfie upload";
     try {
+      const selfieKey = await uploadVerificationSelfie("report-review", reportId, selfie);
+      step = "decline";
       await api.updateReportStatus(reportId, {
         report_status: "closed",
         report_review_action: "declined",
-        report_review_reason: reason,
+        report_review_reason: declineReason,
+        review_verified_name: name,
+        review_selfie_s3_key: selfieKey,
+        signed: true,
       });
-
-      await loadAllReports({ refreshing: true });
     } catch (e: any) {
-      Alert.alert(t("reports.declineFailedTitle"), e?.message ?? t("common.unknownError"));
-      await loadAllReports({ refreshing: true });
+      Alert.alert(t("reports.declineFailedTitle"), `${e?.message ?? t("common.unknownError")} (${step})`);
     }
+    setDeclining(false);
+    setDeclineReason(null);
+    setDeclineTarget(null);
+    await loadAllReports({ refreshing: true });
   };
 
   return (
@@ -399,7 +412,7 @@ export default function RMManagerScreen() {
           ]}
         />
 
-        <SortChips value={sort} onChange={setSort} />
+        <SortMenu value={sort} onChange={setSort} />
 
         {loading ? (
           <View style={{ padding: 16 }}>
@@ -415,6 +428,7 @@ export default function RMManagerScreen() {
               key={report.id}
               report={report}
               onViewDetails={handleViewDetails}
+              onReview={(rep) => rep.jobId && router.push(`/rm-manager/review/${rep.jobId}` as any)}
               onApprove={tab === "pending" ? requestApprove : undefined}
               onDecline={tab === "pending" ? requestDecline : undefined}
             />
@@ -422,11 +436,11 @@ export default function RMManagerScreen() {
         )}
       </ScrollView>
 
-      <VerificationModal
+      <SignoffSheet
         visible={approveVisible}
-        title={t("reports.approveTitle")}
-        message={t("verification.approveReportMessage")}
-        confirmLabel={t("reports.approveConfirm")}
+        verb="approving"
+        action={t("signoff.actions.approveReport")}
+        detail={approveTarget ? formatBusLabel(approveTarget.vehicle, approveTarget.evNumber) : null}
         submitting={approving}
         onCancel={() => {
           if (approving) return;
@@ -439,6 +453,19 @@ export default function RMManagerScreen() {
         visible={declineVisible}
         onCancel={() => setDeclineVisible(false)}
         onSubmit={submitDecline}
+      />
+
+      <SignoffSheet
+        visible={declineReason != null}
+        verb="declining"
+        action={t("signoff.actions.declineReport")}
+        detail={declineTarget ? formatBusLabel(declineTarget.vehicle, declineTarget.evNumber) : null}
+        submitting={declining}
+        onCancel={() => {
+          if (declining) return;
+          setDeclineReason(null);
+        }}
+        onConfirm={confirmDecline}
       />
 
       <JobDetailsModal

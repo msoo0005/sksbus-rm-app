@@ -260,8 +260,13 @@ const post = (body: unknown): RequestInit => ({ method: "POST", body: JSON.strin
 export const puspakomApi = {
   schedule: (projectId?: string | null) => requestWithIdToken<PspSchedule>(`/puspakom/schedule${pq(projectId)}`),
 
-  counts: (projectId?: string | null) =>
-    requestWithIdToken<Partial<PspCounts> & { technician_todo?: number }>(`/puspakom/counts${pq(projectId)}`),
+  counts: (projectId?: string | null, as?: "technician") => {
+    const q = new URLSearchParams();
+    if (projectId) q.set("project_id", projectId);
+    if (as) q.set("as", as);
+    const qs = q.toString();
+    return requestWithIdToken<Partial<PspCounts> & { technician_todo?: number }>(`/puspakom/counts${qs ? `?${qs}` : ""}`);
+  },
 
   checkDefs: (busModel?: string | null) =>
     requestWithIdToken<PspDefs & { settings: PspSettings }>(

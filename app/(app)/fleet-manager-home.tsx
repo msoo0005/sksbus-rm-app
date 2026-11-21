@@ -2,6 +2,7 @@ import { useRouter } from "expo-router";
 import RoleHomeScreen from "@/components/RoleHomeScreen";
 import PuspakomMark from "@/components/puspakom/PuspakomMark";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
+import { useOutstandingCount } from "@/hooks/useOutstandingCount";
 import { usePuspakomCount } from "@/hooks/usePuspakomCount";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { ROLE_COLORS, ROLE_ICONS } from "@/utils/roles";
@@ -13,6 +14,8 @@ export default function FleetManagerHomeScreen() {
   const { t } = useI18n();
   const projectId = useProjectFilter();
   const puspakomCount = usePuspakomCount("fleet_manager", projectId);
+  // A1: own problem reports not yet Completed.
+  const myOpenReports = useOutstandingCount("fleet_manager", projectId);
 
   return (
     <RoleHomeScreen
@@ -49,6 +52,7 @@ export default function FleetManagerHomeScreen() {
           accent,
           accentLight: light,
           prominent: true,
+          alertCount: myOpenReports,
           onPress: () => router.push("/fleet-manager-history" as any),
         },
         {

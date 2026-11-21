@@ -34,7 +34,7 @@ import {
 import { ROLE_COLORS } from "../../utils/roles";
 import { LocalMedia, pickImage } from "../ImagePicker";
 import Sheet from "../Sheet";
-import VerificationModal from "../VerificationModal";
+import SignoffSheet from "../SignoffSheet";
 import DateTimeField from "./DateTimeField";
 import Pill from "./Pill";
 import PuspakomMark from "./PuspakomMark";
@@ -497,10 +497,11 @@ function ResultSection({ data, onSaved }: { data: PspDetail; onSaved: () => void
         />
       )}
 
-      <VerificationModal
+      <SignoffSheet
         visible={signing}
+        verb="recording"
         title={t("puspakom.bus.signTitle")}
-        message={result === "FAILED" ? t("puspakom.bus.signFail", { bus: busName }) : t("puspakom.bus.signPass", { bus: busName })}
+        action={result === "FAILED" ? t("puspakom.bus.signFail", { bus: busName }) : t("puspakom.bus.signPass", { bus: busName })}
         confirmLabel={result === "FAILED" ? t("puspakom.bus.saveFail") : t("puspakom.bus.saveResult")}
         submitting={saving}
         onCancel={() => !saving && setSigning(false)}

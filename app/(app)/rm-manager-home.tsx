@@ -40,28 +40,20 @@ export default function RmManagerHomeScreen() {
         { icon: "check-circle", label: t("rmManagerHome.highlight1") },
         { icon: "tasks", label: t("rmManagerHome.highlight2") },
       ]}
+      // Rows by importance (v2.0.0 A2): Tyres, PUSPAKOM, Parts, then KPIs.
       secondaryAction={{
-        title: t("performance.homeTitle"),
-        description: t("performance.homeDescription"),
-        icon: "chart-bar",
+        title: t("rmManagerHome.secondaryTitle"),
+        description: t("rmManagerHome.secondaryDescription"),
+        icon: "dot-circle",
+        iconElement: <TyreIcon size={20} color={accent} />,
         accent,
         accentLight: light,
+        // Tyre management is a main job for this role, not a side trip.
         prominent: true,
-        onPress: () => router.push("/performance" as any),
+        badge: waiting > 0 ? t("tyres.section.homeBadge", { count: waiting }) : null,
+        onPress: () => router.push("/tyres" as any),
       }}
       extraActions={[
-        {
-          title: t("rmManagerHome.secondaryTitle"),
-          description: t("rmManagerHome.secondaryDescription"),
-          icon: "dot-circle",
-          iconElement: <TyreIcon size={20} color={accent} />,
-          accent,
-          accentLight: light,
-          // Tyre management is a main job for this role, not a side trip.
-          prominent: true,
-          badge: waiting > 0 ? t("tyres.section.homeBadge", { count: waiting }) : null,
-          onPress: () => router.push("/tyres" as any),
-        },
         {
           // View only: nothing for this role to act on, so no count (spec p.59).
           title: t("puspakom.home.rmTitle"),
@@ -81,6 +73,15 @@ export default function RmManagerHomeScreen() {
           accentLight: light,
           prominent: true,
           onPress: () => router.push("/inventory" as any),
+        },
+        {
+          title: t("performance.homeTitle"),
+          description: t("performance.homeDescription"),
+          icon: "chart-bar",
+          accent,
+          accentLight: light,
+          prominent: true,
+          onPress: () => router.push("/performance" as any),
         },
       ]}
     />

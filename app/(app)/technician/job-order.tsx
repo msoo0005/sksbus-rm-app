@@ -24,7 +24,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api } from "@/api/client";
-import { uploadJobCompletionSelfie, uploadJobPhoto } from "@/api/media";
+import type { AfterSlot } from "@/api/client";
+import { uploadJobCompletionSelfie, uploadJobKindPhoto, uploadJobPhoto } from "@/api/media";
 import AfterPhotoSlots from "@/components/AfterPhotoSlots";
 import BusPickerField from "@/components/BusPickerField";
 import DraftRestoreBar from "@/components/DraftRestoreBar";
@@ -36,7 +37,7 @@ import TaskEditorCard, {
   type TaskDraft,
   type TaskPartOption,
 } from "@/components/TaskEditorCard";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
 import { useSession } from "@/ctx";
 import { useFormDraft } from "@/hooks/useFormDraft";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
@@ -259,9 +260,15 @@ export default function JobOrderScreen() {
 
       // 3. Instrument cluster + the four sides of the bus ("after repair").
       setProgressText(t("jobOrder.stepPhotos"));
-      for (const ph of [...clusterPhoto, ...BUS_SLOTS.flatMap((k) => busPhotos[k])]) {
+      // Each goes into its named slot (C1: Instrument cluster, Front, Rear,
+      // Left side, Right side).
+      const slotted: [AfterSlot, LocalMedia][] = [
+        ...clusterPhoto.slice(0, 1).map((ph) => ["dashboard", ph] as [AfterSlot, LocalMedia]),
+        ...BUS_SLOTS.flatMap((k) => busPhotos[k].slice(0, 1).map((ph) => [k, ph] as [AfterSlot, LocalMedia])),
+      ];
+      for (const [slot, ph] of slotted) {
         if (prog.photosDone.has(ph.localUri)) continue;
-        await uploadJobPhoto(jobId, ph);
+        await uploadJobKindPhoto(jobId, "after", ph, slot);
         prog.photosDone.add(ph.localUri);
       }
 
@@ -279,6 +286,8 @@ export default function JobOrderScreen() {
       progress.current = { key: null, jobId: null, taskIds: [], partsDone: new Set(), photosDone: new Set(), selfie: null };
       Alert.alert(t("jobOrder.savedTitle"), t("jobOrder.savedMessage", { id: jobId }), [
         { text: t("common.ok"), onPress: () => router.back() },
+        // C1: the completed job report, read only.
+        { text: t("jobOrder.viewReport"), onPress: () => router.replace(`/job/${jobId}` as any) },
       ]);
     } catch (e: any) {
       Alert.alert(t("jobOrder.submitFailedTitle"), `${e?.message ?? t("common.unknownError")}\n\n${t("jobOrder.retryHint")}`);
@@ -453,11 +462,11 @@ export default function JobOrderScreen() {
         </Pressable>
       </View>
 
-      <VerificationModal
+      <SignoffSheet
         visible={verifyVisible}
-        title={t("jobOrder.signoffTitle")}
-        message={t("jobOrder.signoffMessage")}
-        confirmLabel={t("jobOrder.submit")}
+        verb="submitting"
+        action={t("signoff.actions.submitJobOrder")}
+        detail={busId}
         submitting={submitting}
         onCancel={() => !submitting && setVerifyVisible(false)}
         onConfirm={doSubmit}

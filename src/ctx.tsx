@@ -1,19 +1,13 @@
 import { deleteStoredItem, getStoredItem, setStoredItem } from "./utils/storage";
 import React from "react";
 import { AppState, AppStateStatus } from "react-native";
-import { ensureValidSession, setUnauthorizedHandler } from "./api/client";
-import { api } from "./api/client";
+import { api, DbMe, ensureValidSession, setUnauthorizedHandler } from "./api/client";
 import {
   clearPushRegistrationMarker,
   usePushRegistration,
 } from "./notifications/usePushRegistration";
 
-type DbUser = {
-  user_id: number;
-  user_role: string;
-  user_name: string;
-  user_email: string;
-};
+type DbUser = DbMe;
 
 type SessionContextType = {
   session: string | null; // accessToken
@@ -25,6 +19,10 @@ type SessionContextType = {
     refreshToken?: string;
   }) => Promise<void>;
   signOut: () => Promise<void>; // ✅ clears local tokens only (no browser)
+  /** Replace the signed-in user's record, e.g. after saving My profile. */
+  setDbUser: (u: DbUser) => void;
+  /** Re-read /me (name, username, avatar). */
+  refreshMe: () => Promise<void>;
 };
 
 const SessionContext = React.createContext<SessionContextType | null>(null);
@@ -135,8 +133,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearSession();
   }, [clearSession]);
 
+  const refreshMe = React.useCallback(async () => {
+    try {
+      setDbUser(await api.me());
+    } catch {
+      // Keep what we have; the next screen load retries.
+    }
+  }, []);
+
   return (
-    <SessionContext.Provider value={{ session, dbUser, loading, signInWithTokens, signOut }}>
+    <SessionContext.Provider value={{ session, dbUser, loading, signInWithTokens, signOut, setDbUser, refreshMe }}>
       {children}
     </SessionContext.Provider>
   );

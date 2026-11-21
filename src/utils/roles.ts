@@ -50,7 +50,8 @@ export const ROLE_LABEL: Record<string, string> = {
 // Lived in app/(app)/_layout.tsx until the project selector needed it too —
 // importing colours from a layout file to draw a screen is backwards.
 export const ROLE_COLORS: Record<string, { accent: string; light: string }> = {
-  admin: { accent: "#4338CA", light: "#EEF2FF" },
+  // v2.0.0 (A4): the administrator is charcoal everywhere.
+  admin: { accent: "#1F2937", light: "#F3F4F6" },
   fleet_manager: { accent: "#2563EB", light: "#EFF6FF" },
   // R&M green and technician orange were darkened (from #16A34A / #EA580C) so
   // white text on their buttons and badges is easier to read.

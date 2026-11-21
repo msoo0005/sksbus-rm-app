@@ -58,6 +58,10 @@ const CSS = `
 .photo .missing { width: 345px; height: 259px; display: flex; align-items: center; justify-content: center;
                   font-size: 11px; font-weight: 700; background: #F2F2F2; }
 .photo .fig { text-align: right; font-size: 9.5px; margin-top: 4px; }
+.signoffs td { vertical-align: middle; }
+.signoffs img { width: 30px; height: 30px; border-radius: 15px; object-fit: cover; display: block; }
+.remarks { border: 1px solid #BFDBFE; background: #EFF6FF; border-radius: 6px; padding: 8px 10px; margin-top: 8px; }
+.remarks .by { font-size: 9.5px; color: #3B82F6; margin-top: 4px; }
 `;
 
 const COLS_EVENT = `<colgroup><col style="width:30px"><col><col style="width:150px"><col style="width:130px"><col style="width:70px"></colgroup>`;
@@ -70,18 +74,24 @@ function sectionHeading(title, note = "") {
   return `<div class="sec"><h2>${title}</h2>${note ? `<span class="note">${note}</span>` : ""}</div>`;
 }
 
-/** Spec 11: turnaround, awaiting approval (+%), response, on-site repair. */
+/**
+ * Spec 11 + v2.0.0: turnaround (report → closed by the R&M approval),
+ * awaiting report approval (+%), response, on-site work, awaiting completion
+ * approval. Jobs closed before v2 have no approval: they end at completion.
+ */
 export function jobTimes(d) {
   const t = (x) => (x ? new Date(x).getTime() : null);
   const diff = (a, b) => (a != null && b != null ? b - a : null);
-  const turnaround = diff(t(d.report_date), t(d.completed_at));
-  const approval = d.is_job_order ? null : diff(t(d.report_date), t(d.approved_at));
+  const end = d.closed_at ?? d.completed_at;
+  const turnaround = diff(t(d.report_date), t(end));
+  const approval = d.is_job_order || d.is_followup_order ? null : diff(t(d.report_date), t(d.approved_at));
   return {
     turnaround,
     approval,
     approvalPct: fmtPercent(approval, turnaround),
     response: d.is_job_order ? null : diff(t(d.accepted_at), t(d.arrived_at)),
     onSite: diff(t(d.arrived_at), t(d.completed_at)),
+    awaitingCompletion: d.closed_at ? diff(t(d.completed_at), t(d.closed_at)) : null,
   };
 }
 
@@ -111,12 +121,12 @@ function eventText(e) {
   return e.text;
 }
 
-/** Photo groups (3a, 3b ...) with running figure numbers across the report. */
+/** Photo groups (5a, 5b ...) with running figure numbers across the report. */
 export function photoGroups(d) {
   const groups = [];
   if (d.report_photos?.length) {
     groups.push({
-      title: "As reported",
+      title: d.is_followup_order ? "As issued (follow-up photos)" : "As reported",
       indexTitle: `As reported${d.reporter_role ? ` (${d.reporter_role})` : ""}`,
       by: d.reporter_role || d.reporter_name || d.reported_by,
       at: d.report_date,
@@ -134,18 +144,32 @@ export function photoGroups(d) {
       photos: t.photos,
     });
   }
-  if (d.after_photos?.length) {
+  for (const f of d.followups ?? []) {
+    if (!f.photos?.length) continue;
     groups.push({
-      title: "After repair",
-      indexTitle: "After repair (bus after rectification)",
+      followup: f.no,
+      title: `Follow-up ${f.no}`,
+      indexTitle: `Follow-up ${f.no}`,
       by: d.technician,
-      at: d.after_photos[d.after_photos.length - 1].at,
-      photos: d.after_photos,
+      at: f.photos[0].at,
+      photos: f.photos,
+    });
+  }
+  // v2.0.0: the 5 labelled after photos (dashboard, front, back, left side,
+  // right side); jobs from before then have an unlabelled set.
+  const after = [...(d.after_slots ?? []), ...(d.after_photos ?? [])];
+  if (after.length) {
+    groups.push({
+      title: "After photos",
+      indexTitle: d.after_slots?.length ? "After photos (dashboard, front, back, left side, right side)" : "After repair (bus after rectification)",
+      by: d.technician,
+      at: after[after.length - 1].at,
+      photos: after,
     });
   }
   let fig = 1;
   groups.forEach((g, i) => {
-    g.letter = `3${String.fromCharCode(97 + i)}`;
+    g.letter = `5${String.fromCharCode(97 + i)}`;
     g.first = fig;
     g.last = fig + g.photos.length - 1;
     fig = g.last + 1;
@@ -162,6 +186,11 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
   const tasks = d.tasks ?? [];
   const tasksDone = tasks.filter((t) => t.status === "DONE").length;
   const tasksLabel = `${tasksDone} of ${tasks.length} done`;
+  const followups = d.followups ?? [];
+  const ordersIssued = followups.filter((f) => f.job_order).length;
+  const followupsLabel = followups.length
+    ? `${followups.length} → ${ordersIssued} job order${ordersIssued === 1 ? "" : "s"}`
+    : "None";
   const groupForTask = (n) => groups.find((g) => g.task === n);
   const reportedGroup = groups.find((g) => g.title === "As reported");
 
@@ -181,6 +210,7 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
     ["Reported by", val(d.reported_by), "Approved by", val(d.approved_by)],
     ["Technician", val(d.technician), "Tasks", tasksLabel],
     ["Report date", fmtDateTime(d.report_date), "Completed", fmtDateTime(d.completed_at)],
+    ["Approved", fmtDateTime(d.closed_at), "Follow-ups", followupsLabel],
   ];
   const summaryRows = [
     ["Reference", ref || DASH],
@@ -190,7 +220,8 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
     ["Awaiting approval", times.approval == null ? DASH
       : `${fmtDuration(times.approval, { compact: true })}${times.approvalPct ? ` · ${times.approvalPct}` : ""}`],
     ["Response", fmtDuration(times.response)],
-    ["On-site repair", fmtDuration(times.onSite)],
+    ["On-site work", fmtDuration(times.onSite)],
+    ["Awaiting completion approval", fmtDuration(times.awaitingCompletion)],
   ];
   items.push(item(`<div class="top">
   <div class="top-left">
@@ -220,7 +251,7 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
       <td>${fmtDateTime(e.at)}</td><td class="num${e.longest ? " b" : ""}">${i === 0 ? DASH : fmtElapsed(e.elapsed)}</td></tr></table>`,
       { tight: true, cont: "cont-ev", keepNext: i === evRows.length - 1 }));
   });
-  items.push(item(`<table class="ev">${COLS_EVENT}<tr class="total"><td colspan="4">Total turnaround (report → completion)</td>
+  items.push(item(`<table class="ev">${COLS_EVENT}<tr class="total"><td colspan="4">Total turnaround (${d.is_followup_order ? "issue" : "report"} → ${d.closed_at ? "closed" : "completion"})</td>
     <td class="num">${fmtDuration(times.turnaround)}</td></tr></table>`, { cont: "cont-ev" }));
 
   // ── 2 Reported issue and work performed ───────────────────────────────
@@ -231,13 +262,18 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
   templates.push(template("cont-tasks", item(contSec2) + item(contTasks)));
 
   items.push(item(sectionHeading("2&nbsp;&nbsp;Reported issue and work performed", sec2), { keepNext: true }));
-  const reportedMeta = d.is_job_order
+  const reportedMeta = d.is_followup_order
+    ? `Issued by <b>${val(d.reporter_name)}</b> · ${fmtDateTime(d.report_date)}`
+    : d.is_job_order
     ? `Job order by <b>${val(d.technician)}</b> · ${fmtDateTime(d.report_date)}`
     : `Reported by <b>${val(d.reporter_name)}${d.reporter_role ? ` (${escapeHtml(d.reporter_role)})` : ""}</b> · ${fmtDateTime(d.report_date)}${
         reportedGroup ? ` · Photos ${reportedGroup.letter} · ${fmtFigRange(reportedGroup.first, reportedGroup.last)}` : ""}`;
   items.push(item(`<div class="box">
-  <div class="box-h"><span class="name">${d.is_job_order ? "Job order" : "Reported issue"}</span><span class="meta">${reportedMeta}</span></div>
+  <div class="box-h"><span class="name">${d.is_job_order || d.is_followup_order ? "Job order" : "Reported issue"}</span><span class="meta">${reportedMeta}</span></div>
   <div class="box-row"><div class="k">Issue</div><div class="v b">${val(d.issue)}</div></div>
+  ${d.is_followup_order ? `<div class="box-row"><div class="k">Required action</div><div class="v">${val(d.required_action)}</div></div>
+  ${d.job_remarks ? `<div class="box-row"><div class="k">Remarks</div><div class="v">${escapeHtml(d.job_remarks)}</div></div>` : ""}
+  ${d.parent_ref_no ? `<div class="box-row"><div class="k">Follow-up from</div><div class="v">${escapeHtml(d.parent_ref_no)}</div></div>` : ""}` : ""}
 </div>`, { cont: "cont-s2" }));
 
   items.push(item(`<div class="sub">Tasks completed to solve this issue (${tasks.length})</div>`, { keepNext: true, cont: "cont-s2" }));
@@ -296,9 +332,46 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
     items.push(item(`<div class="box">${head}${rows.join("")}</div>`, { cont: contId, split: splitId }));
   });
 
-  // ── 3 Photo evidence: index ───────────────────────────────────────────
+  // ── 3 Follow-ups (v2.0.0) ──────────────────────────────────────────────
+  const contSec3 = sectionHeading("3&nbsp;&nbsp;Follow-ups (continued)");
+  templates.push(template("cont-s3", item(contSec3)));
+  items.push(item(sectionHeading("3&nbsp;&nbsp;Follow-ups", followupsLabel), { keepNext: true }));
+  if (!followups.length) {
+    items.push(item(`<div class="box"><div class="box-row"><div class="v">No follow-ups.</div></div></div>`));
+  }
+  followups.forEach((f) => {
+    const g = groups.find((x) => x.followup === f.no);
+    const o = f.job_order;
+    items.push(item(`<div class="box">
+  <div class="box-h"><span class="name">Follow-up ${f.no}</span><span class="meta">${o ? "<b>Job order issued</b>" : "<b>Pending</b>"}</span></div>
+  <div class="box-row"><div class="k">Issue</div><div class="v b">${val(f.issue)}</div></div>
+  <div class="box-row"><div class="k">Required action</div><div class="v">${val(f.required_action)}</div></div>
+  <div class="box-row"><div class="k">Job order</div><div class="v">${o
+    ? `<b>${val(o.ref_no)}</b> · issued by ${val(o.issued_by)} · ${fmtDateTime(o.at)} · Priority ${val(o.priority)} · ${val(o.status)}`
+    : DASH}</div></div>
+  <div class="box-row"><div class="k">Photos</div><div class="v">${g ? `${g.letter} · ${fmtFigRange(g.first, g.last)} (${g.photos.length})` : DASH}</div></div>
+</div>`, { cont: "cont-s3" }));
+  });
+
+  // ── 4 Sign-offs and remarks (v2.0.0) ──────────────────────────────────
+  const signs = d.signoffs ?? [];
+  items.push(item(sectionHeading("4&nbsp;&nbsp;Sign-offs and remarks"), { keepNext: true }));
+  items.push(item(`<table class="signoffs"><colgroup><col><col style="width:130px"><col style="width:110px"><col style="width:120px"><col style="width:44px"></colgroup>
+    <tr><th>Step</th><th>Name as signed</th><th>Username</th><th>Date · Time</th><th>Selfie</th></tr>
+    ${signs.length ? signs.map((x, i) => `<tr class="${i % 2 === 1 ? "stripe" : ""}"><td>${escapeHtml(x.step)}</td><td class="b">${val(x.name)}</td>
+      <td>${x.username ? `@${escapeHtml(x.username)}` : DASH}</td><td>${fmtDateTime(x.at)}</td>
+      <td>${x.selfie?.src ? `<img src="${x.selfie.src}" alt="">` : DASH}</td></tr>`).join("")
+      : `<tr><td colspan="5">${DASH}</td></tr>`}
+  </table>`));
+  if (d.fm_remarks) {
+    items.push(item(`<div class="remarks"><b>Fleet Manager remarks</b><div>${escapeHtml(d.fm_remarks.text)}</div>
+      <div class="by">${val(d.fm_remarks.name)}${d.fm_remarks.username ? ` @${escapeHtml(d.fm_remarks.username)}` : ""} · ${fmtDateTime(d.fm_remarks.at)}${
+        d.fm_remarks.edited_at ? ` · edited ${fmtDateTime(d.fm_remarks.edited_at)}` : ""}</div></div>`));
+  }
+
+  // ── 5 Photo evidence: index ───────────────────────────────────────────
   if (groups.length) {
-    items.push(item(sectionHeading("3&nbsp;&nbsp;Photo evidence",
+    items.push(item(sectionHeading("5&nbsp;&nbsp;Photo evidence",
       `${totalPhotos} photo${totalPhotos === 1 ? "" : "s"} on <span data-fill="photo-pages"></span>, in the order taken`), { keepNext: true }));
     items.push(item(`<table><colgroup><col><col style="width:90px"><col style="width:60px"><col style="width:90px"></colgroup>
       <tr><th>Group</th><th>Figures</th><th>Photos</th><th>Taken</th></tr>
@@ -307,7 +380,7 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
     </table>`));
 
     // ── 3a, 3b ... photo pages ──────────────────────────────────────────
-    const photoSec = sectionHeading("3&nbsp;&nbsp;Photo evidence");
+    const photoSec = sectionHeading("5&nbsp;&nbsp;Photo evidence");
     items.push(item(photoSec, { breakBefore: true, pageKind: "photo", keepNext: true }));
     groups.forEach((g) => {
       const groupLine = (cont) => `<div class="photo-group"><span class="g">${g.letter}&nbsp;&nbsp;${escapeHtml(g.title)}${cont ? " (continued)" : ""}</span>
@@ -322,7 +395,7 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
           const img = p.src
             ? `<div class="frame"><img src="${p.src}" alt=""></div>`
             : `<div class="missing">${escapeHtml(g.title)} photo ${i + k + 1}</div>`;
-          return `<div class="photo">${img}<div class="fig">${fig}</div></div>`;
+          return `<div class="photo">${img}<div class="fig">${p.caption ? `${escapeHtml(p.caption)} · ` : ""}${fig}</div></div>`;
         }).join("");
         items.push(item(`<div class="photo-row">${cells}</div>`, { pageKind: "photo", cont: `cont-ph-${g.letter}` }));
       }
@@ -334,7 +407,7 @@ export function buildJobCompletionHtml(d, { logoHtml, fontCss = "", generatedAt 
     css: CSS,
     fontCss,
     headers,
-    footer: footerHtml(fmtGenerated(generatedAt)),
+    footer: footerHtml(`${fmtGenerated(generatedAt)}${d.updated_with_remarks ? " (updated with Fleet Manager remarks)" : ""}`),
     items: items.join("\n"),
     templates: templates.join("\n"),
   });

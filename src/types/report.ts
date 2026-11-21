@@ -64,6 +64,20 @@ export type Report = {
   // From DB: report_status
   status: "pending" | "open" | "closed";
 
+  // v2.0.0 Part C
+  /** SKSC-JCR-YYYY-MM-DD-NN, shown under the title. */
+  refNo?: string | null;
+  /** The job's state: approved / accepted / arrived / pending_approval / closed. */
+  jobState?: string | null;
+  jobId?: number | null;
+  /** REPORT, FOLLOW_UP (job order from approval) or TECH_ORDER. */
+  jobSource?: string | null;
+  /** C2 clock: submit (job orders: issue) until the R&M approval. */
+  clockStart?: string | null;
+  clockEnd?: string | null;
+  /** Not arrived after the late limit (C15). */
+  late?: boolean;
+
   // Optional UI helpers
   reportedBy?: string; // e.g. reporter_name or reporter_email
   // The reporter as signed off at submission — photo, typed name, username.

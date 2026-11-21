@@ -14,8 +14,15 @@ import {
   View,
 } from "react-native";
 
-import type { JobMedia, PartUnit, ReportMedia } from "@/api/client";
-import { api } from "@/api/client";
+import type { AfterSlot, JobDetails, JobMedia, PartUnit, ReportMedia } from "@/api/client";
+import { AFTER_SLOTS, api } from "@/api/client";
+import { uploadJobKindPhoto, uploadVerificationSelfie } from "@/api/media";
+import FollowupCard from "@/components/job/FollowupCard";
+import FollowupEditorCard, { type FollowupDraft } from "@/components/job/FollowupEditorCard";
+import LateUpdateCard from "@/components/job/LateUpdateCard";
+import { buildJobProgress } from "@/utils/jobProgress";
+import { formatElapsed, useElapsedMs } from "@/utils/elapsedTime";
+import { formatDateTime } from "@/utils/datetime";
 import AfterPhotoSlots from "@/components/AfterPhotoSlots";
 import BusDetailsModal from "@/components/BusDetailsModal";
 import type { LocalMedia } from "@/components/ImagePicker";
@@ -25,14 +32,13 @@ import ImageViewerOverlay from "@/components/ImageViewerOverlay";
 import InstrumentClusterIcon from "@/components/icons/InstrumentClusterIcon";
 import JobTaskCard from "@/components/JobTaskCard";
 import JobTimeline, { TimelineEvent } from "@/components/JobTimeline";
-import SignoffCard from "@/components/SignoffCard";
 import type { StatusType } from "@/components/StatusBadge";
 import StatusBadge from "@/components/StatusBadge";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { openDirections } from "@/utils/directions";
 import { computeJobPendingStage } from "@/utils/jobPendingStage";
-import { buildJobSignoffs, buildJobTimelineEvents, ODOMETER_TASK_NAME } from "@/utils/jobSignoffs";
+import { buildJobTimelineEvents, ODOMETER_TASK_NAME } from "@/utils/jobSignoffs";
 import { formatBusLabel } from "@/utils/busLabel";
 import { reportTypeTitleLabel } from "@/utils/reportType";
 import { usePdfDownload } from "@/hooks/usePdfDownload";
@@ -67,6 +73,7 @@ function buildAfterPhotoSlots(
 }
 
 type JobListItem = {
+  job_ref_no?: string | null;
   job_id: number;
   job_desc: string | null;
   job_status: string;
@@ -217,7 +224,8 @@ export default function TechnicianJobDetailsScreen() {
   const [odometerInput, setOdometerInput] = useState("");
   const [savingOdometer, setSavingOdometer] = useState(false);
 
-  const [afterPhotoSlots, setAfterPhotoSlots] = useState<Record<AfterPhotoSlot, LocalMedia[]>>({
+  // Pre-v2 staging; after photos now upload as they are taken (onAfterSlotPicked).
+  const [afterPhotoSlots] = useState<Record<AfterPhotoSlot, LocalMedia[]>>({
     dashboard: [],
     front: [],
     back: [],
@@ -229,7 +237,7 @@ export default function TechnicianJobDetailsScreen() {
 
   const [afterPhotoUrls, setAfterPhotoUrls] = useState<string[]>([]);
   const [afterPhotosUploadedAt, setAfterPhotosUploadedAt] = useState<string | null>(null);
-  const [loadingAfterPhotos, setLoadingAfterPhotos] = useState(false);
+  const [, setLoadingAfterPhotos] = useState(false);
 
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
@@ -238,6 +246,12 @@ export default function TechnicianJobDetailsScreen() {
   const [busDetailsVisible, setBusDetailsVisible] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [verifyVisible, setVerifyVisible] = useState(false);
+
+  // v2.0.0: the job's state, follow-ups, Job Progress events, after-photo
+  // slots, send-back and late-arrival state, from GET /jobs/{id}/details.
+  const [details, setDetails] = useState<JobDetails | null>(null);
+  const [savingFollowup, setSavingFollowup] = useState(false);
+  const [uploadingSlot, setUploadingSlot] = useState<AfterSlot | null>(null);
 
   const viewerUrls = useMemo(
     () => reportPhotoUrls.map((u) => ({ url: u })),
@@ -273,6 +287,15 @@ export default function TechnicianJobDetailsScreen() {
     const err = e as { code?: string; message?: string };
     if (err?.code === "ODOMETER_REQUIRED") {
       handleOdometerRequired();
+      return;
+    }
+    if (err?.code === "ODOMETER_CHECK") {
+      const last = (err as { body?: { last_odometer?: number | null } }).body?.last_odometer;
+      Alert.alert(
+        t("job2.odometer.check"),
+        last != null ? t("job2.odometer.checkLast", { km: Number(last).toLocaleString() }) : t("job2.odometer.check"),
+      );
+      scrollToOdometerAndFocus();
       return;
     }
     if (err?.code === "JOB_NOT_ACCEPTED") {
@@ -355,6 +378,15 @@ export default function TechnicianJobDetailsScreen() {
     }
   };
 
+  const loadDetails = async () => {
+    try {
+      setDetails(await api.jobDetails(jobId));
+    } catch {
+      // A Lambda without /details yet: the screen falls back to the old view.
+      setDetails(null);
+    }
+  };
+
   const fetchAll = async () => {
     if (!Number.isFinite(jobId) || jobId <= 0) return;
     setLoading(true);
@@ -382,6 +414,7 @@ export default function TechnicianJobDetailsScreen() {
       setTasks(Array.isArray(t) ? t : []);
       setAfterPhotoUrls([]);
       loadAfterPhotos(jobId);
+      await loadDetails();
     } catch (e: unknown) {
       handleApiError(e, t("jobDetail.failedToLoadJob"));
     } finally {
@@ -463,7 +496,6 @@ export default function TechnicianJobDetailsScreen() {
         task_job_type: d.jobType,
         task_category: d.category,
         task_desc: d.workDone.trim(),
-        task_remark: d.remark.trim() || null,
         task_no_parts: d.noParts,
         task_status: "done",
         task_order: nextOrder,
@@ -546,18 +578,8 @@ export default function TechnicianJobDetailsScreen() {
     [visibleTasks],
   );
 
-  const pendingTasks = useMemo(
-    () => visibleTasks.filter((t) => t.task_status !== "done"),
-    [visibleTasks],
-  );
-
   const afterMedia = useMemo(
     () => afterPhotoSlotDefs.flatMap((s) => afterPhotoSlots[s.key]),
-    [afterPhotoSlotDefs, afterPhotoSlots],
-  );
-
-  const missingAfterPhotoSlots = useMemo(
-    () => afterPhotoSlotDefs.filter((s) => afterPhotoSlots[s.key].length === 0),
     [afterPhotoSlotDefs, afterPhotoSlots],
   );
 
@@ -566,15 +588,27 @@ export default function TechnicianJobDetailsScreen() {
     [report, jobSummary, tasks, afterPhotosUploadedAt, t],
   );
 
-  const signoffs = useMemo(
-    () => buildJobSignoffs(jobSummary, report, t),
-    [jobSummary, report, t],
-  );
-
-  const pendingStage = useMemo(
+  const legacyPendingStage = useMemo(
     () => computeJobPendingStage(jobSummary, visibleTasks, t),
     [jobSummary, visibleTasks, t],
   );
+
+  const progress = useMemo(() => (details ? buildJobProgress(details, t) : null), [details, t]);
+  const state = details?.job.state ?? null;
+  const isTechOrder = details?.job.source === "TECH_ORDER";
+  const isFollowUpOrder = details?.job.source === "FOLLOW_UP";
+  // Tasks, follow-ups and after photos can change only while the job is in
+  // progress (arrived, or sent back) and it is this technician's.
+  const workOpen = canEdit && (details ? details.can.edit : hasOdometer);
+  // Before the odometer is saved only the title, odometer, report and Job
+  // Progress show (C3); everything else unlocks after Save Odometer.
+  const showWork = !canEdit || hasOdometer;
+  const filledSlots = useMemo(
+    () => AFTER_SLOTS.filter((k) => !!details?.after_photos?.[k]),
+    [details],
+  );
+  const refLabel = details?.job.ref_no ?? jobSummary?.job_ref_no ?? `#${jobId}`;
+  const lateMs = useElapsedMs(state === "accepted" && details?.late.late ? details.late.accepted_at : null);
 
   const uploadAfterPhotos = async (
     jId: number,
@@ -676,36 +710,89 @@ export default function TechnicianJobDetailsScreen() {
     }
   };
 
-  const completeJob = () => {
-    if (!canEdit) return;
-    if (jobLocked) {
-      handleOdometerRequired();
-      return;
+  // The 5 after-photo slots as they are on the server.
+  const slotValue = useMemo(() => {
+    const out = {} as Record<AfterSlot, LocalMedia[]>;
+    for (const k of AFTER_SLOTS) {
+      const ph = details?.after_photos?.[k];
+      out[k] = ph?.url ? [{ localUri: ph.url, mime_type: ph.mime_type || "image/jpeg" }] : [];
     }
-    if (completedTasks.length === 0) {
-      Alert.alert(
-        t("jobDetail.completedTaskFirstTitle"),
-        t("jobDetail.completedTaskFirstMessage"),
-      );
-      return;
+    return out;
+  }, [details]);
+
+  const onAfterSlotPicked = async (slot: AfterSlot, next: LocalMedia[]) => {
+    const item = next[next.length - 1];
+    if (!item || !workOpen) return;
+    setUploadingSlot(slot);
+    try {
+      await uploadJobKindPhoto(jobId, "after", item, slot);
+      await loadDetails();
+    } catch (e: unknown) {
+      handleApiError(e, t("job2.afterPhotos.failed"));
+    } finally {
+      setUploadingSlot(null);
     }
-    if (pendingTasks.length > 0) {
-      Alert.alert(
-        t("jobDetail.tasksPendingTitle"),
-        t("jobDetail.tasksPendingMessage", { count: pendingTasks.length }),
-      );
-      return;
+  };
+
+  const saveFollowup = async (d: FollowupDraft): Promise<boolean> => {
+    setSavingFollowup(true);
+    try {
+      const keys: string[] = [];
+      for (const p of d.photos) keys.push(await uploadJobKindPhoto(jobId, "followup", p));
+      await api.addFollowup(jobId, { issue: d.issue, required_action: d.action, photo_keys: keys });
+      await loadDetails();
+      return true;
+    } catch (e: unknown) {
+      handleApiError(e, t("job2.followups.saveFailed"));
+      return false;
+    } finally {
+      setSavingFollowup(false);
     }
-    if (missingAfterPhotoSlots.length > 0) {
-      Alert.alert(
-        t("jobDetail.afterPhotosRequiredTitle"),
-        t("jobDetail.afterPhotosRequiredMessage", {
-          list: missingAfterPhotoSlots.map((slot) => slot.label).join(", "),
-        }),
-      );
-      return;
+  };
+
+  const removeFollowup = (followupId: number) => {
+    Alert.alert(t("job2.followups.removeConfirmTitle"), t("job2.followups.removeConfirmBody"), [
+      { text: t("common.cancel"), style: "cancel" },
+      {
+        text: t("job2.followups.remove"),
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await api.removeFollowup(followupId);
+            await loadDetails();
+          } catch (e: unknown) {
+            handleApiError(e);
+          }
+        },
+      },
+    ]);
+  };
+
+  // C3: names the first missing item; null when Complete Job can run.
+  const completeHint = !details
+    ? null
+    : completedTasks.length === 0
+      ? t("job2.complete.needTask")
+      : filledSlots.length < AFTER_SLOTS.length
+        ? t("job2.complete.needPhotos", { n: filledSlots.length })
+        : null;
+
+  // v2.0.0 Complete Job: sign-off, then pending_approval and the R&M Managers
+  // are asked to approve. A technician's own job order still closes on submit
+  // through the older path.
+  const doCompleteJobV2 = async (selfie: LocalMedia, verifiedName: string) => {
+    setCompleting(true);
+    try {
+      const key = await uploadVerificationSelfie("job-complete", jobId, selfie);
+      await api.completeJob(jobId, { verified_name: verifiedName, selfie_s3_key: key });
+      setVerifyVisible(false);
+      Alert.alert(t("jobDetail.jobCompleted"), t("job2.complete.done"));
+      await fetchAll();
+    } catch (e: unknown) {
+      handleApiError(e, t("job2.complete.failed"));
+    } finally {
+      setCompleting(false);
     }
-    setVerifyVisible(true);
   };
 
   const reportPhotoMedia: LocalMedia[] = useMemo(
@@ -716,14 +803,6 @@ export default function TechnicianJobDetailsScreen() {
       })),
     [reportPhotoUrls],
   );
-
-  const onAfterPhotoSlotChange = (slot: AfterPhotoSlot, next: LocalMedia[]) => {
-    if (jobLocked && next.length > afterPhotoSlots[slot].length) {
-      handleOdometerRequired();
-      return;
-    }
-    setAfterPhotoSlots((prev) => ({ ...prev, [slot]: next }));
-  };
 
   const hasLocation = report?.report_lat != null && report?.report_lng != null;
 
@@ -749,10 +828,45 @@ export default function TechnicianJobDetailsScreen() {
             <View style={s.heroTop}>
               <View style={s.heroLeft}>
                 <Text style={s.heroId}>
-                  {jobSummary?.report_type === "job_order"
-                  ? `${t("jobOrder.title")} #${jobId}`
-                  : `${reportTypeTitleLabel(jobSummary?.report_type, t)} Job #${jobId}`}
+                  {details
+                    ? details.job.source === "REPORT"
+                      ? t("job2.problemReportJob")
+                      : t("job2.jobOrder")
+                    : jobSummary?.report_type === "job_order"
+                      ? `${t("jobOrder.title")} #${jobId}`
+                      : `${reportTypeTitleLabel(jobSummary?.report_type, t)} Job #${jobId}`}
                 </Text>
+                {/* C3: one SKSC-JCR reference from submit on. */}
+                {!!details?.job.ref_no && <Text style={v2.ref}>{details.job.ref_no}</Text>}
+                {!!state && (
+                  <View
+                    style={[
+                      v2.statePill,
+                      details?.sent_back
+                        ? v2.pillRed
+                        : state === "pending_approval"
+                          ? v2.pillAmber
+                          : state === "closed"
+                            ? v2.pillGreen
+                            : v2.pillGrey,
+                    ]}
+                  >
+                    <Text style={v2.statePillText}>
+                      {state === "closed" ? "✓ " : ""}
+                      {details?.sent_back ? t("job2.state.sentBack") : t(`job2.state.${state}`)}
+                    </Text>
+                  </View>
+                )}
+                {lateMs != null && (
+                  <View style={[v2.statePill, v2.pillRed]}>
+                    <Text style={v2.statePillText}>{t("job2.late.pill", { time: formatElapsed(lateMs) })}</Text>
+                  </View>
+                )}
+                {isFollowUpOrder && !!details?.job.parent?.ref_no && (
+                  <View style={[v2.statePill, v2.pillGreen]}>
+                    <Text style={v2.statePillText}>{t("job2.followUpFrom", { ref: details.job.parent.ref_no })}</Text>
+                  </View>
+                )}
                 {/* The vehicle, right under the title. Tap for bus details. */}
                 {jobSummary?.bus_id && (
                   <Pressable
@@ -776,7 +890,7 @@ export default function TechnicianJobDetailsScreen() {
               </View>
             </View>
 
-            {report?.report_location && (
+            {report?.report_location && !isFollowUpOrder && (
               <View style={s.heroSubRow}>
                 {report?.report_location && (
                   <Pressable
@@ -827,6 +941,33 @@ export default function TechnicianJobDetailsScreen() {
             )}
           </View>
 
+          {/* ── C13: sent back by the R&M Manager ── */}
+          {!!details?.sent_back && (
+            <View style={v2.sentBack}>
+              <View style={v2.sentBackHead}>
+                <FontAwesome5 name="undo" size={13} color="#DC2626" />
+                <Text style={v2.sentBackTitle}>{t("job2.sentBack.title")}</Text>
+              </View>
+              <Text style={v2.sentBackBy}>
+                {details.sent_back.by.name ?? "—"}
+                {details.sent_back.by.username ? ` @${details.sent_back.by.username}` : ""} · {formatDateTime(details.sent_back.at)}
+              </Text>
+              {!!details.sent_back.reason && <Text style={v2.sentBackReason}>{details.sent_back.reason}</Text>}
+              <Text style={v2.sentBackTodo}>{t("job2.sentBack.whatToDo")}</Text>
+            </View>
+          )}
+
+          {/* ── C15: not arrived after 1h 30m ── */}
+          {canEdit && details?.can.delay_update && (
+            <LateUpdateCard
+              jobId={jobId}
+              refLabel={refLabel}
+              limitMin={details.late.limitMin}
+              repeatMin={details.late.repeatMin}
+              onSent={loadDetails}
+            />
+          )}
+
           {/* ── Odometer gate ── */}
           {canEdit && (
             <View style={[s.card, jobLocked && s.cardWarn]}>
@@ -850,14 +991,22 @@ export default function TechnicianJobDetailsScreen() {
               <View style={s.cardDivider} />
 
               {hasOdometer ? (
-                <Field
-                  label={t("jobDetail.odometerRecordedReading")}
-                  value={
-                    jobSummary?.job_odometer != null
-                      ? `${jobSummary.job_odometer.toLocaleString()} km`
-                      : undefined
-                  }
-                />
+                <View style={v2.odoRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={v2.odoLabel}>{t("job2.odometer.reading")}</Text>
+                    <Text style={v2.odoValue}>
+                      {jobSummary?.job_odometer != null ? `${jobSummary.job_odometer.toLocaleString()} km` : "—"}
+                    </Text>
+                    {!!details?.job.arrived_at && (
+                      <Text style={v2.odoSub}>
+                        {t("job2.odometer.recordedOnArrival", { time: formatDateTime(details.job.arrived_at) })}
+                      </Text>
+                    )}
+                  </View>
+                  <View style={[v2.statePill, v2.pillGreen, { marginTop: 0 }]}>
+                    <Text style={v2.statePillText}>✓ {t("job2.odometer.recorded")}</Text>
+                  </View>
+                </View>
               ) : (
                 <>
                   <Text style={s.mutedText}>
@@ -896,15 +1045,27 @@ export default function TechnicianJobDetailsScreen() {
           )}
 
           {/* ── Initial Report ── */}
+          {isFollowUpOrder && details ? (
+            <SectionCard title={t("job2.jobOrderCard.title")} icon="clipboard-list">
+              <Field label={t("job2.jobOrderCard.issuedBy")} value={details.events.find((e) => e.type === "JOB_ORDER_ISSUED")?.by.name ?? null} />
+              <Field label={t("job2.jobOrderCard.priority")} value={details.job.priority} />
+              <Field label={t("job2.jobOrderCard.issue")} value={details.job.desc} />
+              <Field label={t("job2.jobOrderCard.requiredAction")} value={details.job.required_action} />
+              {!!details.job.remarks && <Field label={t("job2.jobOrderCard.remarks")} value={details.job.remarks} />}
+              {!!details.followup_origin?.photos.length && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.photoStrip}>
+                  {details.followup_origin.photos.map((ph) =>
+                    ph.url ? (
+                      <View key={ph.media_id} style={s.thumb}>
+                        <Image source={{ uri: ph.url }} style={s.thumbImg} />
+                      </View>
+                    ) : null,
+                  )}
+                </ScrollView>
+              )}
+            </SectionCard>
+          ) : (
           <SectionCard title={t("jobDetail.sectionInitialReport")} icon="file-alt">
-            <Field
-              label={t("jobDetail.fieldReportId")}
-              value={
-                jobSummary?.report_id != null
-                  ? `#${jobSummary.report_id}`
-                  : null
-              }
-            />
             <Field
               label={t("jobDetail.fieldReportedBy")}
               value={jobSummary?.reporter_name ?? report?.reporter_name}
@@ -959,8 +1120,10 @@ export default function TechnicianJobDetailsScreen() {
               )}
             </View>
           </SectionCard>
+          )}
 
           {/* ── Tasks ── */}
+          {showWork && (
           <SectionCard title={t("jobDetail.sectionTasks")} icon="tasks">
             {visibleTasks.length === 0 ? (
               <Text style={s.mutedText}>{t("jobDetail.noTasksAddedYet")}</Text>
@@ -976,9 +1139,10 @@ export default function TechnicianJobDetailsScreen() {
               ))
             )}
           </SectionCard>
+          )}
 
           {/* ── Add Task ── */}
-          {canEdit && (
+          {workOpen && (
             <SectionCard title={t("jobDetail.sectionAddTask")} icon="plus-circle">
               <Text style={s.helperText}>
                 {t("jobDetail.addTaskLockedHelper")}
@@ -1007,9 +1171,39 @@ export default function TechnicianJobDetailsScreen() {
             </SectionCard>
           )}
 
+          {/* ── Follow-ups (C3–C4) ── */}
+          {showWork && details && (
+            <SectionCard title={t("job2.followups.title")} icon="share-square">
+              {details.followups.length === 0 ? (
+                <Text style={s.mutedText}>{t("job2.followups.empty")}</Text>
+              ) : (
+                details.followups.map((f, i) => (
+                  <FollowupCard
+                    key={f.followup_id}
+                    followup={f}
+                    n={i + 1}
+                    onRemove={workOpen ? () => removeFollowup(f.followup_id) : undefined}
+                    onOpenJobOrder={(id) => router.push({ pathname: "/technician/job/[id]", params: { id: String(id), mode: "view" } } as any)}
+                  />
+                ))
+              )}
+            </SectionCard>
+          )}
+          {workOpen && details && (
+            <SectionCard title={t("job2.followups.add")} icon="plus-circle">
+              <Text style={s.helperText}>{t("job2.followups.intro")}</Text>
+              <FollowupEditorCard
+                n={details.followups.length + 1}
+                accent="#C4501A"
+                saving={savingFollowup}
+                onSave={saveFollowup}
+              />
+            </SectionCard>
+          )}
+
           {/* The Job Completion Report, once the job is closed. Made on the
               server; this downloads it and opens the share sheet. */}
-          {!!jobSummary?.job_completed_at && (
+          {(details ? details.job.pdf_ready : !!jobSummary?.job_completed_at) && (
             <Pressable
               style={({ pressed }) => [pdfStyles.btn, (pdf.busy || pressed) && { opacity: 0.7 }]}
               onPress={() => pdf.run(() => api.jobReportPdf(jobId))}
@@ -1022,132 +1216,76 @@ export default function TechnicianJobDetailsScreen() {
             </Pressable>
           )}
 
-          {/* ── Sign-offs: who reported, approved, accepted, completed ── */}
-          <SectionCard title={t("signoffs.sectionTitle")} icon="user-check">
-            <SignoffCard signoffs={signoffs} />
-          </SectionCard>
-
-          {/* ── Job Progress Timeline ── */}
+          {/* ── Job Progress (from the server's event log) ── */}
           <SectionCard title={t("jobDetail.sectionJobProgress")} icon="stream">
-            <JobTimeline events={timelineEvents} pendingStage={pendingStage} />
-          </SectionCard>
-
-          {/* ── After Photos (already uploaded) ── */}
-          <SectionCard title={t("jobDetail.sectionAfterPhotos")} icon="camera">
-            <View style={s.photoHeaderRow}>
-              <Text style={s.photoSectionLabel}>{t("jobDetail.uploaded")}</Text>
-              <View style={s.countPill}>
-                <Text style={s.countPillText}>
-                  {afterPhotoUrls.length} photo
-                  {afterPhotoUrls.length === 1 ? "" : "s"}
-                </Text>
-              </View>
-            </View>
-            {loadingAfterPhotos ? (
-              <Text style={s.mutedText}>{t("jobDetail.loadingPhotos")}</Text>
-            ) : afterPhotoUrls.length === 0 ? (
-              <Text style={s.mutedText}>{t("jobDetail.noAfterPhotosYet")}</Text>
+            {progress ? (
+              <JobTimeline events={progress.events} pendingStage={progress.pendingStage} />
             ) : (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={s.photoStrip}
-              >
-                {afterPhotoUrls.map((uri, idx) => (
-                  <Pressable
-                    key={`${uri}-${idx}`}
-                    onPress={() => openAfterViewer(idx)}
-                    style={s.thumb}
-                  >
-                    <Image source={{ uri }} style={s.thumbImg} />
-                    <View style={s.thumbOverlay}>
-                      <FontAwesome5 name="expand-alt" size={14} color="#fff" />
-                    </View>
-                  </Pressable>
-                ))}
-              </ScrollView>
+              <JobTimeline events={timelineEvents} pendingStage={legacyPendingStage} />
             )}
           </SectionCard>
 
-          {/* ── Add After Photos (staging, only while editable) ── */}
-          {canEdit &&
-            (jobLocked ? (
-              <Pressable onPress={handleOdometerRequired}>
-                <AfterPhotoSlots
-                  slots={afterPhotoSlotDefs}
-                  value={afterPhotoSlots}
-                  onChange={(key, next) => onAfterPhotoSlotChange(key as AfterPhotoSlot, next)}
-                  readOnly
-                  onPressReadOnly={handleOdometerRequired}
-                />
-                <Text style={[s.helperText, { marginTop: 8 }]}>
-                  {t("jobDetail.odometerRequiredForPhotos")}
-                </Text>
-              </Pressable>
-            ) : (
-              <>
-                <Text style={[s.helperText, { marginBottom: 4 }]}>
-                  {t("jobDetail.addPhotosHint")}
-                </Text>
-                <AfterPhotoSlots
-                  slots={afterPhotoSlotDefs}
-                  value={afterPhotoSlots}
-                  onChange={(key, next) => onAfterPhotoSlotChange(key as AfterPhotoSlot, next)}
-                />
-              </>
-            ))}
+          {/* ── After Photos: 5 fixed slots, each uploaded as it is taken (C3) ── */}
+          {showWork && details && (
+            <SectionCard title={t("job2.afterPhotos.title")} icon="camera">
+              <Text style={[s.helperText, { marginBottom: 6 }]}>
+                {workOpen ? t("job2.afterPhotos.intro") : ""}
+              </Text>
+              <AfterPhotoSlots
+                slots={afterPhotoSlotDefs}
+                value={slotValue}
+                onChange={(key, next) => onAfterSlotPicked(key as AfterSlot, next)}
+                readOnly={!workOpen || !!uploadingSlot}
+              />
+              {!!uploadingSlot && <Text style={s.helperText}>{t("job2.afterPhotos.uploading")}</Text>}
+              {details.after_photos_unslotted.length > 0 && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.photoStrip}>
+                  {details.after_photos_unslotted.map((ph) =>
+                    ph.url ? (
+                      <View key={ph.media_id} style={s.thumb}>
+                        <Image source={{ uri: ph.url }} style={s.thumbImg} />
+                      </View>
+                    ) : null,
+                  )}
+                </ScrollView>
+              )}
+            </SectionCard>
+          )}
 
-          {/* ── Complete Job ── */}
-          {canEdit && (
+          {/* Pre-v2 Lambda (no /details): the old uploaded-photos strip. */}
+          {!details && afterPhotoUrls.length > 0 && (
+            <SectionCard title={t("jobDetail.sectionAfterPhotos")} icon="camera">
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.photoStrip}>
+                {afterPhotoUrls.map((uri, idx) => (
+                  <Pressable key={`${uri}-${idx}`} onPress={() => openAfterViewer(idx)} style={s.thumb}>
+                    <Image source={{ uri }} style={s.thumbImg} />
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </SectionCard>
+          )}
+
+          {/* ── Complete Job (C3), or the note that replaces it (C5) ── */}
+          {canEdit && state === "pending_approval" && (
+            <View style={v2.waitNote}>
+              <FontAwesome5 name="hourglass-half" size={13} color="#B45309" />
+              <Text style={v2.waitNoteText}>{t("job2.complete.waitingNote")}</Text>
+            </View>
+          )}
+          {workOpen && (
             <View style={s.actions}>
               <Pressable
-                style={[
-                  s.btn,
-                  s.btnGreen,
-                  (jobLocked ||
-                    completedTasks.length === 0 ||
-                    pendingTasks.length > 0 ||
-                    missingAfterPhotoSlots.length > 0 ||
-                    completing) && { opacity: 0.6 },
-                ]}
-                onPress={completeJob}
-                disabled={
-                  jobLocked ||
-                  completedTasks.length === 0 ||
-                  pendingTasks.length > 0 ||
-                  missingAfterPhotoSlots.length > 0 ||
-                  completing
-                }
+                style={[s.btn, s.btnGreen, (!!completeHint || completing) && { opacity: 0.6 }]}
+                onPress={() => !completeHint && setVerifyVisible(true)}
+                disabled={!!completeHint || completing}
               >
-                <FontAwesome5
-                  name="check"
-                  size={15}
-                  color="#fff"
-                  style={{ marginRight: 8 }}
-                />
+                <FontAwesome5 name="check" size={15} color="#fff" style={{ marginRight: 8 }} />
                 <Text style={s.btnText}>
-                  {completing ? t("jobDetail.completingJob") : t("jobDetail.completeJob")}
+                  {completing ? t("jobDetail.completingJob") : t("job2.complete.button")}
                 </Text>
               </Pressable>
-              {jobLocked ? (
-                <Text style={s.helperText}>
-                  {t("jobDetail.odometerLockedHelper")}
-                </Text>
-              ) : completedTasks.length === 0 ? (
-                <Text style={s.helperText}>
-                  {t("jobDetail.completedTaskFirstMessage")}
-                </Text>
-              ) : pendingTasks.length > 0 ? (
-                <Text style={s.helperText}>
-                  {t("jobDetail.tasksPendingMessage", { count: pendingTasks.length })}
-                </Text>
-              ) : missingAfterPhotoSlots.length > 0 ? (
-                <Text style={s.helperText}>
-                  {t("jobDetail.missingAfterPhotoHelper", {
-                    list: missingAfterPhotoSlots.map((slot) => slot.label).join(", "),
-                  })}
-                </Text>
-              ) : null}
+              {!!completeHint && <Text style={s.helperText}>{completeHint}</Text>}
+              {!!details?.sent_back && !completeHint && <Text style={s.helperText}>{t("job2.complete.sentBackNote")}</Text>}
             </View>
           )}
         </ScrollView>
@@ -1173,14 +1311,16 @@ export default function TechnicianJobDetailsScreen() {
         onClose={() => setBusDetailsVisible(false)}
       />
 
-      <VerificationModal
+      <SignoffSheet
         visible={verifyVisible}
-        title={t("verification.completeJobTitle")}
-        message={t("verification.completeJobMessage")}
+        verb="completing"
+        action={t("signoff.actions.completeJob")}
+        detail={jobSummary ? [refLabel, formatBusLabel(jobSummary.bus_id, jobSummary.bus_ev_no)].filter(Boolean).join(" · ") : null}
         submitting={completing}
-        confirmLabel={t("jobDetail.completeJob")}
         onCancel={() => setVerifyVisible(false)}
-        onConfirm={({ selfie, name }) => doCompleteJob(selfie, name)}
+        onConfirm={({ selfie, name }) =>
+          details && !isTechOrder ? doCompleteJobV2(selfie, name) : doCompleteJob(selfie, name)
+        }
       />
     </>
   );
@@ -1482,4 +1622,35 @@ const pdfStyles = StyleSheet.create({
     marginBottom: 12,
   },
   text: { color: "#fff", fontSize: 15, fontWeight: "800" },
+});
+
+// v2.0.0 Part C additions.
+const v2 = StyleSheet.create({
+  ref: { fontSize: 12.5, fontWeight: "800", color: "#6B7280", marginTop: 3, letterSpacing: 0.2 },
+  statePill: { alignSelf: "flex-start", marginTop: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  statePillText: { fontSize: 12, fontWeight: "800", color: "#111827" },
+  pillGrey: { backgroundColor: "#F3F4F6" },
+  pillAmber: { backgroundColor: "#FEF3C7" },
+  pillGreen: { backgroundColor: "#DCFCE7" },
+  pillRed: { backgroundColor: "#FEE2E2" },
+  sentBack: { backgroundColor: "#FEF2F2", borderRadius: 20, borderWidth: 1, borderColor: "#FCA5A5", padding: 16 },
+  sentBackHead: { flexDirection: "row", alignItems: "center", gap: 8 },
+  sentBackTitle: { fontSize: 15, fontWeight: "800", color: "#991B1B" },
+  sentBackBy: { fontSize: 12.5, color: "#7F1D1D", marginTop: 6 },
+  sentBackReason: { fontSize: 14.5, color: "#111827", fontWeight: "700", marginTop: 8, lineHeight: 20 },
+  sentBackTodo: { fontSize: 12.5, color: "#4B5563", marginTop: 8, lineHeight: 17 },
+  odoRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  odoLabel: { fontSize: 11, fontWeight: "800", color: "#9CA3AF", letterSpacing: 0.5 },
+  odoValue: { fontSize: 22, fontWeight: "800", color: "#111827", marginTop: 2 },
+  odoSub: { fontSize: 12, color: "#6B7280", marginTop: 2 },
+  waitNote: {
+    flexDirection: "row",
+    gap: 10,
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  waitNoteText: { flex: 1, fontSize: 13, color: "#92400E", lineHeight: 18 },
 });

@@ -11,7 +11,7 @@ import { pickImage } from "@/components/ImagePicker";
 import Pill from "@/components/puspakom/Pill";
 import PuspakomMark from "@/components/puspakom/PuspakomMark";
 import SyncBadge from "@/components/puspakom/SyncBadge";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
 import { useI18n } from "@/i18n/i18n-ctx";
 import {
   LocalFix,
@@ -234,10 +234,11 @@ export default function RecheckScreen() {
         </Pressable>
       </Modal>
 
-      <VerificationModal
+      <SignoffSheet
         visible={signing}
+        verb="submitting"
         title={t("puspakom.tech.signRecheckTitle")}
-        message={t("puspakom.tech.signRecheckMessage", { bus: detail.bus.bus_id })}
+        action={t("puspakom.tech.signRecheckMessage", { bus: detail.bus.bus_id })}
         confirmLabel={t("puspakom.tech.submitRecheck")}
         submitting={saving}
         onCancel={() => !saving && setSigning(false)}

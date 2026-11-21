@@ -10,7 +10,7 @@ import BusPickerField from "@/components/BusPickerField";
 import DateTimeField from "@/components/puspakom/DateTimeField";
 import PuspakomMark from "@/components/puspakom/PuspakomMark";
 import { FieldLabel, Section } from "@/components/puspakom/Section";
-import VerificationModal from "@/components/VerificationModal";
+import SignoffSheet from "@/components/SignoffSheet";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { busLabel, fmtDate, mytDate, mytHourMinute, mytInstant } from "@/utils/puspakom";
@@ -275,10 +275,11 @@ export default function RegisterInspectionScreen() {
         </Pressable>
       </View>
 
-      <VerificationModal
+      <SignoffSheet
         visible={signing}
+        verb="registering"
         title={t("puspakom.form.signTitle")}
-        message={t("puspakom.form.signMessage", { bus: busId ? busLabel(busId, state?.bus_ev_no) : "" })}
+        action={t("puspakom.form.signMessage", { bus: busId ? busLabel(busId, state?.bus_ev_no) : "" })}
         confirmLabel={t("puspakom.form.submit")}
         submitting={saving}
         onCancel={() => !saving && setSigning(false)}

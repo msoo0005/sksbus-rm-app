@@ -107,6 +107,27 @@ export const handler = async (event) => {
       return await withConn((c) => listMyProjects(c, auth));
     }
 
+    if (method === "PATCH" && path === "/me") {
+      return await withConn((c) => updateMyProfile(c, auth, mustJson(event)));
+    }
+
+    if (method === "GET" && path === "/me/avatar/presign") {
+      return await withConn((c) => presignMyAvatar(c, auth, qs));
+    }
+
+    if (method === "PATCH" && path === "/me/avatar") {
+      return await withConn((c) => updateMyAvatar(c, auth, mustJson(event)));
+    }
+
+    if (method === "GET" && path === "/me/preferences") {
+      return await withConn((c) => getMyPreferences(c, auth));
+    }
+
+    if (method === "PATCH" && /^\/me\/preferences\/[a-z_]+$/.test(path)) {
+      const key = path.split("/").pop();
+      return await withConn((c) => putMyPreference(c, auth, key, mustJson(event)));
+    }
+
     if (method === "POST" && path === "/me/push-token") {
       return await withConn((c) => registerPushToken(c, auth, mustJson(event)));
     }
@@ -246,6 +267,36 @@ export const handler = async (event) => {
     if (method === "GET" && /^\/exports\/[^/]+$/.test(path)) {
       const exportId = params.export_id ?? path.split("/").pop();
       return await withConn((c) => getExport(c, auth, exportId, qs));
+    }
+
+    // ===== JOB DETAILS & APPROVAL (v2.0.0 Part C) =====
+    if (method === "GET" && /^\/jobs\/\d+\/details$/.test(path)) {
+      const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/details$/);
+      return await withConn((c) => getJobDetails(c, auth, jobId));
+    }
+
+    if (method === "POST" && /^\/jobs\/\d+\/(complete|approve|send-back|followups|delay-updates)$/.test(path)) {
+      const m = path.match(/^\/jobs\/(\d+)\/([a-z-]+)$/);
+      const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\//);
+      const body = mustJson(event);
+      const fn = {
+        complete: completeJob,
+        approve: approveJob,
+        "send-back": sendBackJob,
+        followups: addFollowup,
+        "delay-updates": addDelayUpdate,
+      }[m[2]];
+      return await withConn((c) => fn(c, auth, jobId, body));
+    }
+
+    if (method === "PATCH" && /^\/jobs\/\d+\/fm-remarks$/.test(path)) {
+      const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/jobs\/(\d+)\/fm-remarks$/);
+      return await withConn((c) => saveFmRemarks(c, auth, jobId, mustJson(event)));
+    }
+
+    if (method === "DELETE" && /^\/followups\/\d+$/.test(path)) {
+      const followupId = getIdFromParamsOrPath(params.followup_id, path, /^\/followups\/(\d+)$/);
+      return await withConn((c) => removeFollowup(c, auth, followupId));
     }
 
     if (method === "GET" && /^\/jobs\/\d+\/report-pdf$/.test(path)) {
@@ -780,6 +831,9 @@ function getAuthFromClaims(claims) {
       claims["cognito:username"] ??
       claims.email ??
       "Unknown",
+    // The Cognito username ("@jamiesoo"): the ID token carries it as
+    // cognito:username, an access token as username.
+    username: claims["cognito:username"] ?? claims.username ?? null,
     role,
     groups,
   };
@@ -1221,14 +1275,21 @@ async function notifyUsersByRole(conn, opts) {
 
 async function getOrCreateUserId(conn, auth) {
   const [rows] = await conn.execute(
-    "SELECT user_id FROM `USER` WHERE cognito_sub=?",
+    "SELECT user_id, user_username FROM `USER` WHERE cognito_sub=?",
     [auth.sub]
   );
-  if (rows?.length) return Number(rows[0].user_id);
+  if (rows?.length) {
+    // The username comes from the token and can only be set by the
+    // administrator in Cognito, so keep the stored copy in step with it.
+    if (auth.username && rows[0].user_username !== auth.username) {
+      await conn.execute("UPDATE `USER` SET user_username=? WHERE user_id=?", [auth.username, rows[0].user_id]);
+    }
+    return Number(rows[0].user_id);
+  }
 
   const [res] = await conn.execute(
-    "INSERT INTO `USER` (user_name, user_email, cognito_sub, user_role) VALUES (?,?,?,?)",
-    [auth.name, auth.email, auth.sub, auth.role]
+    "INSERT INTO `USER` (user_name, user_username, user_email, cognito_sub, user_role) VALUES (?,?,?,?,?)",
+    [auth.name, auth.username, auth.email, auth.sub, auth.role]
   );
   return Number(res.insertId);
 }
@@ -1241,10 +1302,10 @@ async function getOrCreateUserId(conn, auth) {
 async function getDisplayName(conn, auth) {
   const userId = await getOrCreateUserId(conn, auth);
   const [rows] = await conn.execute(
-    "SELECT user_name FROM `USER` WHERE user_id=? LIMIT 1",
+    "SELECT user_full_name, user_name FROM `USER` WHERE user_id=? LIMIT 1",
     [userId]
   );
-  return rows?.[0]?.user_name || auth.name || "Someone";
+  return rows?.[0]?.user_full_name || rows?.[0]?.user_name || auth.name || "Someone";
 }
 
 async function registerPushToken(conn, auth, b) {
@@ -1290,23 +1351,38 @@ async function unregisterPushToken(conn, auth, b) {
   return json(200, { success: true });
 }
 
+// What /me returns. user_name is the name the app shows everywhere; once the
+// user has saved a name in My profile it is that name (see updateMyProfile).
+async function meResponse(u) {
+  return {
+    user_id: Number(u.user_id),
+    user_role: u.user_role,
+    user_name: u.user_name,
+    user_email: u.user_email ?? null,
+    username: u.user_username ?? null,
+    full_name: u.user_full_name ?? u.user_name ?? null,
+    avatar_url: await signS3Url(u.user_avatar_s3_bucket, u.user_avatar_s3_key),
+  };
+}
+
+const ME_COLUMNS =
+  "user_id, user_role, user_name, user_username, user_full_name, user_email, user_avatar_s3_bucket, user_avatar_s3_key";
+
 async function getMe(conn, auth) {
-  const [rows] = await conn.execute(
-    "SELECT user_id, user_role, user_name, user_email FROM `USER` WHERE cognito_sub=?",
-    [auth.sub]
-  );
+  const [rows] = await conn.execute(`SELECT ${ME_COLUMNS} FROM \`USER\` WHERE cognito_sub=?`, [auth.sub]);
 
   if (!rows.length) {
     const [res] = await conn.execute(
-      "INSERT INTO `USER` (user_name, user_email, cognito_sub, user_role) VALUES (?,?,?,?)",
-      [auth.name, auth.email, auth.sub, auth.role]
+      "INSERT INTO `USER` (user_name, user_username, user_email, cognito_sub, user_role) VALUES (?,?,?,?,?)",
+      [auth.name, auth.username, auth.email, auth.sub, auth.role]
     );
-    return json(200, {
+    return json(200, await meResponse({
       user_id: res.insertId,
       user_role: auth.role,
       user_name: auth.name,
+      user_username: auth.username,
       user_email: auth.email,
-    });
+    }));
   }
 
   const u = rows[0];
@@ -1314,7 +1390,14 @@ async function getMe(conn, auth) {
   const values = [];
 
   if (u.user_role !== auth.role) { updates.push("user_role=?"); values.push(auth.role); u.user_role = auth.role; }
-  if (auth.name && auth.name !== "Unknown" && u.user_name !== auth.name) { updates.push("user_name=?"); values.push(auth.name); u.user_name = auth.name; }
+  // The token's name only fills user_name until the user saves their own name
+  // in My profile. After that the profile name wins and is never overwritten.
+  if (!u.user_full_name && auth.name && auth.name !== "Unknown" && u.user_name !== auth.name) {
+    updates.push("user_name=?"); values.push(auth.name); u.user_name = auth.name;
+  }
+  if (auth.username && u.user_username !== auth.username) {
+    updates.push("user_username=?"); values.push(auth.username); u.user_username = auth.username;
+  }
   if (auth.email && u.user_email !== auth.email) { updates.push("user_email=?"); values.push(auth.email); u.user_email = auth.email; }
 
   if (updates.length) {
@@ -1322,7 +1405,82 @@ async function getMe(conn, auth) {
     await conn.execute(`UPDATE \`USER\` SET ${updates.join(", ")} WHERE user_id=?`, values);
   }
 
-  return json(200, u);
+  return json(200, await meResponse(u));
+}
+
+// PATCH /me: the name from My profile (A6). Written to user_name as well, so
+// every list, notification and PDF that already shows user_name shows it.
+async function updateMyProfile(conn, auth, b) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+  const name = String(b?.full_name ?? "").trim().replace(/\s+/g, " ");
+  if (!name) return json(400, { code: "NAME_REQUIRED", message: "Enter your name" });
+  if (name.length > 150) return json(400, { message: "Invalid full_name: at most 150 characters" });
+
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute("UPDATE `USER` SET user_full_name=?, user_name=? WHERE user_id=?", [name, name, userId]);
+  const [rows] = await conn.execute(`SELECT ${ME_COLUMNS} FROM \`USER\` WHERE user_id=?`, [userId]);
+  return json(200, await meResponse(rows[0]));
+}
+
+async function presignMyAvatar(conn, auth, qs) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+  const mime = String(qs?.mime ?? "").trim();
+  if (!/^image\/(jpeg|png|webp)$/.test(mime)) throw new Error("Invalid mime");
+  const userId = await getOrCreateUserId(conn, auth);
+  const key = `users/${userId}/avatar/${crypto.randomUUID()}.${extFromMime(mime)}`;
+  const uploadUrl = await getSignedUrl(
+    s3,
+    new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime }),
+    { expiresIn: 300 }
+  );
+  return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
+}
+
+// PATCH /me/avatar {s3_key} sets the photo; {s3_key: null} removes it.
+async function updateMyAvatar(conn, auth, b) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+  const userId = await getOrCreateUserId(conn, auth);
+  const key = b?.s3_key == null || b.s3_key === "" ? null : String(b.s3_key);
+  if (key && (!key.startsWith(`users/${userId}/avatar/`) || key.includes("..") || key.length > 255)) {
+    throw new Error("Invalid s3_key");
+  }
+  await conn.execute(
+    "UPDATE `USER` SET user_avatar_s3_bucket=?, user_avatar_s3_key=? WHERE user_id=?",
+    [key ? S3_BUCKET : null, key, userId]
+  );
+  const [rows] = await conn.execute(`SELECT ${ME_COLUMNS} FROM \`USER\` WHERE user_id=?`, [userId]);
+  return json(200, await meResponse(rows[0]));
+}
+
+// Small per-user settings kept on the server (e.g. the jobs Sort by choice).
+const PREF_KEYS = ["jobs_sort"];
+
+async function getMyPreferences(conn, auth) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+  const userId = await getOrCreateUserId(conn, auth);
+  const [rows] = await conn.execute("SELECT pref_key, pref_value FROM USER_PREFERENCE WHERE user_id=?", [userId]);
+  const out = {};
+  for (const r of rows) out[r.pref_key] = typeof r.pref_value === "string" ? JSON.parse(r.pref_value) : r.pref_value;
+  return json(200, out);
+}
+
+async function putMyPreference(conn, auth, key, b) {
+  const deny = requireRole(auth, ALL_ROLES);
+  if (deny) return deny;
+  if (!PREF_KEYS.includes(key)) return json(400, { message: "Invalid preference key" });
+  const value = JSON.stringify(b?.value ?? null);
+  if (value.length > 2000) return json(400, { message: "Invalid value: too large" });
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(
+    `INSERT INTO USER_PREFERENCE (user_id, pref_key, pref_value) VALUES (?,?,?)
+     ON DUPLICATE KEY UPDATE pref_value=VALUES(pref_value)`,
+    [userId, key, value]
+  );
+  return json(200, { success: true });
 }
 
 // ===================== PROJECTS =====================
@@ -1816,17 +1974,17 @@ const CLOSED_HISTORY_LIMIT = 200;
 function reportListSql(where, limit) {
   return `
     SELECT
-      r.report_id, r.report_type, r.report_issue_type, r.report_desc, r.report_location,
+      r.report_id, r.report_ref_no, r.report_type, r.report_issue_type, r.report_desc, r.report_location,
       r.report_lat, r.report_lng, r.report_priority, r.report_status,
       r.report_uploaded_at, r.user_id, r.bus_id, r.job_id,
       r.report_review_action, r.report_review_reason, r.report_review_by, r.report_review_at,
       r.report_verified_name, r.report_selfie_s3_bucket, r.report_selfie_s3_key,
       r.report_review_verified_name, r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key,
-      u.user_name AS reporter_name, u.user_email AS reporter_email,
+      u.user_name AS reporter_name, u.user_username AS reporter_username, u.user_email AS reporter_email,
       b.bus_route, b.bus_model, b.bus_ev_no,
       jb.job_completed_at, jb.technician_user_id, jb.job_ref_no,
       jb.job_accept_verified_name, jb.job_accept_selfie_s3_bucket, jb.job_accept_selfie_s3_key,
-      tech.user_name AS technician_name
+      tech.user_name AS technician_name, tech.user_username AS technician_username
     FROM REPORT r
     LEFT JOIN \`USER\` u ON u.user_id = r.user_id
     LEFT JOIN BUS b ON b.bus_id = r.bus_id
@@ -1845,7 +2003,7 @@ async function getReport(conn, auth, reportId) {
   if (deny) return deny;
 
   const [rows] = await conn.execute(
-    `SELECT r.*, u.user_name AS reporter_name, u.user_email AS reporter_email,
+    `SELECT r.*, u.user_name AS reporter_name, u.user_username AS reporter_username, u.user_email AS reporter_email,
             b.bus_ev_no, b.bus_model
      FROM REPORT r LEFT JOIN \`USER\` u ON u.user_id=r.user_id
      LEFT JOIN BUS b ON b.bus_id=r.bus_id
@@ -1932,7 +2090,9 @@ async function submitReport(conn, auth, reportId) {
   const userId = await getOrCreateUserId(conn, auth);
 
   const [rows] = await conn.execute(
-    "SELECT report_id, user_id, bus_id, report_type, report_status, project_id FROM REPORT WHERE report_id=?",
+    `SELECT report_id, user_id, bus_id, report_type, report_status, project_id, report_priority,
+            report_verified_name, report_selfie_s3_key
+     FROM REPORT WHERE report_id=?`,
     [reportId]
   );
   if (!rows.length) return json(404, { message: "Report not found" });
@@ -1950,10 +2110,25 @@ async function submitReport(conn, auth, reportId) {
     return json(200, { success: true, already_submitted: true, report_status: report.report_status });
   }
 
-  await conn.execute(
+  const [upd] = await conn.execute(
     "UPDATE REPORT SET report_status='submitted', report_uploaded_at=NOW() WHERE report_id=? AND LOWER(TRIM(report_status))=?",
     [reportId, REPORT_STATUS_DRAFT]
   );
+  if (!upd.affectedRows) {
+    return json(200, { success: true, already_submitted: true });
+  }
+
+  // The SKSC-JCR reference is set here, at submit, and never changes (C3).
+  const refNo = await ensureReportRefNo(conn, reportId);
+  await logJobEvent(conn, {
+    reportId,
+    type: "REPORT_SUBMITTED",
+    userId,
+    auth,
+    signedName: report.report_verified_name ?? null,
+    selfieKey: report.report_selfie_s3_key ?? null,
+    detail: { ref_no: refNo, priority: report.report_priority ?? null },
+  });
 
   const reporterName = await getDisplayName(conn, auth);
   await notifyUsersByRole(conn, {
@@ -1962,11 +2137,11 @@ async function submitReport(conn, auth, reportId) {
     excludeUserId: userId,
     type: "new_report",
     title: "New report submitted",
-    body: `${reporterName} submitted a ${report.report_type} report for bus ${await busLabel(conn, report.bus_id)}.`,
+    body: `${reporterName} submitted a ${report.report_type} report ${refNo} for bus ${await busLabel(conn, report.bus_id)}.`,
     reportId,
   });
 
-  return json(200, { success: true, report_status: "submitted" });
+  return json(200, { success: true, report_status: "submitted", ref_no: refNo });
 }
 
 const REVIEW_ACTIONS = ["approved", "declined"];
@@ -2011,6 +2186,12 @@ async function updateReportStatus(conn, auth, reportId, b) {
   if (action === "approved" && (!reviewName || !reviewSelfieKey)) {
     return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to approve a report" });
   }
+  // Declining became a signed step in v2.0.0 ("Who is declining?"). App
+  // builds from before then decline without one and send no `signed` flag,
+  // so the requirement only applies to builds that say they sign.
+  if (action === "declined" && b.signed === true && (!reviewName || !reviewSelfieKey)) {
+    return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to decline a report" });
+  }
   if (reviewSelfieKey && !reviewSelfieKey.startsWith(`reports/${reportId}/review-selfie/`)) {
     return json(400, { message: "Invalid review_selfie_s3_key" });
   }
@@ -2024,7 +2205,7 @@ async function updateReportStatus(conn, auth, reportId, b) {
   try {
     const [rRows] = await conn.execute(
       `SELECT r.report_id, r.job_id, r.user_id, r.bus_id, r.report_type, r.project_id,
-              r.report_status, r.report_review_action, r.report_review_by, j.technician_user_id
+              r.report_status, r.report_review_action, r.report_review_by, j.technician_user_id, j.job_status
        FROM REPORT r LEFT JOIN JOB j ON j.job_id = r.job_id
        WHERE r.report_id=? FOR UPDATE`,
       [reportId]
@@ -2042,6 +2223,13 @@ async function updateReportStatus(conn, auth, reportId, b) {
       if (current === "closed") {
         await conn.rollback();
         return json(200, { success: true, already: true, job_id: report.job_id });
+      }
+      // v2.0.0: the report closes when the R&M Manager approves the job, not
+      // when the technician finishes. Older builds still send this close right
+      // after completing; it is accepted and ignored.
+      if (!JOB_DONE_STATUSES.includes(String(report.job_status ?? ""))) {
+        await conn.rollback();
+        return json(200, { success: true, deferred: true, job_id: report.job_id });
       }
     } else if (auth.role !== "admin") {
       const [member] = await conn.execute(
@@ -2070,11 +2258,13 @@ async function updateReportStatus(conn, auth, reportId, b) {
     if (jobWasCreated) {
       const jobDesc = b.job_desc != null ? String(b.job_desc) : `Created from approved report #${reportId}`;
       const [jobRes] = await conn.execute(
-        "INSERT INTO JOB (job_desc, job_status, job_created_at) VALUES (?, 'open', NOW())",
+        "INSERT INTO JOB (job_desc, job_status, job_source, job_created_at) VALUES (?, 'approved', 'REPORT', NOW())",
         [jobDesc]
       );
       jobId = Number(jobRes.insertId);
       await conn.execute("UPDATE REPORT SET job_id=? WHERE report_id=?", [jobId, reportId]);
+      // The job carries the report's reference (C3: one number from submit on).
+      await ensureReportRefNo(conn, reportId);
     }
 
     const updates = ["report_status=?"];
@@ -2094,6 +2284,21 @@ async function updateReportStatus(conn, auth, reportId, b) {
 
     values.push(reportId);
     await conn.execute(`UPDATE REPORT SET ${updates.join(", ")} WHERE report_id=?`, values);
+    if (action === "approved" || action === "declined") {
+      await logJobEvent(conn, {
+        reportId,
+        jobId: jobId ?? null,
+        type: action === "approved" ? "REPORT_APPROVED" : "REPORT_DECLINED",
+        userId,
+        auth,
+        signedName: reviewName ?? reviewerName,
+        selfieKey: reviewSelfieKey,
+        detail: {
+          priority: b.report_priority ?? null,
+          remarks: action === "declined" ? (b.report_review_reason ?? null) : (b.report_review_remarks ?? null),
+        },
+      });
+    }
     await conn.commit();
   } catch (e) {
     await conn.rollback();
@@ -2108,7 +2313,7 @@ async function updateReportStatus(conn, auth, reportId, b) {
       excludeUserId: userId,
       type: "new_job",
       title: "New job available",
-      body: `A new job is available to accept (from report #${reportId}).`,
+      body: `A new job is available to accept: ${(await ensureReportRefNo(conn, reportId)) ?? `report #${reportId}`}, bus ${await busLabel(conn, report.bus_id)}.`,
       reportId,
       jobId,
     });
@@ -2132,6 +2337,261 @@ async function updateReportStatus(conn, auth, reportId, b) {
   }
 
   return json(200, { success: true, job_id: jobId });
+}
+
+// ===================== JOB RULES (pure) =====================
+//
+// Everything between this marker and "END JOB RULES" is pure: no DB, no S3,
+// nothing from the rest of the file. lambda/scripts/test_job_rules.mjs cuts
+// this block out and tests it on its own, so keep it that way.
+//
+// v2.0.0 Part C. A job runs approved -> accepted -> arrived ->
+// pending_approval -> closed. The report before it is the "submitted" step.
+// A send-back is an event, not a status: it returns pending_approval to
+// arrived for the same technician.
+
+const JOB_STATE = Object.freeze({
+  APPROVED: "approved",
+  ACCEPTED: "accepted",
+  ARRIVED: "arrived",
+  PENDING_APPROVAL: "pending_approval",
+  CLOSED: "closed",
+});
+
+// action -> [from, to]
+const JOB_ACTIONS = Object.freeze({
+  accept: ["approved", "accepted"],
+  arrive: ["accepted", "arrived"],
+  complete: ["arrived", "pending_approval"],
+  send_back: ["pending_approval", "arrived"],
+  approve: ["pending_approval", "closed"],
+});
+
+/**
+ * The job's state from the stored status. Rows written before v2.0.0 said
+ * 'open' for everything not finished; they are placed by how far they got.
+ */
+function jobState(raw, row = {}) {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (["closed", "completed", "done"].includes(s)) return JOB_STATE.CLOSED;
+  if (Object.values(JOB_STATE).includes(s)) return s;
+  if (row.technician_user_id == null) return JOB_STATE.APPROVED;
+  if (row.job_odometer == null) return JOB_STATE.ACCEPTED;
+  return JOB_STATE.ARRIVED;
+}
+
+/** The state after `action`, or null when the action isn't allowed from `from`. */
+function jobNextState(from, action) {
+  const t = JOB_ACTIONS[action];
+  return t && t[0] === from ? t[1] : null;
+}
+
+/** C7 Status groups: 1 Awaiting your approval … 4 Not accepted yet. */
+function jobStatusGroup(state) {
+  return { pending_approval: 1, arrived: 2, accepted: 3, approved: 4 }[state] ?? null;
+}
+
+const JOB_AFTER_SLOTS = Object.freeze(["dashboard", "front", "back", "left", "right"]);
+
+/** Why Complete Job can't run yet, naming the first missing item (C3), or null. */
+function jobCompleteProblem({ taskCount, afterSlots }) {
+  if (!(taskCount >= 1)) {
+    return { code: "TASK_REQUIRED", message: "Please add at least 1 completed task before completing the job." };
+  }
+  const have = new Set(afterSlots ?? []);
+  const missing = JOB_AFTER_SLOTS.filter((s) => !have.has(s));
+  if (missing.length) {
+    return {
+      code: "AFTER_PHOTOS_REQUIRED",
+      message: `Please add all 5 after photos before completing the job (${JOB_AFTER_SLOTS.length - missing.length}/5).`,
+      missing,
+    };
+  }
+  return null;
+}
+
+const ODOMETER_MAX_JUMP_KM = 2000;
+
+/** C3: digits only, not 0, at least the bus's last reading and at most last + 2,000 km. */
+function odometerProblem(value, lastOdo) {
+  const s = String(value ?? "").trim();
+  if (!/^\d+$/.test(s)) return "Check the reading";
+  const n = Number(s);
+  if (n <= 0) return "Check the reading";
+  if (lastOdo != null && Number.isFinite(Number(lastOdo))) {
+    const last = Number(lastOdo);
+    if (n < last || n > last + ODOMETER_MAX_JUMP_KM) return "Check the reading";
+  }
+  return null;
+}
+
+/** SKSC-JCR-YYYY-MM-DD-NN: the MYT date and that day's running number. */
+function jobRefNo(dateStr, n) {
+  return `SKSC-JCR-${String(dateStr).slice(0, 10)}-${String(n).padStart(2, "0")}`;
+}
+
+/**
+ * C15 late arrival. Times are ms since the epoch.
+ *   late       accepted, no odometer, and the limit has passed
+ *   updateDue  the technician owes a delay update now (none yet, or the
+ *              repeat interval has passed since the last one)
+ *   promptDue  the hourly-ish push should go out now: an update is due and
+ *              the technician hasn't been pushed since it fell due, or was
+ *              pushed at least one repeat interval ago
+ */
+function jobLateState({ state, acceptedAt, lastDelayAt = null, lastPromptAt = null, now, limitMin = 90, repeatMin = 30 }) {
+  const none = { late: false, updateDue: false, promptDue: false, sinceAcceptedMs: null, dueSince: null };
+  if (state !== JOB_STATE.ACCEPTED || acceptedAt == null) return none;
+  const limitMs = limitMin * 60000;
+  const repeatMs = repeatMin * 60000;
+  const since = now - acceptedAt;
+  if (since < limitMs) return { ...none, sinceAcceptedMs: since };
+  const dueSince = lastDelayAt != null && lastDelayAt >= acceptedAt ? lastDelayAt + repeatMs : acceptedAt + limitMs;
+  const updateDue = now >= dueSince;
+  const promptDue = updateDue && (lastPromptAt == null || lastPromptAt < dueSince || now - lastPromptAt >= repeatMs);
+  return { late: true, updateDue, promptDue, sinceAcceptedMs: since, dueSince };
+}
+
+const DELAY_REASONS = Object.freeze(["TRAFFIC", "BUS_IN_OPERATION", "OTHER"]);
+const JOB_PRIORITIES = Object.freeze(["low", "medium", "high", "critical"]);
+
+// ===================== END JOB RULES =====================
+
+// ===================== JOB EVENTS, REFERENCES =====================
+
+/** "YYYY-MM-DD" of an instant in Malaysia time. */
+function mytDateStr(instant) {
+  return new Date(new Date(instant).getTime() + MYT_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * The next SKSC-JCR number for the MYT day of `at`. JOB_REF_SEQ hands out
+ * each day's numbers atomically, so two reports submitted at once can't get
+ * the same one.
+ */
+async function nextJobRefNo(conn, at = new Date()) {
+  const day = mytDateStr(at);
+  await conn.execute(
+    `INSERT INTO JOB_REF_SEQ (ref_date, last_no) VALUES (?, LAST_INSERT_ID(1))
+     ON DUPLICATE KEY UPDATE last_no = LAST_INSERT_ID(last_no + 1)`,
+    [day]
+  );
+  const [r] = await conn.execute("SELECT LAST_INSERT_ID() AS n");
+  return jobRefNo(day, Number(r[0].n));
+}
+
+/**
+ * The report's SKSC-JCR reference, set once (at submit for breakdowns, at
+ * issue for job orders) and copied onto its job. Never changes afterwards.
+ */
+async function ensureReportRefNo(conn, reportId) {
+  const [rows] = await conn.execute(
+    `SELECT r.report_ref_no, r.report_uploaded_at, r.job_id, j.job_ref_no
+     FROM REPORT r LEFT JOIN JOB j ON j.job_id = r.job_id WHERE r.report_id=?`,
+    [reportId]
+  );
+  if (!rows.length) return null;
+  let ref = rows[0].report_ref_no ?? rows[0].job_ref_no ?? null;
+  if (!ref) {
+    for (let attempt = 0; attempt < 5 && !ref; attempt++) {
+      const candidate = await nextJobRefNo(conn, rows[0].report_uploaded_at ?? new Date());
+      try {
+        const [res] = await conn.execute(
+          "UPDATE REPORT SET report_ref_no=? WHERE report_id=? AND report_ref_no IS NULL",
+          [candidate, reportId]
+        );
+        if (res.affectedRows) ref = candidate;
+        else {
+          const [again] = await conn.execute("SELECT report_ref_no FROM REPORT WHERE report_id=?", [reportId]);
+          ref = again[0]?.report_ref_no ?? null;
+        }
+      } catch (e) {
+        // A number already used by a pre-v2 job: take the next one.
+        if (e?.code !== "ER_DUP_ENTRY") throw e;
+      }
+    }
+    if (!ref) throw new Error("Could not assign a reference number");
+  } else if (!rows[0].report_ref_no) {
+    await conn.execute("UPDATE REPORT SET report_ref_no=? WHERE report_id=? AND report_ref_no IS NULL", [ref, reportId]);
+  }
+  if (rows[0].job_id != null && !rows[0].job_ref_no) {
+    await conn.execute("UPDATE JOB SET job_ref_no=? WHERE job_id=? AND job_ref_no IS NULL", [ref, rows[0].job_id]);
+  }
+  return ref;
+}
+
+/**
+ * One Job Progress event. Who: the user, with their username and role at the
+ * time, and for signed steps the name as signed and the selfie. The server's
+ * clock, never the phone's.
+ */
+async function logJobEvent(conn, {
+  reportId = null,
+  jobId = null,
+  type,
+  userId = null,
+  auth = null,
+  signedName = null,
+  selfieKey = null,
+  at = null,
+  detail = null,
+}) {
+  let username = null;
+  let role = auth?.role ?? null;
+  let name = signedName;
+  if (userId != null) {
+    const [u] = await conn.execute("SELECT user_name, user_username, user_role FROM `USER` WHERE user_id=?", [userId]);
+    username = u[0]?.user_username ?? null;
+    role = role ?? u[0]?.user_role ?? null;
+    name = name || u[0]?.user_name || null;
+  }
+  if (reportId == null && jobId != null) {
+    const [r] = await conn.execute("SELECT report_id FROM REPORT WHERE job_id=? LIMIT 1", [jobId]);
+    reportId = r[0]?.report_id ?? null;
+  }
+  await conn.execute(
+    `INSERT INTO JOB_EVENT (report_id, job_id, event_type, actor_user_id, actor_name_signed, actor_username, actor_role,
+                            selfie_s3_bucket, selfie_s3_key, event_at, detail)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    [
+      reportId, jobId, type, userId, name, username, role,
+      selfieKey ? S3_BUCKET : null, selfieKey,
+      at ?? new Date(),
+      detail ? JSON.stringify(detail) : null,
+    ]
+  );
+}
+
+/** A sign-off from the request body: the name as signed and the selfie's key. */
+function readSignoff(b, keyPrefix) {
+  const name = String(b?.verified_name ?? "").trim();
+  if (!name) throw new Error("verified_name required");
+  if (name.length > 150) throw new Error("Invalid verified_name");
+  const key = String(b?.selfie_s3_key ?? "").trim();
+  if (!key) throw new Error("selfie_s3_key required");
+  if (!key.startsWith(keyPrefix) || key.includes("..") || key.length > 255) throw new Error("Invalid selfie_s3_key");
+  return { name, key };
+}
+
+/** The bus's highest odometer reading on record, from any job. */
+async function lastBusOdometer(conn, busId, excludeJobId = null) {
+  const [rows] = await conn.execute(
+    `SELECT MAX(j.job_odometer) AS odo FROM JOB j JOIN REPORT r ON r.job_id = j.job_id
+     WHERE r.bus_id=? AND j.job_odometer IS NOT NULL ${excludeJobId != null ? "AND j.job_id <> ?" : ""}`,
+    excludeJobId != null ? [busId, excludeJobId] : [busId]
+  );
+  return rows[0]?.odo == null ? null : Number(rows[0].odo);
+}
+
+async function jobLateSettings(conn) {
+  const [rows] = await conn.execute(
+    "SELECT setting_key, setting_value FROM APP_SETTING WHERE setting_key IN ('job_late_limit_min','job_late_repeat_min')"
+  );
+  const m = Object.fromEntries(rows.map((r) => [r.setting_key, Number(r.setting_value)]));
+  return {
+    limitMin: Number.isFinite(m.job_late_limit_min) && m.job_late_limit_min > 0 ? m.job_late_limit_min : 90,
+    repeatMin: Number.isFinite(m.job_late_repeat_min) && m.job_late_repeat_min > 0 ? m.job_late_repeat_min : 30,
+  };
 }
 
 // ===================== JOBS =====================
@@ -2166,6 +2626,10 @@ async function assertTechJobUnlocked(conn, auth, jobId) {
   if (Number(rows[0].technician_user_id) !== techUserId) return json(403, { code: "FORBIDDEN", message: "Forbidden" });
   // A completed job is final: no more tasks, parts or photos.
   if (JOB_DONE_STATUSES.includes(rows[0].job_status)) return json(409, { code: "JOB_CLOSED", message: "This job is already completed" });
+  // Completed and signed: read-only until the R&M Manager approves or sends it back.
+  if (rows[0].job_status === JOB_STATE.PENDING_APPROVAL) {
+    return json(409, { code: "JOB_AWAITING_APPROVAL", message: "This job is waiting for R&M approval" });
+  }
   if (rows[0].job_odometer == null) return json(409, { code: "ODOMETER_REQUIRED", message: "Initial odometer is required before updating this job" });
 
   return null;
@@ -2186,34 +2650,62 @@ async function patchJob(conn, auth, jobId, b) {
   const rawOdo = b?.job_odometer ?? b?.jobOdometer ?? b?.odometer ?? b?.jobOdo ?? undefined;
   if (rawOdo === undefined) throw new Error("job_odometer is required (or send odometer/jobOdometer)");
 
-  const odo = toWholeNumber(rawOdo, "job_odometer");
+  const [jRows] = await conn.execute(
+    `SELECT j.job_status, j.technician_user_id, j.job_odometer, r.bus_id, r.report_id
+     FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id WHERE j.job_id=? LIMIT 1`,
+    [jobId]
+  );
+  if (!jRows.length) return json(404, { message: "Job not found" });
+  const job = jRows[0];
+
+  // C3: digits only, not 0, at least the bus's last reading and at most
+  // last + 2,000 km.
+  const lastOdo = job.bus_id != null ? await lastBusOdometer(conn, job.bus_id, jobId) : null;
+  const problem = odometerProblem(rawOdo, lastOdo);
+  if (problem) {
+    return json(400, { code: "ODOMETER_CHECK", message: problem, last_odometer: lastOdo });
+  }
+  const odo = Number(String(rawOdo).trim());
+  const userId = await getOrCreateUserId(conn, auth);
 
   if (auth.role === "technician") {
-    const techUserId = await getOrCreateUserId(conn, auth);
     const [res] = await conn.execute(
-      `UPDATE JOB SET job_odometer=?, job_arrived_at=COALESCE(job_arrived_at, NOW()), job_updated_at=NOW()
+      `UPDATE JOB SET job_odometer=?, job_arrived_at=COALESCE(job_arrived_at, NOW()), job_updated_at=NOW(),
+         job_status=IF(job_status IN ('accepted','open'), 'arrived', job_status), job_late_flag=0
        WHERE job_id=? AND technician_user_id=? AND job_odometer IS NULL`,
-      [odo, jobId, techUserId]
+      [odo, jobId, userId]
     );
 
     if (!res.affectedRows) {
-      const [chk] = await conn.execute(`SELECT technician_user_id, job_odometer FROM JOB WHERE job_id=? LIMIT 1`, [jobId]);
-      if (!chk.length) return json(404, { message: "Job not found" });
-      if (chk[0].job_odometer != null) return json(409, { code: "ODOMETER_ALREADY_SET", message: "Odometer already recorded" });
-      if (chk[0].technician_user_id == null) return json(409, { code: "JOB_NOT_ACCEPTED", message: "Job not accepted yet" });
-      if (Number(chk[0].technician_user_id) !== techUserId) return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+      if (job.job_odometer != null) return json(409, { code: "ODOMETER_ALREADY_SET", message: "Odometer already recorded" });
+      if (job.technician_user_id == null) return json(409, { code: "JOB_NOT_ACCEPTED", message: "Job not accepted yet" });
+      if (Number(job.technician_user_id) !== userId) return json(403, { code: "FORBIDDEN", message: "Forbidden" });
       return json(409, { code: "ODOMETER_SET_FAILED", message: "Unable to set odometer" });
     }
 
     await upsertOdometerRecordedTask(conn, jobId);
-    return json(200, { success: true, job_odometer: odo });
+    await logJobEvent(conn, { reportId: job.report_id, jobId, type: "ARRIVED", userId, auth, detail: { odometer_km: odo } });
+    return json(200, { success: true, job_odometer: odo, job_status: JOB_STATE.ARRIVED });
   }
 
+  // The R&M Manager (or admin) correcting a reading, or recording one for the
+  // technician. Either way it is logged.
+  const correcting = job.job_odometer != null;
   await conn.execute(
-    `UPDATE JOB SET job_odometer=?, job_arrived_at=COALESCE(job_arrived_at, NOW()), job_updated_at=NOW() WHERE job_id=?`,
+    `UPDATE JOB SET job_odometer=?, job_arrived_at=COALESCE(job_arrived_at, NOW()), job_updated_at=NOW(),
+       job_status=IF(job_status IN ('accepted','open'), 'arrived', job_status), job_late_flag=0
+     WHERE job_id=?`,
     [odo, jobId]
   );
   await upsertOdometerRecordedTask(conn, jobId);
+  await logJobEvent(conn, {
+    reportId: job.report_id,
+    jobId,
+    type: correcting ? "ODOMETER_CORRECTED" : "ARRIVED",
+    userId,
+    auth,
+    detail: correcting ? { from_km: Number(job.job_odometer), to_km: odo } : { odometer_km: odo },
+  });
   return json(200, { success: true, job_odometer: odo });
 }
 
@@ -2239,7 +2731,7 @@ async function createJobForReport(conn, auth, reportId, b) {
   await conn.beginTransaction();
   try {
     const [jobRes] = await conn.execute(
-      "INSERT INTO JOB (job_desc, job_status, job_created_at) VALUES (?, 'open', NOW())",
+      "INSERT INTO JOB (job_desc, job_status, job_source, job_created_at) VALUES (?, 'approved', 'REPORT', NOW())",
       [b.job_desc ?? null]
     );
     const jobId = jobRes.insertId;
@@ -2274,6 +2766,7 @@ async function assignJobToMe(conn, auth, jobId, b = {}) {
   const techUserId = await getOrCreateUserId(conn, auth);
   const [res] = await conn.execute(
     `UPDATE JOB SET technician_user_id=?, job_accepted_at=NOW(), job_updated_at=NOW(),
+       job_status=IF(job_status IN ('approved','open'), 'accepted', job_status),
        job_accept_verified_name=?, job_accept_selfie_s3_bucket=?, job_accept_selfie_s3_key=?
      WHERE job_id=? AND technician_user_id IS NULL`,
     [techUserId, verifiedName, selfieKey ? S3_BUCKET : null, selfieKey, jobId]
@@ -2299,6 +2792,8 @@ async function assignJobToMe(conn, auth, jobId, b = {}) {
     });
   }
 
+  await logJobEvent(conn, { jobId, type: "ACCEPTED", userId: techUserId, auth, signedName: verifiedName, selfieKey });
+
   const technicianName = await getDisplayName(conn, auth);
   await notifyUsersByRole(conn, {
     roles: ["admin", "rm_manager", "fleet_manager"],
@@ -2306,7 +2801,7 @@ async function assignJobToMe(conn, auth, jobId, b = {}) {
     excludeUserId: techUserId,
     type: "job_progress",
     title: "Job accepted",
-    body: `Job #${jobId} was accepted by ${technicianName}.`,
+    body: `Job ${await jobRefLabel(conn, jobId)} was accepted by ${technicianName}.`,
     jobId,
   });
 
@@ -2326,7 +2821,11 @@ async function listJobs(conn, auth, qs) {
   const where = [];
   const vals = [];
   if (jobId) { where.push("j.job_id=?"); vals.push(jobId); }
-  if (status) { where.push("j.job_status=?"); vals.push(status); }
+  // "open" means not closed: older app builds ask for it, and the v2 states
+  // (approved, accepted, arrived, pending_approval) are all open.
+  if (status === "open") where.push(`j.job_status NOT IN ${JOB_DONE_SQL}`);
+  else if (status && JOB_DONE_STATUSES.includes(status)) where.push(`j.job_status IN ${JOB_DONE_SQL}`);
+  else if (status) { where.push("j.job_status=?"); vals.push(status); }
   if (projectId) { where.push("r.project_id=?"); vals.push(projectId); }
   // Everyone but admin sees only the projects they are assigned to.
   if (auth.role !== "admin") {
@@ -2361,6 +2860,10 @@ async function listJobs(conn, auth, qs) {
   const enriched = await Promise.all(
     rows.map(async (r) => ({
       ...r,
+      // job_state is the v2.0.0 status. job_status stays "open"/"closed",
+      // because app builds already in the field filter their tabs on it.
+      job_state: jobState(r.job_status, r),
+      job_status: JOB_DONE_STATUSES.includes(r.job_status) ? "closed" : "open",
       job_selfie_view_url: await signS3Url(r.job_selfie_s3_bucket, r.job_selfie_s3_key),
       job_accept_selfie_view_url: await signS3Url(r.job_accept_selfie_s3_bucket, r.job_accept_selfie_s3_key),
       report_selfie_view_url: await signS3Url(r.report_selfie_s3_bucket, r.report_selfie_s3_key),
@@ -2378,17 +2881,20 @@ function jobListSql(where, limit) {
   return `
     SELECT
       j.job_id, j.job_desc, j.job_status, j.technician_user_id,
-      tech.user_name AS technician_name,
+      tech.user_name AS technician_name, tech.user_username AS technician_username,
       j.job_odometer, j.job_created_at, j.job_accepted_at, j.job_arrived_at, j.job_updated_at, j.job_completed_at,
       j.job_verified_name, j.job_selfie_s3_bucket, j.job_selfie_s3_key,
       j.job_accept_verified_name, j.job_accept_selfie_s3_bucket, j.job_accept_selfie_s3_key,
-      j.job_ref_no,
-      r.report_id, r.report_type, r.report_issue_type, r.report_priority, r.report_desc,
+      j.job_ref_no, j.job_source, j.job_priority, j.job_required_action, j.job_remarks, j.job_issued_at,
+      j.job_approved_at, j.job_approved_verified_name, j.job_late_flag, j.job_last_delay_at, j.parent_job_id,
+      j.fm_remarks, j.fm_remarks_at,
+      (SELECT COUNT(*) FROM JOB_FOLLOWUP f WHERE f.job_id = j.job_id AND f.status = 'PENDING') AS pending_followups,
+      r.report_id, r.report_type, r.report_issue_type, r.report_priority, r.report_desc, r.report_ref_no,
       r.report_location, r.report_uploaded_at, r.bus_id, r.project_id,
       r.report_verified_name, r.report_selfie_s3_bucket, r.report_selfie_s3_key,
       r.report_review_by, r.report_review_at, r.report_review_verified_name,
       r.report_review_selfie_s3_bucket, r.report_review_selfie_s3_key,
-      reporter.user_name AS reporter_name,
+      reporter.user_name AS reporter_name, reporter.user_username AS reporter_username,
       b.bus_ev_no, b.bus_model
     FROM JOB j
     LEFT JOIN REPORT r ON r.job_id = j.job_id
@@ -2445,99 +2951,650 @@ async function addJobPart(conn, auth, jobId, b) {
   return json(200, { success: true, task_id: taskId });
 }
 
+// Older app builds close a job with PATCH /jobs/{id}/status {to_status:"closed"},
+// after uploading the completion selfie with POST /jobs/{id}/selfie/confirm.
+// Since v2.0.0 only the R&M Manager closes a job, so that request now means
+// "Complete Job": it moves the job to pending_approval. A job order a
+// technician logged themselves (TECH_ORDER) still closes on submit (C1).
 async function updateJobStatus(conn, auth, jobId, b) {
   const deny = requireRole(auth, ["admin", "technician", "fleet_manager", "rm_manager"]);
   if (deny) return deny;
 
   if (!b.to_status) throw new Error("to_status is required");
-  const toStatus = String(b.to_status);
-  const isTerminal = JOB_DONE_STATUSES.includes(toStatus);
-  const userId = await getOrCreateUserId(conn, auth);
+  const toStatus = String(b.to_status).trim().toLowerCase();
+  if (!JOB_DONE_STATUSES.includes(toStatus)) {
+    return json(400, { code: "USE_JOB_ACTIONS", message: "Job status changes go through accept, odometer, complete, approve or send back" });
+  }
 
+  const userId = await getOrCreateUserId(conn, auth);
   const [jRows] = await conn.execute(
-    "SELECT job_status, technician_user_id, job_selfie_s3_key FROM JOB WHERE job_id=? LIMIT 1",
+    `SELECT job_status, technician_user_id, job_selfie_s3_key, job_verified_name, job_source, job_odometer
+     FROM JOB WHERE job_id=? LIMIT 1`,
     [jobId]
   );
   if (!jRows.length) return json(404, { message: "Job not found" });
   const job = jRows[0];
+  const state = jobState(job.job_status, job);
 
-  // Closing twice (a retry after a lost response) is a success, and must not
-  // move the completion time or send "Job completed" again.
-  if (isTerminal && JOB_DONE_STATUSES.includes(job.job_status)) {
-    if (auth.role === "technician" && Number(job.technician_user_id) !== userId) {
-      return json(403, { code: "FORBIDDEN", message: "Forbidden" });
-    }
-    return json(200, { success: true, already: true });
+  if (auth.role === "technician" && Number(job.technician_user_id) !== userId) {
+    return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+  }
+  // A retry after a lost response: success, and nothing is sent twice.
+  if (state === JOB_STATE.CLOSED || state === JOB_STATE.PENDING_APPROVAL) {
+    return json(200, { success: true, already: true, job_state: state });
   }
 
+  if (job.job_source !== "TECH_ORDER") {
+    if (!job.job_selfie_s3_key) {
+      return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to complete a job" });
+    }
+    return completeJobCore(conn, auth, jobId, {
+      signedName: job.job_verified_name,
+      selfieKey: job.job_selfie_s3_key,
+      legacyPhotos: true,
+    });
+  }
+
+  // TECH_ORDER: the technician's own job order closes on submit.
   const lock = await assertTechJobUnlocked(conn, auth, jobId);
   if (lock) return lock;
-
-  // The completion sign-off (name + selfie) has to be on the job first —
-  // the app enforced this, the server didn't.
-  if (auth.role === "technician" && isTerminal && !job.job_selfie_s3_key) {
+  if (auth.role === "technician" && !job.job_selfie_s3_key) {
     return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to complete a job" });
   }
+  const problem = await checkTasksComplete(conn, jobId);
+  if (problem) return json(400, { code: "TASK_INCOMPLETE", message: problem });
 
-  if (isTerminal) {
-    const problem = await checkTasksComplete(conn, jobId);
-    if (problem) return json(400, { code: "TASK_INCOMPLETE", message: problem });
-  }
-
-  // The job and its report close together. The app used to close the report
-  // in a second request, and when that one failed the report stayed Open
-  // forever with nothing the technician could do about it.
   await conn.beginTransaction();
   try {
-    if (isTerminal) {
-      await conn.execute(
-        "UPDATE JOB SET job_status=?, job_updated_at=NOW(), job_completed_at=NOW() WHERE job_id=?",
-        [toStatus, jobId]
-      );
-      await conn.execute(
-        `UPDATE REPORT SET report_status='closed'
-         WHERE job_id=? AND LOWER(TRIM(COALESCE(report_status,''))) <> 'closed'`,
-        [jobId]
-      );
-    } else {
-      await conn.execute(
-        "UPDATE JOB SET job_status=?, job_updated_at=NOW() WHERE job_id=?",
-        [toStatus, jobId]
-      );
-    }
+    await conn.execute(
+      "UPDATE JOB SET job_status='closed', job_updated_at=NOW(), job_completed_at=NOW() WHERE job_id=?",
+      [jobId]
+    );
+    await conn.execute(
+      `UPDATE REPORT SET report_status='closed'
+       WHERE job_id=? AND LOWER(TRIM(COALESCE(report_status,''))) <> 'closed'`,
+      [jobId]
+    );
+    await logJobEvent(conn, {
+      jobId,
+      type: "JOB_COMPLETED",
+      userId,
+      auth,
+      signedName: job.job_verified_name,
+      selfieKey: job.job_selfie_s3_key,
+    });
     await conn.commit();
   } catch (e) {
     await conn.rollback();
     throw e;
   }
 
-  // The Job Completion Report: give the job its fixed reference number and
-  // queue the PDF. Best-effort: a failure here never undoes the close, and
-  // GET /jobs/{id}/report-pdf retries it.
-  if (isTerminal) {
-    try {
-      await ensureJobRefNo(conn, jobId);
-      await queueJobReportPdf(conn, jobId);
-    } catch (e) {
-      console.error("[PDF] queue after close failed", { jobId, message: e?.message });
-    }
+  try {
+    await ensureJobRefNo(conn, jobId);
+    await queueJobReportPdf(conn, jobId);
+  } catch (e) {
+    console.error("[PDF] queue after close failed", { jobId, message: e?.message });
   }
 
-  const closedReport = isTerminal ? await reportForJob(conn, jobId) : null;
-  const isJobOrder = closedReport?.report_type === JOB_ORDER_TYPE;
+  const closedReport = await reportForJob(conn, jobId);
   await notifyUsersByRole(conn, {
     roles: ["admin", "rm_manager", "fleet_manager"],
-    projectId: await projectIdForJob(conn, jobId),
+    projectId: closedReport?.project_id ?? null,
     excludeUserId: userId,
     type: "job_progress",
-    title: isJobOrder ? "Job order logged" : isTerminal ? "Job completed" : "Job status updated",
-    body: isJobOrder
-      ? `${await getDisplayName(conn, auth)} logged Job Order #${jobId} for bus ${await busLabel(conn, closedReport.bus_id)}.`
-      : `Job #${jobId} status changed to "${toStatus}".`,
+    title: "Job order logged",
+    body: `${await getDisplayName(conn, auth)} logged Job Order ${await jobRefLabel(conn, jobId)} for bus ${await busLabel(conn, closedReport?.bus_id)}.`,
     jobId,
   });
-
   return json(200, { success: true });
+}
+
+/** Distinct after-photo slots filled on a job, and how many after photos it has. */
+async function jobAfterPhotoState(conn, jobId) {
+  const [rows] = await conn.execute(
+    `SELECT media_slot, COUNT(*) AS n FROM JOB_MEDIA
+     WHERE job_id=? AND media_type='image' AND (media_kind='after' OR (media_kind IS NULL AND task_id IS NULL))
+     GROUP BY media_slot`,
+    [jobId]
+  );
+  const slots = rows.map((r) => r.media_slot).filter((x) => JOB_AFTER_SLOTS.includes(x));
+  const total = rows.reduce((n, r) => n + Number(r.n), 0);
+  return { slots, total };
+}
+
+async function countWorkTasks(conn, jobId) {
+  const [rows] = await conn.execute(
+    "SELECT COUNT(*) AS n FROM JOB_TASK WHERE job_id=? AND task_name NOT IN (?, ?)",
+    [jobId, ...SYSTEM_TASK_NAMES]
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Complete Job (C3–C5, C13): arrived -> pending_approval with the
+ * technician's sign-off, then every R&M Manager in the project is asked to
+ * approve. `legacyPhotos`: an older build sends 5 after photos with no slot,
+ * which counts as all 5 slots filled.
+ */
+async function completeJobCore(conn, auth, jobId, { signedName, selfieKey, legacyPhotos = false }) {
+  const userId = await getOrCreateUserId(conn, auth);
+  const [jRows] = await conn.execute(
+    `SELECT j.job_status, j.technician_user_id, j.job_odometer, j.job_source, r.report_id, r.project_id, r.bus_id
+     FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id WHERE j.job_id=? LIMIT 1`,
+    [jobId]
+  );
+  if (!jRows.length) return json(404, { message: "Job not found" });
+  const job = jRows[0];
+  if (auth.role === "technician" && Number(job.technician_user_id) !== userId) {
+    return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+  }
+  const state = jobState(job.job_status, job);
+  // A retry after a lost response: success, sent once.
+  if (state === JOB_STATE.PENDING_APPROVAL || state === JOB_STATE.CLOSED) {
+    return json(200, { success: true, already: true, job_state: state });
+  }
+  const lock = await assertTechJobUnlocked(conn, auth, jobId);
+  if (lock) return lock;
+  if (!jobNextState(state, "complete")) {
+    return json(409, { code: "JOB_NOT_ARRIVED", message: "Record the odometer on arrival before completing the job" });
+  }
+
+  const taskProblem = await checkTasksComplete(conn, jobId);
+  if (taskProblem) return json(400, { code: "TASK_INCOMPLETE", message: taskProblem });
+  const after = await jobAfterPhotoState(conn, jobId);
+  const problem = jobCompleteProblem({
+    taskCount: await countWorkTasks(conn, jobId),
+    afterSlots: legacyPhotos && after.total >= JOB_AFTER_SLOTS.length ? [...JOB_AFTER_SLOTS] : after.slots,
+  });
+  if (problem) return json(400, problem);
+
+  const [res] = await conn.execute(
+    `UPDATE JOB SET job_status='pending_approval', job_completed_at=NOW(), job_updated_at=NOW(),
+       job_verified_name=?, job_selfie_s3_bucket=?, job_selfie_s3_key=?
+     WHERE job_id=? AND job_status IN ('arrived','open')`,
+    [signedName, S3_BUCKET, selfieKey, jobId]
+  );
+  if (!res.affectedRows) return json(200, { success: true, already: true });
+
+  await logJobEvent(conn, {
+    reportId: job.report_id,
+    jobId,
+    type: "JOB_COMPLETED",
+    userId,
+    auth,
+    signedName,
+    selfieKey,
+    detail: { after_photos: Math.min(after.total, JOB_AFTER_SLOTS.length) },
+  });
+
+  const ref = await jobRefLabel(conn, jobId);
+  await notifyUsersByRole(conn, {
+    roles: ["admin", "rm_manager"],
+    projectId: job.project_id ?? null,
+    excludeUserId: userId,
+    type: "job_approval",
+    title: "Job waiting for your approval",
+    body: `Job ${ref} completed, waiting for your approval.`,
+    reportId: job.report_id ?? null,
+    jobId,
+  });
+  return json(200, { success: true, job_state: JOB_STATE.PENDING_APPROVAL });
+}
+
+// POST /jobs/{id}/complete {verified_name, selfie_s3_key}
+async function completeJob(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ["admin", "technician"]);
+  if (deny) return deny;
+  const sign = readSignoff(b, `jobs/${jobId}/complete-selfie/`);
+  return completeJobCore(conn, auth, jobId, { signedName: sign.name, selfieKey: sign.key });
+}
+
+/** Loads a job for an R&M action and checks the caller's project. */
+async function loadJobForReview(conn, auth, jobId, { lock = false } = {}) {
+  const [rows] = await conn.execute(
+    `SELECT j.*, r.report_id, r.project_id, r.bus_id, r.user_id AS reporter_user_id, r.report_ref_no
+     FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id WHERE j.job_id=? LIMIT 1 ${lock ? "FOR UPDATE" : ""}`,
+    [jobId]
+  );
+  if (!rows.length) return { error: json(404, { message: "Job not found" }) };
+  const job = rows[0];
+  if (auth.role !== "admin") {
+    const userId = await getOrCreateUserId(conn, auth);
+    const [chk] = await conn.execute(
+      "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+      [userId, job.project_id]
+    );
+    if (!chk.length) return { error: json(403, { code: "FORBIDDEN", message: "Forbidden" }) };
+  }
+  return { job, state: jobState(job.job_status, job) };
+}
+
+function readJobOrderEntries(b) {
+  const list = Array.isArray(b?.job_orders) ? b.job_orders : [];
+  if (list.length > 50) throw new Error("Invalid job_orders: too many");
+  const seen = new Set();
+  return list.map((o, i) => {
+    const followupId = toId(o?.followup_id, "followup_id");
+    if (seen.has(followupId)) throw new Error(`Invalid job_orders: follow-up ${followupId} listed twice`);
+    seen.add(followupId);
+    const issue = String(o?.issue ?? "").trim();
+    const action = String(o?.required_action ?? "").trim();
+    if (!issue || issue.length > 300) throw new Error(`Invalid issue for job order ${i + 1}`);
+    if (!action || action.length > 300) throw new Error(`Invalid required_action for job order ${i + 1}`);
+    const priority = String(o?.priority ?? "").trim().toLowerCase();
+    if (!JOB_PRIORITIES.includes(priority)) throw new Error(`Invalid priority for job order ${i + 1}: pick Low, Medium, High or Critical`);
+    const remarks = String(o?.remarks ?? "").trim();
+    if (remarks.length > 300) throw new Error(`Invalid remarks for job order ${i + 1}: at most 300 characters`);
+    return { followupId, issue, action, priority, remarks: remarks || null };
+  });
+}
+
+/**
+ * C9–C10 · Sign & approve, as ONE transaction: a job order for every pending
+ * follow-up, each follow-up marked issued, then the job closed with the
+ * approver's sign-off. Any failure rolls back all of it. The PDF and the
+ * notifications follow after the commit.
+ */
+async function approveJob(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+  const sign = readSignoff(b, `jobs/${jobId}/approve-selfie/`);
+  const entries = readJobOrderEntries(b);
+  const userId = await getOrCreateUserId(conn, auth);
+  const approverName = await getDisplayName(conn, auth);
+
+  let job;
+  const issued = [];
+  await conn.beginTransaction();
+  try {
+    const loaded = await loadJobForReview(conn, auth, jobId, { lock: true });
+    if (loaded.error) { await conn.rollback(); return loaded.error; }
+    job = loaded.job;
+    if (loaded.state === JOB_STATE.CLOSED) {
+      await conn.rollback();
+      return json(409, { code: "JOB_ALREADY_CLOSED", message: "This job was already approved and closed. Pull down to refresh." });
+    }
+    if (!jobNextState(loaded.state, "approve")) {
+      await conn.rollback();
+      return json(409, { code: "JOB_NOT_AWAITING_APPROVAL", message: "This job isn't waiting for approval. Pull down to refresh." });
+    }
+
+    const [pending] = await conn.execute(
+      "SELECT followup_id FROM JOB_FOLLOWUP WHERE job_id=? AND status='PENDING' FOR UPDATE",
+      [jobId]
+    );
+    const pendingIds = pending.map((f) => Number(f.followup_id)).sort((a, c) => a - c);
+    const sentIds = entries.map((e) => e.followupId).sort((a, c) => a - c);
+    if (pendingIds.join(",") !== sentIds.join(",")) {
+      await conn.rollback();
+      return json(400, {
+        code: "FOLLOWUPS_CHANGED",
+        message: "Every pending follow-up needs a job order. The follow-ups have changed; please review again.",
+        pending_followup_ids: pendingIds,
+      });
+    }
+
+    for (const e of entries) {
+      const ref = await nextJobRefNo(conn, new Date());
+      const [jr] = await conn.execute(
+        `INSERT INTO JOB (job_desc, job_status, job_source, parent_job_id, followup_id, job_priority,
+                          job_required_action, job_remarks, job_issued_at, job_created_at, job_ref_no)
+         VALUES (?, 'approved', 'FOLLOW_UP', ?, ?, ?, ?, ?, NOW(), NOW(), ?)`,
+        [e.issue, jobId, e.followupId, e.priority, e.action, e.remarks, ref]
+      );
+      const newJobId = Number(jr.insertId);
+      const [rr] = await conn.execute(
+        `INSERT INTO REPORT
+           (project_id, report_type, report_issue_type, report_desc, report_priority, report_status,
+            user_id, bus_id, job_id, report_uploaded_at, report_review_action, report_review_by, report_review_at,
+            report_review_verified_name, report_review_selfie_s3_bucket, report_review_selfie_s3_key, report_ref_no)
+         VALUES (?, ?, NULL, ?, ?, 'open', ?, ?, ?, NOW(), 'approved', ?, NOW(), ?, ?, ?, ?)`,
+        [job.project_id, JOB_ORDER_TYPE, e.issue, e.priority, userId, job.bus_id, newJobId,
+         approverName, sign.name, S3_BUCKET, sign.key, ref]
+      );
+      await conn.execute(
+        "UPDATE JOB_FOLLOWUP SET status='JOB_ORDER_ISSUED', job_order_job_id=? WHERE followup_id=?",
+        [newJobId, e.followupId]
+      );
+      await logJobEvent(conn, {
+        reportId: Number(rr.insertId),
+        jobId: newJobId,
+        type: "JOB_ORDER_ISSUED",
+        userId,
+        auth,
+        signedName: sign.name,
+        selfieKey: sign.key,
+        detail: {
+          parent_job_id: Number(jobId),
+          parent_ref_no: job.job_ref_no ?? job.report_ref_no ?? null,
+          followup_id: e.followupId,
+          priority: e.priority,
+          remarks: e.remarks,
+        },
+      });
+      issued.push({ job_id: newJobId, ref_no: ref, followup_id: e.followupId, priority: e.priority });
+    }
+
+    await conn.execute(
+      `UPDATE JOB SET job_status='closed', job_updated_at=NOW(), job_approved_by=?, job_approved_at=NOW(),
+         job_approved_verified_name=?, job_approved_selfie_s3_bucket=?, job_approved_selfie_s3_key=?
+       WHERE job_id=?`,
+      [userId, sign.name, S3_BUCKET, sign.key, jobId]
+    );
+    await conn.execute(
+      `UPDATE REPORT SET report_status='closed'
+       WHERE job_id=? AND LOWER(TRIM(COALESCE(report_status,''))) <> 'closed'`,
+      [jobId]
+    );
+    await logJobEvent(conn, {
+      reportId: job.report_id,
+      jobId,
+      type: "CLOSED",
+      userId,
+      auth,
+      signedName: sign.name,
+      selfieKey: sign.key,
+      detail: { job_orders: issued.map((x) => ({ job_id: x.job_id, ref_no: x.ref_no })) },
+    });
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+
+  // The Job Completion Report. Best-effort: GET report-pdf queues it again.
+  try {
+    await ensureJobRefNo(conn, jobId);
+    await queueJobReportPdf(conn, jobId);
+  } catch (e) {
+    console.error("[PDF] queue after approval failed", { jobId, message: e?.message });
+  }
+
+  const ref = await jobRefLabel(conn, jobId);
+  const bus = await busLabel(conn, job.bus_id);
+  const toTell = [job.reporter_user_id, job.technician_user_id]
+    .map((x) => (x == null ? null : Number(x)))
+    .filter((x) => x && x !== userId);
+  await notifyUsers(conn, {
+    userIds: [...new Set(toTell)],
+    type: "job_closed",
+    title: "Job approved and closed",
+    body: `Job ${ref} for bus ${bus} was approved and closed by ${approverName}${issued.length ? `, with ${issued.length} job order${issued.length === 1 ? "" : "s"}` : ""}.`,
+    reportId: job.report_id ?? null,
+    jobId: Number(jobId),
+  });
+  for (const x of issued) {
+    await notifyUsersByRole(conn, {
+      roles: ["technician"],
+      projectId: job.project_id ?? null,
+      excludeUserId: userId,
+      type: "new_job",
+      title: "New job order",
+      body: `Job order ${x.ref_no} for bus ${bus} (${x.priority}) is in Available jobs.`,
+      jobId: x.job_id,
+    });
+  }
+
+  return json(200, { success: true, job_state: JOB_STATE.CLOSED, job_orders: issued });
+}
+
+// C12 · POST /jobs/{id}/send-back {reason, verified_name, selfie_s3_key}
+async function sendBackJob(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ["admin", "rm_manager"]);
+  if (deny) return deny;
+  const reason = String(b?.reason ?? "").trim();
+  if (!reason) return json(400, { code: "REASON_REQUIRED", message: "Enter the reason for sending the job back" });
+  if (reason.length > 300) return json(400, { message: "Invalid reason: at most 300 characters" });
+  const sign = readSignoff(b, `jobs/${jobId}/sendback-selfie/`);
+  const userId = await getOrCreateUserId(conn, auth);
+
+  let job;
+  await conn.beginTransaction();
+  try {
+    const loaded = await loadJobForReview(conn, auth, jobId, { lock: true });
+    if (loaded.error) { await conn.rollback(); return loaded.error; }
+    job = loaded.job;
+    if (!jobNextState(loaded.state, "send_back")) {
+      await conn.rollback();
+      return json(409, { code: "JOB_NOT_AWAITING_APPROVAL", message: "This job isn't waiting for approval. Pull down to refresh." });
+    }
+    await conn.execute(
+      "UPDATE JOB SET job_status='arrived', job_updated_at=NOW() WHERE job_id=? AND job_status='pending_approval'",
+      [jobId]
+    );
+    await logJobEvent(conn, {
+      reportId: job.report_id,
+      jobId,
+      type: "SENT_BACK",
+      userId,
+      auth,
+      signedName: sign.name,
+      selfieKey: sign.key,
+      detail: { reason },
+    });
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+
+  await notifyUsers(conn, {
+    userIds: job.technician_user_id != null && Number(job.technician_user_id) !== userId ? [Number(job.technician_user_id)] : [],
+    type: "job_sent_back",
+    title: "Job sent back",
+    body: `Job ${await jobRefLabel(conn, jobId)} sent back: ${reason}`,
+    reportId: job.report_id ?? null,
+    jobId: Number(jobId),
+  });
+  return json(200, { success: true, job_state: JOB_STATE.ARRIVED });
+}
+
+function mimeFromKey(key) {
+  const ext = String(key).split(".").pop().toLowerCase();
+  return { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp" }[ext] ?? "image/jpeg";
+}
+
+function readPhotoKeys(value, prefix, { min, max, name }) {
+  const keys = (Array.isArray(value) ? value : []).map((k) => String(k ?? "").trim()).filter(Boolean);
+  if (keys.length < min) throw new Error(`${name} required: add at least ${min} photo${min === 1 ? "" : "s"}`);
+  if (keys.length > max) throw new Error(`Invalid ${name}: at most ${max} photos`);
+  for (const k of keys) {
+    if (!k.startsWith(prefix) || k.includes("..") || k.length > 255) throw new Error(`Invalid ${name}`);
+  }
+  return [...new Set(keys)];
+}
+
+// C3 · POST /jobs/{id}/followups {issue, required_action, photo_keys[1..5]}
+async function addFollowup(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ["admin", "technician"]);
+  if (deny) return deny;
+  const lock = await assertTechJobUnlocked(conn, auth, jobId);
+  if (lock) return lock;
+
+  const [jRows] = await conn.execute("SELECT job_status, technician_user_id, job_odometer FROM JOB WHERE job_id=?", [jobId]);
+  if (!jRows.length) return json(404, { message: "Job not found" });
+  if (jobState(jRows[0].job_status, jRows[0]) !== JOB_STATE.ARRIVED) {
+    return json(409, { code: "JOB_NOT_EDITABLE", message: "Follow-ups can be added while the job is in progress" });
+  }
+
+  const issue = String(b?.issue ?? "").trim();
+  const action = String(b?.required_action ?? "").trim();
+  if (!issue) return json(400, { code: "ISSUE_REQUIRED", message: "Enter the issue" });
+  if (!action) return json(400, { code: "ACTION_REQUIRED", message: "Enter the required action" });
+  if (issue.length > 300 || action.length > 300) return json(400, { message: "At most 300 characters" });
+  const keys = readPhotoKeys(b?.photo_keys, `jobs/${jobId}/followups/`, { min: 1, max: 5, name: "photo_keys" });
+  const userId = await getOrCreateUserId(conn, auth);
+
+  let followupId;
+  await conn.beginTransaction();
+  try {
+    const [res] = await conn.execute(
+      "INSERT INTO JOB_FOLLOWUP (job_id, issue, required_action, status, created_by) VALUES (?,?,?, 'PENDING', ?)",
+      [jobId, issue, action, userId]
+    );
+    followupId = Number(res.insertId);
+    for (const k of keys) {
+      await conn.execute(
+        `INSERT INTO JOB_MEDIA (job_id, task_id, media_type, mime_type, s3_bucket, s3_key, media_kind, followup_id, uploaded_at)
+         VALUES (?, NULL, 'image', ?, ?, ?, 'followup', ?, NOW())`,
+        [jobId, mimeFromKey(k), S3_BUCKET, k, followupId]
+      );
+    }
+    await logJobEvent(conn, { jobId, type: "FOLLOWUP_ADDED", userId, auth, detail: { followup_id: followupId } });
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+  return json(200, { success: true, followup_id: followupId });
+}
+
+// C3 · DELETE /followups/{id}: only while the job is in progress.
+async function removeFollowup(conn, auth, followupId) {
+  const deny = requireRole(auth, ["admin", "technician"]);
+  if (deny) return deny;
+  const [rows] = await conn.execute(
+    `SELECT f.followup_id, f.job_id, f.status, j.job_status, j.technician_user_id, j.job_odometer
+     FROM JOB_FOLLOWUP f JOIN JOB j ON j.job_id = f.job_id WHERE f.followup_id=?`,
+    [followupId]
+  );
+  if (!rows.length) return json(404, { message: "Follow-up not found" });
+  const f = rows[0];
+  const lock = await assertTechJobUnlocked(conn, auth, Number(f.job_id));
+  if (lock) return lock;
+  if (jobState(f.job_status, f) !== JOB_STATE.ARRIVED) {
+    return json(409, { code: "JOB_NOT_EDITABLE", message: "Follow-ups can be removed while the job is in progress" });
+  }
+  if (f.status !== "PENDING") return json(200, { success: true, already: true });
+
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(
+    "UPDATE JOB_FOLLOWUP SET status='REMOVED', removed_at=NOW() WHERE followup_id=? AND status='PENDING'",
+    [followupId]
+  );
+  await logJobEvent(conn, { jobId: Number(f.job_id), type: "FOLLOWUP_REMOVED", userId, auth, detail: { followup_id: Number(followupId) } });
+  return json(200, { success: true });
+}
+
+// C15 · POST /jobs/{id}/delay-updates
+async function addDelayUpdate(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ["admin", "technician"]);
+  if (deny) return deny;
+  const userId = await getOrCreateUserId(conn, auth);
+  const [rows] = await conn.execute(
+    `SELECT j.job_status, j.technician_user_id, j.job_odometer, r.report_id, r.project_id, r.bus_id
+     FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id WHERE j.job_id=?`,
+    [jobId]
+  );
+  if (!rows.length) return json(404, { message: "Job not found" });
+  const job = rows[0];
+  if (auth.role === "technician" && Number(job.technician_user_id) !== userId) {
+    return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+  }
+  if (jobState(job.job_status, job) !== JOB_STATE.ACCEPTED) {
+    return json(409, { code: "ALREADY_ARRIVED", message: "The odometer is already recorded, so no delay update is needed" });
+  }
+
+  const reason = String(b?.reason ?? "").trim().toUpperCase();
+  if (!DELAY_REASONS.includes(reason)) throw new Error("Invalid reason: pick one");
+  const note = String(b?.note ?? "").trim();
+  if (note.length > 300) throw new Error("Invalid note: at most 300 characters");
+  if (reason === "OTHER" && !note) return json(400, { code: "NOTE_REQUIRED", message: "Add a note for Other reason" });
+  const keys = readPhotoKeys(b?.photo_keys, `jobs/${jobId}/delay/`, { min: 1, max: 5, name: "photo_keys" });
+  const sign = readSignoff(b, `jobs/${jobId}/delay-selfie/`);
+
+  await conn.execute("UPDATE JOB SET job_last_delay_at=NOW(), job_updated_at=NOW() WHERE job_id=?", [jobId]);
+  await logJobEvent(conn, {
+    reportId: job.report_id,
+    jobId,
+    type: "DELAY_UPDATE",
+    userId,
+    auth,
+    signedName: sign.name,
+    selfieKey: sign.key,
+    detail: { reason, note: note || null, photo_keys: keys },
+  });
+
+  const label = { TRAFFIC: "Stuck in traffic", BUS_IN_OPERATION: "Bus still in operation", OTHER: "Other reason" }[reason];
+  await notifyUsersByRole(conn, {
+    roles: ["admin", "rm_manager"],
+    projectId: job.project_id ?? null,
+    excludeUserId: userId,
+    type: "job_delay",
+    title: `Not arrived yet: ${await busLabel(conn, job.bus_id)}`,
+    body: `Job ${await jobRefLabel(conn, jobId)}: ${label}${note ? `. ${note}` : ""}`,
+    reportId: job.report_id ?? null,
+    jobId: Number(jobId),
+  });
+  return json(200, { success: true });
+}
+
+// C16–C17 · PATCH /jobs/{id}/fm-remarks {text}
+async function saveFmRemarks(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ["admin", "fleet_manager"]);
+  if (deny) return deny;
+  const text = String(b?.text ?? "").trim();
+  if (!text) return json(400, { code: "REMARKS_REQUIRED", message: "Enter your remarks" });
+  if (text.length > 500) return json(400, { message: "Invalid text: at most 500 characters" });
+
+  const loaded = await loadJobForReview(conn, auth, jobId);
+  if (loaded.error) return loaded.error;
+  if (loaded.state !== JOB_STATE.CLOSED) {
+    return json(409, { code: "JOB_NOT_CLOSED", message: "Remarks can be added once the job is approved and closed" });
+  }
+  const job = loaded.job;
+  const edited = !!job.fm_remarks;
+  const userId = await getOrCreateUserId(conn, auth);
+
+  await conn.execute(
+    `UPDATE JOB SET fm_remarks=?, fm_remarks_by=?,
+       fm_remarks_at=COALESCE(fm_remarks_at, NOW()),
+       fm_remarks_edited_at=${edited ? "NOW()" : "NULL"}
+     WHERE job_id=?`,
+    [text, userId, jobId]
+  );
+  await logJobEvent(conn, {
+    reportId: job.report_id,
+    jobId,
+    type: edited ? "FM_REMARKS_EDITED" : "FM_REMARKS_SAVED",
+    userId,
+    auth,
+    detail: { text },
+  });
+
+  // Same file name, regenerated with the remarks.
+  try {
+    await queueJobReportPdf(conn, jobId, { force: true });
+    _pdfQueuedAt.set(Number(jobId), Date.now());
+  } catch (e) {
+    console.error("[PDF] requeue after remarks failed", { jobId, message: e?.message });
+  }
+
+  const toTell = [job.technician_user_id, job.job_approved_by]
+    .map((x) => (x == null ? null : Number(x)))
+    .filter((x) => x && x !== userId);
+  await notifyUsers(conn, { userIds: [...new Set(toTell)], type: "fm_remarks", title: "Fleet Manager remarks", body: `Remarks added to job ${await jobRefLabel(conn, jobId)}.`, reportId: job.report_id ?? null, jobId: Number(jobId) });
+  await notifyUsersByRole(conn, {
+    roles: ["rm_manager"],
+    projectId: job.project_id ?? null,
+    excludeUserId: userId,
+    type: "fm_remarks",
+    title: "Fleet Manager remarks",
+    body: `Remarks ${edited ? "edited" : "added"} on job ${await jobRefLabel(conn, jobId)}.`,
+    reportId: job.report_id ?? null,
+    jobId: Number(jobId),
+  });
+  return json(200, { success: true, edited });
+}
+
+/** "SKSC-JCR-2026-11-13-01" for messages, or "#18" for a job with no reference yet. */
+async function jobRefLabel(conn, jobId) {
+  try {
+    const [r] = await conn.execute("SELECT job_ref_no FROM JOB WHERE job_id=?", [jobId]);
+    return r[0]?.job_ref_no || `#${jobId}`;
+  } catch {
+    return `#${jobId}`;
+  }
 }
 
 async function reportForJob(conn, jobId) {
@@ -2675,6 +3732,13 @@ async function createJobTask(conn, auth, jobId, b) {
   );
 
   if (taskStatus === "done") {
+    await logJobEvent(conn, {
+      jobId,
+      type: "TASK_COMPLETED",
+      userId: await getOrCreateUserId(conn, auth),
+      auth,
+      detail: { task_id: Number(res.insertId), job_type: jobType },
+    });
     const technicianName = await getDisplayName(conn, auth);
     await notifyUsersByRole(conn, {
       roles: ["admin", "rm_manager", "fleet_manager"],
@@ -2682,7 +3746,7 @@ async function createJobTask(conn, auth, jobId, b) {
       excludeUserId: await getOrCreateUserId(conn, auth),
       type: "job_progress",
       title: "Job progress update",
-      body: `${technicianName} completed a task on Job #${jobId}: ${taskName}.`,
+      body: `${technicianName} completed a task on Job ${await jobRefLabel(conn, jobId)}: ${taskName}.`,
       jobId,
     });
   }
@@ -2828,9 +3892,9 @@ async function createJobOrder(conn, auth, b) {
   await conn.beginTransaction();
   try {
     const [jobRes] = await conn.execute(
-      `INSERT INTO JOB (job_desc, job_status, job_created_at, technician_user_id, job_accepted_at,
-                        job_arrived_at, job_odometer, job_updated_at)
-       VALUES (?, 'open', NOW(), ?, NOW(), NOW(), ?, NOW())`,
+      `INSERT INTO JOB (job_desc, job_status, job_source, job_issued_at, job_created_at, technician_user_id,
+                        job_accepted_at, job_arrived_at, job_odometer, job_updated_at)
+       VALUES (?, 'arrived', 'TECH_ORDER', NOW(), NOW(), ?, NOW(), NOW(), ?, NOW())`,
       [desc, userId, odo]
     );
     jobId = Number(jobRes.insertId);
@@ -2850,6 +3914,9 @@ async function createJobOrder(conn, auth, b) {
     reportId = Number(repRes.insertId);
 
     await upsertOdometerRecordedTask(conn, jobId);
+    await ensureReportRefNo(conn, reportId);
+    await logJobEvent(conn, { reportId, jobId, type: "JOB_ORDER_OPENED", userId, auth });
+    await logJobEvent(conn, { reportId, jobId, type: "ARRIVED", userId, auth, detail: { odometer_km: odo } });
     await conn.commit();
   } catch (e) {
     await conn.rollback();
@@ -2857,6 +3924,367 @@ async function createJobOrder(conn, auth, b) {
   }
 
   return json(200, { success: true, report_id: reportId, job_id: jobId });
+}
+
+// ===================== JOB DETAILS (one read for every job screen) =====================
+//
+// GET /jobs/{id}/details: everything C1, C3–C5, C8, C11, C13 and C14 show, in
+// one round trip. The screens used to stitch it together from five calls.
+
+function shapeEvent(e, selfieUrl) {
+  let detail = e.detail;
+  if (typeof detail === "string") {
+    try { detail = JSON.parse(detail); } catch { detail = null; }
+  }
+  return {
+    event_id: Number(e.event_id),
+    job_id: e.job_id == null ? null : Number(e.job_id),
+    type: e.event_type,
+    at: e.event_at,
+    by: {
+      user_id: e.actor_user_id == null ? null : Number(e.actor_user_id),
+      name: e.actor_name_signed ?? e.actor_user_name ?? null,
+      username: e.actor_username ?? null,
+      role: e.actor_role ?? null,
+    },
+    selfie_url: selfieUrl,
+    detail: detail ?? null,
+  };
+}
+
+async function signedMedia(m) {
+  return {
+    media_id: Number(m.media_id),
+    task_id: m.task_id == null ? null : Number(m.task_id),
+    followup_id: m.followup_id == null ? null : Number(m.followup_id),
+    kind: m.media_kind ?? (m.task_id == null ? "after" : "task"),
+    slot: m.media_slot ?? null,
+    mime_type: m.mime_type,
+    uploaded_at: m.uploaded_at,
+    url: await signS3Url(m.s3_bucket || S3_BUCKET, m.s3_key),
+  };
+}
+
+async function getJobDetails(conn, auth, jobId) {
+  const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
+  if (deny) return deny;
+
+  const [jRows] = await conn.execute(
+    `SELECT j.*, r.report_id, r.report_type, r.report_issue_type, r.report_desc, r.report_location,
+            r.report_lat, r.report_lng, r.report_priority, r.report_status, r.report_uploaded_at, r.report_ref_no,
+            r.project_id, r.bus_id, r.user_id AS reporter_user_id, r.report_verified_name,
+            r.report_review_by, r.report_review_at, r.report_review_reason,
+            reporter.user_name AS reporter_name, reporter.user_username AS reporter_username,
+            tech.user_name AS technician_name, tech.user_username AS technician_username,
+            appr.user_name AS approver_name, appr.user_username AS approver_username,
+            fm.user_name AS fm_remarks_name, fm.user_username AS fm_remarks_username,
+            b.bus_ev_no, b.bus_model, b.bus_route, b.bus_route_number
+     FROM JOB j
+     LEFT JOIN REPORT r ON r.job_id = j.job_id
+     LEFT JOIN \`USER\` reporter ON reporter.user_id = r.user_id
+     LEFT JOIN \`USER\` tech ON tech.user_id = j.technician_user_id
+     LEFT JOIN \`USER\` appr ON appr.user_id = j.job_approved_by
+     LEFT JOIN \`USER\` fm ON fm.user_id = j.fm_remarks_by
+     LEFT JOIN BUS b ON b.bus_id = r.bus_id
+     WHERE j.job_id=? LIMIT 1`,
+    [jobId]
+  );
+  if (!jRows.length) return json(404, { message: "Job not found" });
+  const j = jRows[0];
+
+  const userId = await getOrCreateUserId(conn, auth);
+  if (auth.role !== "admin") {
+    const [chk] = await conn.execute(
+      "SELECT 1 FROM USER_PROJECT WHERE user_id=? AND project_id=? LIMIT 1",
+      [userId, j.project_id]
+    );
+    if (!chk.length) return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+  }
+
+  const state = jobState(j.job_status, j);
+  const now = new Date();
+
+  const [tasks] = await conn.execute(
+    `SELECT task_id, task_name, task_desc, task_remark, task_no_parts, task_job_type, task_category,
+            task_status, task_order, completed_at, created_at
+     FROM JOB_TASK WHERE job_id=? AND task_name NOT IN (?, ?) ORDER BY task_order, task_id`,
+    [jobId, ...SYSTEM_TASK_NAMES]
+  );
+  const [parts] = await conn.execute(
+    `SELECT tp.task_id, tp.part_id, tp.qty, tp.line_cost, p.part_name, p.part_code, p.part_brand, p.part_unit
+     FROM JOB_TASK_PART tp JOIN JOB_TASK t ON t.task_id = tp.task_id JOIN PART p ON p.part_id = tp.part_id
+     WHERE t.job_id=? ORDER BY p.part_name`,
+    [jobId]
+  );
+  const [media] = await conn.execute(
+    `SELECT media_id, task_id, followup_id, media_kind, media_slot, media_type, mime_type, s3_bucket, s3_key, uploaded_at
+     FROM JOB_MEDIA WHERE job_id=? AND media_type='image' ORDER BY uploaded_at, media_id`,
+    [jobId]
+  );
+  const signed = await Promise.all(media.map(signedMedia));
+
+  // A job order shows its follow-up's photos (C14), which live on the parent job.
+  let followupOrigin = null;
+  if (j.followup_id != null) {
+    const [fo] = await conn.execute(
+      `SELECT f.followup_id, f.issue, f.required_action, f.created_at, pj.job_id AS parent_job_id, pj.job_ref_no AS parent_ref_no
+       FROM JOB_FOLLOWUP f LEFT JOIN JOB pj ON pj.job_id = f.job_id WHERE f.followup_id=?`,
+      [j.followup_id]
+    );
+    if (fo.length) {
+      const [fm] = await conn.execute(
+        `SELECT media_id, task_id, followup_id, media_kind, media_slot, media_type, mime_type, s3_bucket, s3_key, uploaded_at
+         FROM JOB_MEDIA WHERE followup_id=? ORDER BY uploaded_at, media_id`,
+        [j.followup_id]
+      );
+      followupOrigin = {
+        followup_id: Number(fo[0].followup_id),
+        issue: fo[0].issue,
+        required_action: fo[0].required_action,
+        parent_job_id: fo[0].parent_job_id == null ? null : Number(fo[0].parent_job_id),
+        parent_ref_no: fo[0].parent_ref_no ?? null,
+        photos: await Promise.all(fm.map(signedMedia)),
+      };
+    }
+  }
+
+  const [followRows] = await conn.execute(
+    `SELECT f.*, u.user_name AS created_by_name, u.user_username AS created_by_username,
+            oj.job_ref_no AS order_ref_no, oj.job_status AS order_status, oj.technician_user_id AS order_tech,
+            oj.job_odometer AS order_odometer, oj.job_issued_at AS order_issued_at, oj.job_priority AS order_priority,
+            ou.user_name AS order_issued_by
+     FROM JOB_FOLLOWUP f
+     LEFT JOIN \`USER\` u ON u.user_id = f.created_by
+     LEFT JOIN JOB oj ON oj.job_id = f.job_order_job_id
+     LEFT JOIN JOB pj ON pj.job_id = f.job_id
+     LEFT JOIN \`USER\` ou ON ou.user_id = pj.job_approved_by
+     WHERE f.job_id=? AND f.status <> 'REMOVED' ORDER BY f.created_at, f.followup_id`,
+    [jobId]
+  );
+  const followups = followRows.map((f) => ({
+    followup_id: Number(f.followup_id),
+    issue: f.issue,
+    required_action: f.required_action,
+    status: f.status,
+    created_at: f.created_at,
+    created_by: { name: f.created_by_name ?? null, username: f.created_by_username ?? null },
+    photos: signed.filter((m) => m.followup_id === Number(f.followup_id)),
+    job_order:
+      f.job_order_job_id == null
+        ? null
+        : {
+            job_id: Number(f.job_order_job_id),
+            ref_no: f.order_ref_no ?? null,
+            state: jobState(f.order_status, { technician_user_id: f.order_tech, job_odometer: f.order_odometer }),
+            issued_at: f.order_issued_at,
+            issued_by: f.order_issued_by ?? null,
+            priority: f.order_priority ?? null,
+          },
+  }));
+
+  const [eventRows] = await conn.execute(
+    `SELECT e.*, u.user_name AS actor_user_name FROM JOB_EVENT e
+     LEFT JOIN \`USER\` u ON u.user_id = e.actor_user_id
+     WHERE e.job_id=? OR (e.report_id=? AND e.job_id IS NULL)
+     ORDER BY e.event_at, e.event_id`,
+    [jobId, j.report_id ?? -1]
+  );
+  const events = await Promise.all(
+    eventRows.map(async (e) => shapeEvent(e, await signS3Url(e.selfie_s3_bucket, e.selfie_s3_key)))
+  );
+  // Delay update photos are listed on the event.
+  for (const e of events) {
+    if (e.type === "DELAY_UPDATE" && Array.isArray(e.detail?.photo_keys)) {
+      e.detail.photos = await Promise.all(e.detail.photo_keys.map((k) => signS3Url(S3_BUCKET, k)));
+    }
+  }
+
+  // The send-back card stays until the job is completed again (C13).
+  const lastSentBack = [...events].reverse().find((e) => e.type === "SENT_BACK") ?? null;
+  const lastCompleted = [...events].reverse().find((e) => e.type === "JOB_COMPLETED") ?? null;
+  const sentBackActive =
+    lastSentBack && state === JOB_STATE.ARRIVED &&
+    (!lastCompleted || new Date(lastSentBack.at) > new Date(lastCompleted.at));
+
+  const lateSettings = await jobLateSettings(conn);
+  const late = jobLateState({
+    state,
+    acceptedAt: j.job_accepted_at ? new Date(j.job_accepted_at).getTime() : null,
+    lastDelayAt: j.job_last_delay_at ? new Date(j.job_last_delay_at).getTime() : null,
+    lastPromptAt: j.job_late_prompted_at ? new Date(j.job_late_prompted_at).getTime() : null,
+    now: now.getTime(),
+    limitMin: lateSettings.limitMin,
+    repeatMin: lateSettings.repeatMin,
+  });
+
+  const [reportMedia] = j.report_id != null
+    ? await conn.execute(
+        `SELECT media_id, media_kind, mime_type, s3_bucket, s3_key, uploaded_at FROM REPORT_MEDIA
+         WHERE report_id=? AND media_type='image' ORDER BY uploaded_at, media_id`,
+        [j.report_id]
+      )
+    : [[]];
+  const reportPhotos = await Promise.all(
+    reportMedia.map(async (m) => ({
+      media_id: Number(m.media_id),
+      kind: m.media_kind ?? "issue",
+      url: await signS3Url(m.s3_bucket || S3_BUCKET, m.s3_key),
+      uploaded_at: m.uploaded_at,
+    }))
+  );
+
+  const isTech = auth.role === "technician" || auth.role === "admin";
+  const ownsJob = auth.role === "admin" || (j.technician_user_id != null && Number(j.technician_user_id) === userId);
+  const reviewer = auth.role === "admin" || auth.role === "rm_manager";
+
+  const afterBySlot = {};
+  for (const m of signed.filter((x) => x.kind === "after" && x.slot)) afterBySlot[m.slot] = m;
+
+  return json(200, {
+    now: now.toISOString(),
+    job: {
+      job_id: Number(j.job_id),
+      ref_no: j.job_ref_no ?? j.report_ref_no ?? null,
+      state,
+      source: j.job_source ?? (j.report_type === JOB_ORDER_TYPE ? "TECH_ORDER" : "REPORT"),
+      desc: j.job_desc,
+      priority: j.job_priority ?? j.report_priority ?? null,
+      required_action: j.job_required_action ?? null,
+      remarks: j.job_remarks ?? null,
+      issued_at: j.job_issued_at ?? null,
+      created_at: j.job_created_at,
+      accepted_at: j.job_accepted_at,
+      arrived_at: j.job_arrived_at,
+      completed_at: j.job_completed_at,
+      approved_at: j.job_approved_at,
+      odometer: j.job_odometer == null ? null : Number(j.job_odometer),
+      technician: j.technician_user_id == null ? null : {
+        user_id: Number(j.technician_user_id),
+        name: j.technician_name ?? null,
+        username: j.technician_username ?? null,
+      },
+      approved_by: j.job_approved_by == null ? null : {
+        name: j.job_approved_verified_name ?? j.approver_name ?? null,
+        username: j.approver_username ?? null,
+        selfie_url: await signS3Url(j.job_approved_selfie_s3_bucket, j.job_approved_selfie_s3_key),
+      },
+      fm_remarks: j.fm_remarks
+        ? {
+            text: j.fm_remarks,
+            name: j.fm_remarks_name ?? null,
+            username: j.fm_remarks_username ?? null,
+            at: j.fm_remarks_at,
+            edited_at: j.fm_remarks_edited_at ?? null,
+          }
+        : null,
+      parent: followupOrigin
+        ? { job_id: followupOrigin.parent_job_id, ref_no: followupOrigin.parent_ref_no }
+        : null,
+      pdf_ready: JOB_DONE_STATUSES.includes(j.job_status),
+    },
+    report: {
+      report_id: j.report_id == null ? null : Number(j.report_id),
+      type: j.report_type,
+      issue_type: j.report_issue_type ?? null,
+      category: busSystemInfo(j.report_issue_type),
+      desc: j.report_desc,
+      location: j.report_location,
+      lat: j.report_lat,
+      lng: j.report_lng,
+      priority: j.report_priority,
+      submitted_at: j.report_uploaded_at,
+      reporter: { name: j.report_verified_name || j.reporter_name || null, username: j.reporter_username ?? null },
+      photos: reportPhotos,
+    },
+    followup_origin: followupOrigin,
+    bus: { bus_id: j.bus_id, bus_ev_no: j.bus_ev_no ?? null, bus_model: j.bus_model ?? null },
+    tasks: tasks.map((t, i) => ({
+      task_id: Number(t.task_id),
+      no: i + 1,
+      name: t.task_name,
+      job_type: t.task_job_type ?? null,
+      category: busSystemInfo(t.task_category),
+      work_done: t.task_desc,
+      remark: t.task_remark ?? null,
+      no_parts: !!Number(t.task_no_parts),
+      status: t.task_status,
+      completed_at: t.completed_at,
+      parts: parts
+        .filter((p) => Number(p.task_id) === Number(t.task_id))
+        .map((p) => ({ part_id: Number(p.part_id), name: p.part_name, code: p.part_code, brand: p.part_brand, unit: p.part_unit || "pc", qty: Number(p.qty) })),
+      photos: signed.filter((m) => m.task_id === Number(t.task_id)),
+    })),
+    followups,
+    after_photos: afterBySlot,
+    // Pre-v2 after photos have no slot: shown as a plain strip.
+    after_photos_unslotted: signed.filter((m) => m.kind === "after" && !m.slot),
+    events,
+    sent_back: sentBackActive ? { reason: lastSentBack.detail?.reason ?? null, by: lastSentBack.by, at: lastSentBack.at } : null,
+    late: { ...late, accepted_at: j.job_accepted_at, last_delay_at: j.job_last_delay_at ?? null, ...lateSettings },
+    can: {
+      edit: isTech && ownsJob && state === JOB_STATE.ARRIVED,
+      save_odometer: isTech && ownsJob && state === JOB_STATE.ACCEPTED,
+      delay_update: isTech && ownsJob && state === JOB_STATE.ACCEPTED && late.updateDue,
+      complete: isTech && ownsJob && state === JOB_STATE.ARRIVED,
+      approve: reviewer && state === JOB_STATE.PENDING_APPROVAL,
+      send_back: reviewer && state === JOB_STATE.PENDING_APPROVAL,
+      correct_odometer: reviewer && j.job_odometer != null && state !== JOB_STATE.CLOSED,
+      fm_remarks: (auth.role === "fleet_manager" || auth.role === "admin") && state === JOB_STATE.CLOSED,
+    },
+  });
+}
+
+// ===================== LATE ARRIVAL (scheduled) =====================
+
+// Every minute (EventBridge, task "job_late_tick"): any accepted job with no
+// odometer past the limit is flagged and its technician pushed, then again
+// each repeat interval while still not arrived and no update has been sent.
+async function runJobLateTick(conn) {
+  const settings = await jobLateSettings(conn);
+  const [rows] = await conn.execute(
+    `SELECT j.job_id, j.job_status, j.technician_user_id, j.job_odometer, j.job_accepted_at,
+            j.job_last_delay_at, j.job_late_prompted_at, r.report_id, r.bus_id
+     FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id
+     WHERE j.job_status='accepted' AND j.job_odometer IS NULL AND j.technician_user_id IS NOT NULL
+       AND j.job_accepted_at <= (NOW() - INTERVAL ? MINUTE)`,
+    [settings.limitMin]
+  );
+  const now = Date.now();
+  let pushed = 0;
+  for (const r of rows) {
+    const s = jobLateState({
+      state: JOB_STATE.ACCEPTED,
+      acceptedAt: new Date(r.job_accepted_at).getTime(),
+      lastDelayAt: r.job_last_delay_at ? new Date(r.job_last_delay_at).getTime() : null,
+      lastPromptAt: r.job_late_prompted_at ? new Date(r.job_late_prompted_at).getTime() : null,
+      now,
+      limitMin: settings.limitMin,
+      repeatMin: settings.repeatMin,
+    });
+    if (!s.late) continue;
+    if (!s.promptDue) {
+      await conn.execute("UPDATE JOB SET job_late_flag=1 WHERE job_id=? AND job_late_flag=0", [r.job_id]);
+      continue;
+    }
+    // Claim the prompt first, so two overlapping ticks can't both push.
+    const [claim] = await conn.execute(
+      `UPDATE JOB SET job_late_flag=1, job_late_prompted_at=NOW()
+       WHERE job_id=? AND job_status='accepted' AND job_odometer IS NULL
+         AND (job_late_prompted_at IS NULL OR job_late_prompted_at <=> ?)`,
+      [r.job_id, r.job_late_prompted_at ?? null]
+    );
+    if (!claim.affectedRows) continue;
+    await notifyUsers(conn, {
+      userIds: [Number(r.technician_user_id)],
+      type: "job_late",
+      title: "Delay update needed",
+      body: `You haven't arrived at ${await busLabel(conn, r.bus_id)}. Tell us why.`,
+      reportId: r.report_id ?? null,
+      jobId: Number(r.job_id),
+    });
+    pushed++;
+  }
+  return { checked: rows.length, pushed };
 }
 
 // ===================== JOB COMPLETION REPORT (PDF) =====================
@@ -2887,6 +4315,11 @@ function mytDateParts(d) {
 // this report's place among the reports submitted that day (01, 02 ...).
 // Fixed once given, so a reprint carries the same number.
 async function ensureJobRefNo(conn, jobId) {
+  // v2.0.0: the reference belongs to the report (set at submit, or at issue
+  // for a job order) and the job carries the same one.
+  const [linked] = await conn.execute("SELECT report_id FROM REPORT WHERE job_id=? LIMIT 1", [jobId]);
+  if (linked.length) return ensureReportRefNo(conn, Number(linked[0].report_id));
+
   const [rows] = await conn.execute(
     `SELECT j.job_ref_no, j.job_created_at, r.report_id, r.report_uploaded_at
      FROM JOB j LEFT JOIN REPORT r ON r.job_id = j.job_id
@@ -3016,7 +4449,7 @@ async function buildJobReportData(conn, jobId) {
   );
 
   const [jobMedia] = await conn.execute(
-    `SELECT task_id, s3_bucket, s3_key, uploaded_at FROM JOB_MEDIA
+    `SELECT task_id, followup_id, media_kind, media_slot, s3_bucket, s3_key, uploaded_at FROM JOB_MEDIA
      WHERE job_id=? AND media_type='image' ORDER BY uploaded_at, media_id`,
     [jobId]
   );
@@ -3024,7 +4457,7 @@ async function buildJobReportData(conn, jobId) {
   let reportMedia = [];
   if (j.report_id != null) {
     const [rm] = await conn.execute(
-      `SELECT s3_bucket, s3_key, uploaded_at FROM REPORT_MEDIA
+      `SELECT s3_bucket, s3_key, uploaded_at, media_kind FROM REPORT_MEDIA
        WHERE report_id=? AND media_type='image' ORDER BY uploaded_at, media_id`,
       [j.report_id]
     );
@@ -3032,65 +4465,192 @@ async function buildJobReportData(conn, jobId) {
   }
 
   const photo = (m) => ({ bucket: m.s3_bucket || S3_BUCKET, key: m.s3_key, at: m.uploaded_at });
-  const afterPhotos = jobMedia.filter((m) => m.task_id == null).map(photo);
+  // Pre-v2 after photos: no task, no follow-up, no slot.
+  const afterPhotos = jobMedia
+    .filter((m) => m.task_id == null && m.followup_id == null && !(m.media_kind === "after" && m.media_slot))
+    .filter((m) => m.media_kind == null || m.media_kind === "after")
+    .map(photo);
   const taskIds = new Set(tasks.map((t) => Number(t.task_id)));
 
   const technician = j.technician_username ?? null;
 
-  // The event log, in the order the spec lists it. Who: the typed sign-off
-  // name where one was captured, otherwise the username.
-  const events = [];
-  if (!isJobOrder) {
-    events.push({ text: "Report submitted", by: j.report_verified_name || j.reporter_username, at: j.report_uploaded_at });
-    events.push({ text: "Job approved & distributed", by: j.report_review_verified_name || j.report_review_by, at: j.job_created_at ?? j.report_review_at });
-    if (j.job_accepted_at) events.push({ text: "Job accepted", by: j.job_accept_verified_name || technician, at: j.job_accepted_at });
-  } else {
-    events.push({ text: "Job order opened", by: technician, at: j.job_created_at });
-  }
-  if (j.job_arrived_at || j.job_odometer != null) {
-    events.push({
-      text: "Technician on site",
-      odometer: j.job_odometer,
-      by: technician,
-      at: j.job_arrived_at ?? null,
-    });
-  }
-  tasks.forEach((t, i) => {
-    if (t.completed_at) events.push({ text: `Task ${i + 1} completed`, by: technician, at: t.completed_at });
+  // ── v2.0.0: the event log, sign-offs and follow-ups from JOB_EVENT ──
+  const [evRows] = await conn.execute(
+    `SELECT e.*, u.user_name AS actor_user_name FROM JOB_EVENT e LEFT JOIN \`USER\` u ON u.user_id = e.actor_user_id
+     WHERE e.job_id=? OR (e.report_id=? AND e.job_id IS NULL) ORDER BY e.event_at, e.event_id`,
+    [jobId, j.report_id ?? -1]
+  );
+  const evs = evRows.map((e) => {
+    let detail = e.detail;
+    if (typeof detail === "string") { try { detail = JSON.parse(detail); } catch { detail = null; } }
+    return { ...e, detail: detail ?? {} };
   });
-  if (afterPhotos.length) {
-    events.push({ text: "After-repair photos taken", by: technician, at: afterPhotos[afterPhotos.length - 1].at });
-  }
-  if (j.job_completed_at) {
-    events.push({ text: "Job completed", by: j.job_verified_name || technician, at: j.job_completed_at });
+  const taskNoById = new Map(tasks.map((t, i) => [Number(t.task_id), i + 1]));
+  const DELAY_LABEL = { TRAFFIC: "Stuck in traffic", BUS_IN_OPERATION: "Bus still in operation", OTHER: "Other reason" };
+  const eventTextFor = (e) => {
+    const d = e.detail ?? {};
+    switch (e.event_type) {
+      case "REPORT_SUBMITTED": return "Report submitted";
+      case "REPORT_APPROVED": return "Job approved & distributed";
+      case "REPORT_DECLINED": return "Report declined";
+      case "JOB_ORDER_ISSUED": return `Job order issued${d.parent_ref_no ? ` (follow-up from ${d.parent_ref_no})` : ""}`;
+      case "JOB_ORDER_OPENED": return "Job order opened";
+      case "ACCEPTED": return "Job accepted";
+      case "DELAY_UPDATE": return `Delay update · ${DELAY_LABEL[d.reason] ?? d.reason ?? ""}${d.note ? ` · ${d.note}` : ""}`;
+      case "ARRIVED": return "Technician on site";
+      case "ODOMETER_CORRECTED": return `Odometer corrected · ${d.from_km ?? "—"} → ${d.to_km ?? "—"} km`;
+      case "TASK_COMPLETED": return `Task ${taskNoById.get(Number(d.task_id)) ?? ""} completed${d.job_type ? ` · ${d.job_type === "repair" ? "Repair" : "Maintenance"}` : ""}`;
+      case "FOLLOWUP_ADDED": return "Follow-up added";
+      case "FOLLOWUP_REMOVED": return "Follow-up removed";
+      case "JOB_COMPLETED": return "Job completed · signed";
+      case "SENT_BACK": return `Sent back · ${d.reason ?? ""}`;
+      case "CLOSED": {
+        const n = Array.isArray(d.job_orders) ? d.job_orders.length : 0;
+        return `Job approved & closed · ${n} job order${n === 1 ? "" : "s"} issued · signed`;
+      }
+      case "FM_REMARKS_SAVED": return "Fleet Manager remarks added";
+      case "FM_REMARKS_EDITED": return "Fleet Manager remarks edited";
+      default: return e.event_type;
+    }
+  };
+  // Follow-up add/remove are noise in a printed log.
+  const events = evs
+    .filter((e) => !["FOLLOWUP_ADDED", "FOLLOWUP_REMOVED"].includes(e.event_type))
+    .map((e) => ({
+      type: e.event_type,
+      text: eventTextFor(e),
+      by: e.actor_name_signed || e.actor_user_name || null,
+      at: e.event_at,
+      odometer: e.event_type === "ARRIVED" ? e.detail?.odometer_km ?? null : undefined,
+    }));
+
+  const SIGN_STEP = {
+    REPORT_SUBMITTED: "Report submitted",
+    REPORT_APPROVED: "Report approved",
+    REPORT_DECLINED: "Report declined",
+    JOB_ORDER_ISSUED: "Job order issued",
+    ACCEPTED: "Job accepted",
+    DELAY_UPDATE: "Delay update",
+    JOB_COMPLETED: "Job completed",
+    SENT_BACK: "Sent back",
+    CLOSED: "Job approved & closed",
+  };
+  const signoffs = evs
+    .filter((e) => SIGN_STEP[e.event_type] && e.selfie_s3_key)
+    .map((e) => ({
+      step: SIGN_STEP[e.event_type],
+      name: e.actor_name_signed || e.actor_user_name || null,
+      username: e.actor_username ?? null,
+      at: e.event_at,
+      selfie: { bucket: e.selfie_s3_bucket || S3_BUCKET, key: e.selfie_s3_key, at: e.event_at },
+    }));
+
+  const [fuRows] = await conn.execute(
+    `SELECT f.*, oj.job_ref_no AS order_ref, oj.job_status AS order_status, oj.technician_user_id AS order_tech,
+            oj.job_odometer AS order_odo, oj.job_issued_at AS order_issued_at, oj.job_priority AS order_priority,
+            au.user_name AS issued_by_name
+     FROM JOB_FOLLOWUP f
+     LEFT JOIN JOB oj ON oj.job_id = f.job_order_job_id
+     LEFT JOIN \`USER\` au ON au.user_id = (SELECT job_approved_by FROM JOB WHERE job_id = f.job_id)
+     WHERE f.job_id=? AND f.status <> 'REMOVED' ORDER BY f.created_at, f.followup_id`,
+    [jobId]
+  );
+  const STATE_LABEL = {
+    approved: "Not accepted yet",
+    accepted: "Accepted",
+    arrived: "In progress",
+    pending_approval: "Awaiting approval",
+    closed: "Closed",
+  };
+  const followups = fuRows.map((f, i) => ({
+    no: i + 1,
+    issue: f.issue,
+    required_action: f.required_action,
+    photos: jobMedia.filter((m) => m.followup_id != null && Number(m.followup_id) === Number(f.followup_id)).map(photo),
+    job_order: f.job_order_job_id == null ? null : {
+      ref_no: f.order_ref ?? null,
+      issued_by: f.issued_by_name ?? null,
+      at: f.order_issued_at ?? null,
+      priority: f.order_priority ? String(f.order_priority).toUpperCase() : null,
+      status: STATE_LABEL[jobState(f.order_status, { technician_user_id: f.order_tech, job_odometer: f.order_odo })] ?? null,
+    },
+  }));
+
+  let fmRemarks = null;
+  if (j.fm_remarks) {
+    const [fu] = await conn.execute("SELECT user_name, user_username FROM `USER` WHERE user_id=?", [j.fm_remarks_by ?? -1]);
+    fmRemarks = {
+      text: j.fm_remarks,
+      name: fu[0]?.user_name ?? null,
+      username: fu[0]?.user_username ?? null,
+      at: j.fm_remarks_at,
+      edited_at: j.fm_remarks_edited_at ?? null,
+    };
   }
 
+  const SLOT_CAPTION = { dashboard: "Dashboard", front: "Front", back: "Back", left: "Left side", right: "Right side" };
+  const afterSlotted = JOB_AFTER_SLOTS.map((k) => {
+    const m = [...jobMedia].reverse().find((x) => x.media_kind === "after" && x.media_slot === k);
+    return m ? { ...photo(m), caption: SLOT_CAPTION[k] } : null;
+  }).filter(Boolean);
+
+  const isFollowUp = j.job_source === "FOLLOW_UP";
+  let originPhotos = [];
+  if (isFollowUp && j.followup_id != null) {
+    const [op] = await conn.execute(
+      "SELECT s3_bucket, s3_key, uploaded_at FROM JOB_MEDIA WHERE followup_id=? ORDER BY uploaded_at, media_id",
+      [j.followup_id]
+    );
+    originPhotos = op;
+  }
+  const issuedEvent = evs.find((e) => e.event_type === "JOB_ORDER_ISSUED");
+  const CAPTION = { cluster: "Instrument cluster", exterior: "Bus exterior" };
   return {
     kind: "job",
     job_id: Number(jobId),
     report_id: j.report_id != null ? Number(j.report_id) : null,
-    is_job_order: isJobOrder,
+    // A technician's own job order: no report, approval or travel stages.
+    is_job_order: isJobOrder && !isFollowUp,
+    is_followup_order: isFollowUp,
+    parent_ref_no: issuedEvent?.detail?.parent_ref_no ?? null,
+    required_action: j.job_required_action ?? null,
+    job_remarks: j.job_remarks ?? null,
     ref_no: j.job_ref_no,
     issued_at: j.job_report_issued_at ?? new Date(),
     status: JOB_DONE_STATUSES.includes(j.job_status) ? "CLOSED" : String(j.job_status ?? "").toUpperCase(),
-    priority: isJobOrder ? null : (j.report_priority ? String(j.report_priority).toUpperCase() : null),
+    priority: isFollowUp
+      ? (j.job_priority ? String(j.job_priority).toUpperCase() : null)
+      : isJobOrder ? null : (j.report_priority ? String(j.report_priority).toUpperCase() : null),
+    // v2.0.0: closed means approved by the R&M Manager.
+    closed_at: j.job_approved_at ?? null,
+    approver: j.job_approved_verified_name ?? null,
+    followups,
+    signoffs,
+    fm_remarks: fmRemarks,
+    updated_with_remarks: !!fmRemarks,
+    after_slots: afterSlotted,
     vehicle: { plate: j.bus_id, fleet_no: j.bus_ev_no, model: j.bus_model },
     odometer: j.job_odometer,
     location: j.report_location,
-    reported_by: isJobOrder ? technician : j.reporter_username,
-    reporter_name: isJobOrder ? technician : (j.report_verified_name || j.reporter_username),
-    reporter_role: isJobOrder ? "Technician" : roleLabel(j.reporter_role),
-    approved_by: isJobOrder ? null : j.report_review_by,
+    reported_by: isFollowUp ? issuedEvent?.actor_name_signed ?? null : isJobOrder ? technician : j.reporter_username,
+    reporter_name: isFollowUp ? issuedEvent?.actor_name_signed ?? null : isJobOrder ? technician : (j.report_verified_name || j.reporter_username),
+    reporter_role: isFollowUp ? "R&M Manager" : isJobOrder ? "Technician" : roleLabel(j.reporter_role),
+    approved_by: isJobOrder && !isFollowUp ? null : (j.job_approved_verified_name ?? j.report_review_by),
     technician,
-    report_date: isJobOrder ? j.job_created_at : j.report_uploaded_at,
-    approved_at: isJobOrder ? null : (j.job_created_at ?? j.report_review_at),
-    accepted_at: isJobOrder ? null : j.job_accepted_at,
+    report_date: isFollowUp ? j.job_issued_at ?? j.job_created_at : isJobOrder ? j.job_created_at : j.report_uploaded_at,
+    // When the report was approved and the job sent out (follow-up job
+    // orders: issued already approved).
+    approved_at: isFollowUp ? j.job_issued_at : isJobOrder ? null : (j.job_created_at ?? j.report_review_at),
+    accepted_at: isJobOrder && !isFollowUp ? null : j.job_accepted_at,
     arrived_at: j.job_arrived_at,
     completed_at: j.job_completed_at,
     issue: j.report_desc,
     issue_type: j.report_issue_type,
     category: busSystemInfo(j.report_issue_type),
-    report_photos: reportMedia.map(photo),
+    // A follow-up job order shows its follow-up's photos (taken on the parent job).
+    report_photos: isFollowUp
+      ? originPhotos.map(photo)
+      : reportMedia.map((m) => ({ ...photo(m), caption: CAPTION[m.media_kind] ?? null })),
     tasks: tasks.map((t, i) => ({
       no: i + 1,
       name: t.task_name,
@@ -3115,7 +4675,7 @@ async function buildJobReportData(conn, jobId) {
   };
 }
 
-async function queueJobReportPdf(conn, jobId) {
+async function queueJobReportPdf(conn, jobId, { force = false } = {}) {
   const data = await buildJobReportData(conn, jobId);
   if (!data || !data.ref_no) return null;
   const outKey = jobPdfKey(data.ref_no, data.vehicle.plate);
@@ -3126,6 +4686,8 @@ async function queueJobReportPdf(conn, jobId) {
     issued_at: issuedAt,
     out_bucket: S3_BUCKET,
     out_key: outKey,
+    // Remarks saved after closing: render again over the existing file.
+    force,
   });
   await conn.execute(
     `UPDATE JOB SET job_report_pdf_s3_key=?, job_report_issued_at=COALESCE(job_report_issued_at, ?)
@@ -3233,6 +4795,7 @@ const KPI_ROW_SQL = `
   SELECT r.report_id, r.report_type, r.report_issue_type, r.report_desc, r.report_priority,
          r.report_status, r.report_uploaded_at, r.bus_id, r.project_id, r.job_id,
          j.job_status, j.job_created_at, j.job_accepted_at, j.job_arrived_at, j.job_completed_at,
+         j.job_approved_at, j.job_issued_at, j.job_source,
          j.job_ref_no, tech.user_name AS technician_name, b.bus_ev_no, b.bus_model
   FROM REPORT r
   LEFT JOIN JOB j ON j.job_id = r.job_id
@@ -3244,22 +4807,33 @@ const avg = (xs) => {
   const v = xs.filter((x) => x != null && Number.isFinite(x) && x >= 0);
   return v.length ? Math.round(v.reduce((s, x) => s + x, 0) / v.length) : null;
 };
-const isDone = (row) => JOB_DONE_STATUSES.includes(row.job_status) && row.job_completed_at;
-const isJobOrderRow = (row) => row.report_type === JOB_ORDER_TYPE;
+// When a job closed. Since v2.0.0 that is the R&M Manager's approval; jobs
+// closed before then have only the technician's completion time.
+const closedAt = (row) => row.job_approved_at ?? row.job_completed_at ?? null;
+const isDone = (row) => JOB_DONE_STATUSES.includes(row.job_status) && !!closedAt(row);
+// A job order the technician logged themselves (after the work). A job order
+// issued from a follow-up runs the full flow and is timed like a breakdown.
+const isJobOrderRow = (row) =>
+  row.job_source ? row.job_source === "TECH_ORDER" : row.report_type === JOB_ORDER_TYPE;
+const isFollowUpOrder = (row) => row.job_source === "FOLLOW_UP";
 
-// Time-to-fix figures for one job, in ms. Job orders have no waiting stages
-// (they are logged after the work), so only turnaround-free fields apply.
+// Time-to-fix figures for one job, in ms. Technician-logged job orders have
+// no waiting stages, so only turnaround-free fields apply.
 function jobTimes(row, now = new Date()) {
   const jo = isJobOrderRow(row);
-  const end = row.job_completed_at ?? null;
+  const fu = isFollowUpOrder(row);
+  // The C2 clock: from submit (job orders: issue) to closed.
+  const start = fu ? row.job_issued_at ?? row.job_created_at : row.report_uploaded_at;
+  const end = closedAt(row);
   return {
-    turnaround: jo ? null : ms(row.report_uploaded_at, end),
-    approval: jo ? null : ms(row.report_uploaded_at, row.job_created_at),
+    turnaround: jo ? null : ms(start, end),
+    approval: jo || fu ? null : ms(row.report_uploaded_at, row.job_created_at),
     accept: jo ? null : ms(row.job_created_at, row.job_accepted_at),
     travel: jo ? null : ms(row.job_accepted_at, row.job_arrived_at),
-    repair: jo ? null : ms(row.job_arrived_at, end),
+    repair: jo ? null : ms(row.job_arrived_at, row.job_completed_at),
+    awaiting_approval: jo || !row.job_approved_at ? null : ms(row.job_completed_at, row.job_approved_at),
     // Downtime: from report until fixed (or until now while still open).
-    downtime: jo || !row.job_id ? null : ms(row.report_uploaded_at, end ?? now),
+    downtime: jo || !row.job_id ? null : ms(start, end ?? now),
   };
 }
 
@@ -3272,6 +4846,7 @@ function kpiSummary(rows) {
     avg_accept_ms: avg(times.map((t) => t.accept)),
     avg_travel_ms: avg(times.map((t) => t.travel)),
     avg_repair_ms: avg(times.map((t) => t.repair)),
+    avg_awaiting_approval_ms: avg(times.map((t) => t.awaiting_approval)),
   };
 }
 
@@ -3319,8 +4894,8 @@ async function loadKpiRows(conn, auth, qs, from, to, extraWhere = [], extraVals 
   const { where, vals } = await kpiScope(conn, auth, qs);
   const span = to.getTime() - from.getTime();
   const prevFrom = new Date(from.getTime() - span);
-  where.push("(r.report_uploaded_at >= ? OR j.job_completed_at >= ?)");
-  vals.push(prevFrom, prevFrom);
+  where.push("(r.report_uploaded_at >= ? OR j.job_completed_at >= ? OR j.job_approved_at >= ?)");
+  vals.push(prevFrom, prevFrom, prevFrom);
   where.push("r.report_uploaded_at < ?");
   vals.push(to);
   const [rows] = await conn.execute(
@@ -3331,8 +4906,8 @@ async function loadKpiRows(conn, auth, qs, from, to, extraWhere = [], extraVals 
 }
 
 function overviewFromRows(rows, from, to, prevFrom) {
-  const closedNow = rows.filter((r) => isDone(r) && inRange(r.job_completed_at, from, to));
-  const closedPrev = rows.filter((r) => isDone(r) && inRange(r.job_completed_at, prevFrom, from));
+  const closedNow = rows.filter((r) => isDone(r) && inRange(closedAt(r), from, to));
+  const closedPrev = rows.filter((r) => isDone(r) && inRange(closedAt(r), prevFrom, from));
   // Jobs opened in the period: reports that became jobs (approved), plus job
   // orders. Declined or still-pending reports are not jobs.
   const openedNow = rows.filter((r) => r.job_id != null && inRange(r.report_uploaded_at, from, to));
@@ -3346,7 +4921,7 @@ function overviewFromRows(rows, from, to, prevFrom) {
     if (b) b.opened += 1;
   }
   for (const r of closedNow) {
-    const b = buckets.find((x) => inRange(r.job_completed_at, x.start, x.end));
+    const b = buckets.find((x) => inRange(closedAt(r), x.start, x.end));
     if (b) b.closed += 1;
   }
 
@@ -5351,6 +6926,10 @@ async function runScheduledTask(conn, event) {
       const result = await runTyreDigest(conn);
       return json(200, { task, ...result });
     }
+    if (task === "job_late_tick") {
+      const result = await runJobLateTick(conn);
+      return json(200, { task, ...result });
+    }
     if (task === "puspakom_tick") {
       const result = await runPuspakomTick(conn);
       return json(200, { task, ...result });
@@ -5463,10 +7042,15 @@ async function confirmReportMedia(conn, auth, reportId, b) {
     if (Number(rows[0].user_id) !== userId) return json(403, { message: "Forbidden" });
   }
 
+  // v2.0.0 (C18): which photo this is. Older builds send none (= issue).
+  const kind = b.media_kind != null ? String(b.media_kind) : null;
+  if (kind != null && !["issue", "cluster", "exterior"].includes(kind)) throw new Error("Invalid media_kind");
+
   const mediaType = b.mime_type.toString().startsWith("video") ? "video" : "image";
   await conn.execute(
-    `INSERT INTO REPORT_MEDIA (report_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, uploaded_at) VALUES (?,?,?,?,?,?,NOW())`,
-    [reportId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null]
+    `INSERT INTO REPORT_MEDIA (report_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, media_kind, uploaded_at)
+     VALUES (?,?,?,?,?,?,?,NOW())`,
+    [reportId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null, kind]
   );
   return json(200, { success: true });
 }
@@ -5532,14 +7116,15 @@ async function listJobMedia(conn, auth, jobId, qs) {
   const untaggedOnly = qs?.task_id === "none";
   const taskId = !untaggedOnly && qs?.task_id != null ? toId(qs.task_id, "task_id") : null;
   const where = untaggedOnly
-    ? "job_id=? AND task_id IS NULL"
+    ? "job_id=? AND task_id IS NULL AND (media_kind IS NULL OR media_kind='after')"
     : taskId != null
       ? "job_id=? AND task_id=?"
       : "job_id=?";
   const vals = taskId != null ? [jobId, taskId] : [jobId];
 
   const [rows] = await conn.execute(
-    `SELECT media_id, job_id, task_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, media_duration, uploaded_at
+    `SELECT media_id, job_id, task_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, media_duration, uploaded_at,
+            media_kind, media_slot, followup_id
      FROM JOB_MEDIA WHERE ${where} ORDER BY uploaded_at DESC, media_id DESC`,
     vals
   );
@@ -5560,12 +7145,28 @@ async function listJobMedia(conn, auth, jobId, qs) {
   return json(200, enriched);
 }
 
+// Where each kind of job photo lives in S3. "delay" is the late-arrival
+// update (C15), taken before the odometer is saved, so it is the one kind the
+// odometer lock doesn't apply to.
+const JOB_MEDIA_KINDS = { task: null, after: "after", followup: "followups", delay: "delay" };
+
 async function presignJobMedia(conn, auth, jobId, qs) {
   const deny = requireRole(auth, ["admin", "fleet_manager", "rm_manager", "technician"]);
   if (deny) return deny;
 
-  const lock = await assertTechJobUnlocked(conn, auth, jobId);
-  if (lock) return lock;
+  const kind = qs?.kind != null ? String(qs.kind) : null;
+  if (kind != null && !Object.prototype.hasOwnProperty.call(JOB_MEDIA_KINDS, kind)) throw new Error("Invalid kind");
+
+  if (kind === "delay") {
+    const [d] = await conn.execute("SELECT technician_user_id, job_status, job_odometer FROM JOB WHERE job_id=?", [jobId]);
+    if (!d.length) return json(404, { message: "Job not found" });
+    if (auth.role === "technician" && Number(d[0].technician_user_id) !== (await getOrCreateUserId(conn, auth))) {
+      return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+    }
+  } else {
+    const lock = await assertTechJobUnlocked(conn, auth, jobId);
+    if (lock) return lock;
+  }
 
   const mime = (qs.mime ?? "").toString().trim();
   if (!mime) throw new Error("mime required");
@@ -5575,9 +7176,12 @@ async function presignJobMedia(conn, auth, jobId, qs) {
 
   const taskId = qs?.task_id != null ? toId(qs.task_id, "task_id") : null;
   const ext = extFromMime(mime);
+  const folder = kind ? JOB_MEDIA_KINDS[kind] : null;
   const key = taskId != null
     ? `jobs/${jobId}/tasks/${taskId}/${crypto.randomUUID()}.${ext}`
-    : `jobs/${jobId}/${crypto.randomUUID()}.${ext}`;
+    : folder
+      ? `jobs/${jobId}/${folder}/${crypto.randomUUID()}.${ext}`
+      : `jobs/${jobId}/${crypto.randomUUID()}.${ext}`;
   const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime });
   const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 300 });
   return json(200, { uploadUrl, s3_bucket: S3_BUCKET, s3_key: key });
@@ -5603,12 +7207,23 @@ async function confirmJobMedia(conn, auth, jobId, b) {
     if (!t?.length) throw new Error("task_id does not belong to this job");
   }
 
+  // v2.0.0: an after photo names its slot (C3: Dashboard, Front, Back, Left
+  // Side, Right Side). A retake replaces that slot's photo. Builds before
+  // v2.0.0 send neither field: no task means an after photo with no slot.
+  const slot = b.media_slot != null ? String(b.media_slot) : null;
+  if (slot != null && !JOB_AFTER_SLOTS.includes(slot)) throw new Error("Invalid media_slot");
+  const mediaKind = taskId != null ? "task" : "after";
+
   const mediaType = b.mime_type.toString().startsWith("video") ? "video" : "image";
-  await conn.execute(
-    `INSERT INTO JOB_MEDIA (job_id, task_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, uploaded_at) VALUES (?,?,?,?,?,?,?,NOW())`,
-    [jobId, taskId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null]
+  if (slot) {
+    await conn.execute("DELETE FROM JOB_MEDIA WHERE job_id=? AND media_kind='after' AND media_slot=?", [jobId, slot]);
+  }
+  const [ins] = await conn.execute(
+    `INSERT INTO JOB_MEDIA (job_id, task_id, media_type, mime_type, s3_bucket, s3_key, size_bytes, media_kind, media_slot, uploaded_at)
+     VALUES (?,?,?,?,?,?,?,?,?,NOW())`,
+    [jobId, taskId, mediaType, b.mime_type, S3_BUCKET, b.s3_key, b.size_bytes ?? null, mediaKind, slot]
   );
-  return json(200, { success: true });
+  return json(200, { success: true, media_id: Number(ins.insertId) });
 }
 
 // Same reasoning as the report selfie pair above — a dedicated presign/
@@ -5661,6 +7276,15 @@ async function confirmJobSelfie(conn, auth, jobId, b) {
 // (kind=job-accept). Only the upload URL is issued here; the returned key is
 // sent with the approve/accept request, which stores it together with the
 // typed name in the same write as the action itself.
+// v2.0.0 Part C sign-offs, each checked against its own key prefix when the
+// action itself is sent (readSignoff).
+const JOB_SIGNOFF_KINDS = {
+  "job-complete": { roles: ["admin", "technician"], folder: "complete-selfie" },
+  "job-delay": { roles: ["admin", "technician"], folder: "delay-selfie" },
+  "job-approve": { roles: ["admin", "rm_manager"], folder: "approve-selfie" },
+  "job-sendback": { roles: ["admin", "rm_manager"], folder: "sendback-selfie" },
+};
+
 async function presignVerificationSelfie(conn, auth, qs) {
   const kind = (qs.kind ?? "").toString().trim();
   const id = toId(qs.id, "id");
@@ -5686,8 +7310,18 @@ async function presignVerificationSelfie(conn, auth, qs) {
       }
     }
     key = `jobs/${id}/accept-selfie/${crypto.randomUUID()}.${extFromMime(mime)}`;
+  } else if (JOB_SIGNOFF_KINDS[kind]) {
+    const { roles, folder } = JOB_SIGNOFF_KINDS[kind];
+    const deny = requireRole(auth, roles);
+    if (deny) return deny;
+    const [j] = await conn.execute("SELECT technician_user_id FROM JOB WHERE job_id=?", [id]);
+    if (!j?.length) return json(404, { message: "Job not found" });
+    if (auth.role === "technician" && Number(j[0].technician_user_id) !== (await getOrCreateUserId(conn, auth))) {
+      return json(403, { code: "FORBIDDEN", message: "Forbidden" });
+    }
+    key = `jobs/${id}/${folder}/${crypto.randomUUID()}.${extFromMime(mime)}`;
   } else {
-    return json(400, { message: "kind must be report-review or job-accept" });
+    return json(400, { message: "Invalid kind" });
   }
 
   const cmd = new PutObjectCommand({ Bucket: S3_BUCKET, Key: key, ContentType: mime });
@@ -6267,7 +7901,8 @@ async function pspGetCounts(conn, auth, qs) {
   if (pDeny) return pDeny;
 
   const buses = await pspLoadBuses(conn, auth, projectId);
-  if (auth.role === "technician") {
+  // The admin home (A4) shows the technician's "to do" too: ?as=technician.
+  if (auth.role === "technician" || (auth.role === "admin" && qs?.as === "technician")) {
     if (!buses.length) return json(200, { technician_todo: 0 });
     const ids = buses.map((b) => b.bus_id);
     const [r] = await conn.execute(

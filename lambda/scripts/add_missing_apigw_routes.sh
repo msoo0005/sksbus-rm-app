@@ -106,6 +106,24 @@ ROUTES=(
   "POST /puspakom/inspections/{inspection_id}/precheck/submit"
   "POST /puspakom/inspections/{inspection_id}/recheck"
   "POST /puspakom/inspections/{inspection_id}/recheck/submit"
+
+  # Migration 025: My profile (name + avatar) and per-user preferences.
+  "PATCH /me"
+  "GET /me/avatar/presign"
+  "PATCH /me/avatar"
+  "GET /me/preferences"
+  "PATCH /me/preferences/{pref_key}"
+
+  # Migration 026: job details, follow-ups, completion approval, send back,
+  # late-arrival updates and Fleet Manager remarks (v2.0.0 Part C).
+  "GET /jobs/{job_id}/details"
+  "POST /jobs/{job_id}/complete"
+  "POST /jobs/{job_id}/approve"
+  "POST /jobs/{job_id}/send-back"
+  "POST /jobs/{job_id}/followups"
+  "DELETE /followups/{followup_id}"
+  "POST /jobs/{job_id}/delay-updates"
+  "PATCH /jobs/{job_id}/fm-remarks"
 )
 
 EXISTING="$(aws apigatewayv2 get-routes --api-id "$API_ID" --region "$REGION" \
