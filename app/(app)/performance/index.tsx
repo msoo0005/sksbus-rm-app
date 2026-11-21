@@ -18,6 +18,7 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { formatBusLabel } from "@/utils/busLabel";
 import { busSystemLabel } from "@/utils/busSystems";
 import { fmtDur, pct, periodFor, PeriodKind, previousPeriodLabel } from "@/utils/kpiPeriod";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type Tab = "overview" | "buses";
 const ISSUES_SHOWN = 8;
@@ -95,7 +96,7 @@ export default function PerformanceScreen() {
     router.push({ pathname: "/performance/bus/[busId]", params: { busId, kind, offset: String(offset) } } as any);
 
   return (
-    <ScrollView
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE}
       style={s.page}
       contentContainerStyle={s.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} />}

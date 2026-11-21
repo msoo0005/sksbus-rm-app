@@ -22,6 +22,8 @@ import { useI18n } from "../../../i18n/i18n-ctx";
 import { formatDate } from "../../../utils/datetime";
 import { tyreKey } from "../../../utils/tyrePositions";
 import type { BusFilter, TyreSectionData } from "../../../hooks/useTyreSectionData";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID, KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 // The fleet, as a work queue. One row per bus, carrying both signals that start
 // work: when it was last inspected, and whether anything on it is past the
@@ -123,7 +125,7 @@ export default function BusesPanel({ data, filter, onFilterChange }: Props) {
 
   return (
     <View style={s.fill}>
-      <FlatList
+      <FlatList keyboardDismissMode={KEYBOARD_DISMISS_MODE}
         data={rows}
         keyExtractor={(r) => String(r.bus.bus_id)}
         contentContainerStyle={{ paddingBottom: 40 }}
@@ -231,11 +233,12 @@ export default function BusesPanel({ data, filter, onFilterChange }: Props) {
         transparent
         onRequestClose={() => !savingSettings && setSettingsVisible(false)}
       >
+        <KeyboardDoneAccessory />
         <View style={s.modalOverlay}>
           <View style={s.modalSheet}>
             <Text style={s.modalTitle}>{t("tyres.inspections.intervalTitle")}</Text>
             <Text style={s.modalHelp}>{t("tyres.inspections.intervalHelp")}</Text>
-            <TextInput
+            <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
               style={s.input}
               value={intervalDraft}
               onChangeText={setIntervalDraft}

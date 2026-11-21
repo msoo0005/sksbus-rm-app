@@ -2,24 +2,27 @@
 // photo ("View checklist & photos"). Opened by the Fleet Manager, the R&M
 // Manager and technicians.
 
-import { FontAwesome5 } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { PspAnswer, PspCheckDef, PspDetail, puspakomApi } from "@/api/puspakom";
+import ImageViewerOverlay from "@/components/ImageViewerOverlay";
+import { PhotoIndexBadge } from "@/components/PhotoStrip";
 import { answerSummary } from "@/components/puspakom/BusInspectionView";
 import Pill from "@/components/puspakom/Pill";
 import PuspakomMark from "@/components/puspakom/PuspakomMark";
 import { Section } from "@/components/puspakom/Section";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { ATTENTION_TAGS, TAG_TONE, fmtDateTime } from "@/utils/puspakom";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 export default function ChecklistScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { t } = useI18n();
   const [data, setData] = useState<PspDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [zoom, setZoom] = useState<string | null>(null);
+  // A check's photos, open full screen from the one tapped.
+  const [zoom, setZoom] = useState<Zoom | null>(null);
 
   useEffect(() => {
     puspakomApi
@@ -39,7 +42,7 @@ export default function ChecklistScreen() {
 
   return (
     <>
-      <ScrollView style={s.page} contentContainerStyle={s.content}>
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" style={s.page} contentContainerStyle={s.content}>
         <Section>
           <PuspakomMark />
           <Text style={s.plate}>
@@ -83,21 +86,37 @@ export default function ChecklistScreen() {
         ))}
       </ScrollView>
 
-      <Modal visible={!!zoom} transparent animationType="fade" onRequestClose={() => setZoom(null)}>
-        <Pressable style={s.zoomBg} onPress={() => setZoom(null)}>
-          {!!zoom && <Image source={{ uri: zoom }} style={s.zoomImg} resizeMode="contain" />}
-          <View style={s.zoomClose}>
-            <FontAwesome5 name="times" size={16} color="#fff" />
-          </View>
-        </Pressable>
-      </Modal>
+      <ImageViewerOverlay
+        visible={!!zoom}
+        imageUrls={(zoom?.urls ?? []).map((url) => ({ url }))}
+        captions={zoom?.captions}
+        startIndex={zoom?.index ?? 0}
+        onClose={() => setZoom(null)}
+      />
     </>
   );
 }
 
-function CheckRow({ def, a, onZoom, compact }: { def: PspCheckDef; a?: PspAnswer; onZoom: (u: string) => void; compact?: boolean }) {
+type Zoom = { urls: string[]; captions: string[]; index: number };
+
+function CheckRow({ def, a, onZoom, compact }: { def: PspCheckDef; a?: PspAnswer; onZoom: (z: Zoom) => void; compact?: boolean }) {
   const { t } = useI18n();
   const flagged = ATTENTION_TAGS.includes(a?.tag as any);
+  // The check's own photo, then each damage's, for swiping full screen.
+  const shots = a
+    ? [
+        ...(a.photo_url ? [{ url: a.photo_url, caption: def.label }] : []),
+        ...a.damages
+          .filter((d) => !!d.photo_url)
+          .map((d) => ({ url: d.photo_url!, caption: t("puspakom.checklist.damageN", { no: d.no }) })),
+      ]
+    : [];
+  const zoomAt = (url: string) => {
+    const index = shots.findIndex((x) => x.url === url);
+    if (index >= 0) onZoom({ urls: shots.map((x) => x.url), captions: shots.map((x) => x.caption), index });
+  };
+  const badge = (url?: string | null) =>
+    url ? <PhotoIndexBadge index={shots.findIndex((x) => x.url === url)} total={shots.length} /> : null;
   return (
     <View style={[s.row, flagged && s.rowFlagged]}>
       <View style={s.rowHead}>
@@ -114,17 +133,21 @@ function CheckRow({ def, a, onZoom, compact }: { def: PspCheckDef; a?: PspAnswer
         <>
           <Text style={s.answer}>{answerSummary(def, a, t)}</Text>
           {!!a.note && <Text style={s.note}>{a.note}</Text>}
-          <View style={s.photos}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.photosRow} contentContainerStyle={s.photos}>
             {a.photo_url ? (
-              <Pressable onPress={() => onZoom(a.photo_url!)}>
+              <Pressable onPress={() => zoomAt(a.photo_url!)}>
                 <Image source={{ uri: a.photo_url }} style={s.photo} />
+                {badge(a.photo_url)}
               </Pressable>
             ) : (
               <Text style={s.noPhoto}>{t("puspakom.checklist.noPhoto")}</Text>
             )}
             {a.damages.map((d) => (
-              <Pressable key={d.no} onPress={() => d.photo_url && onZoom(d.photo_url)} style={s.damage}>
-                {d.photo_url ? <Image source={{ uri: d.photo_url }} style={s.photo} /> : <View style={[s.photo, s.photoEmpty]} />}
+              <Pressable key={d.no} onPress={() => d.photo_url && zoomAt(d.photo_url)} style={s.damage}>
+                <View>
+                  {d.photo_url ? <Image source={{ uri: d.photo_url }} style={s.photo} /> : <View style={[s.photo, s.photoEmpty]} />}
+                  {badge(d.photo_url)}
+                </View>
                 <Text style={s.damageText} numberOfLines={2}>
                   {t("puspakom.checklist.damageN", { no: d.no })}
                   {d.type ? ` · ${t(`puspakom.damageType.${d.type}`)}` : ""}
@@ -132,7 +155,7 @@ function CheckRow({ def, a, onZoom, compact }: { def: PspCheckDef; a?: PspAnswer
                 </Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
           {!!a.entered_by && (
             <Text style={s.by}>
               {a.entered_by} · {fmtDateTime(a.entered_at)}
@@ -163,14 +186,12 @@ const s = StyleSheet.create({
   okIf: { fontSize: 12, color: "#6B7280", marginTop: 4, marginLeft: 38 },
   answer: { fontSize: 13, fontWeight: "700", color: "#111827", marginTop: 6, marginLeft: 38 },
   note: { fontSize: 13, color: "#374151", marginTop: 2, marginLeft: 38 },
-  photos: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8, marginLeft: 38 },
+  photosRow: { marginTop: 8, marginLeft: 38 },
+  photos: { flexDirection: "row", gap: 8 },
   photo: { width: 92, height: 69, borderRadius: 8, backgroundColor: "#E5E7EB" },
   photoEmpty: { borderWidth: 1, borderColor: "#E5E7EB" },
   noPhoto: { fontSize: 12, color: "#9CA3AF", marginTop: 6, marginLeft: 38 },
   damage: { width: 92 },
   damageText: { fontSize: 11, color: "#374151", marginTop: 3 },
   by: { fontSize: 11, color: "#9CA3AF", marginTop: 6, marginLeft: 38 },
-  zoomBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.92)", alignItems: "center", justifyContent: "center" },
-  zoomImg: { width: "100%", height: "80%" },
-  zoomClose: { position: "absolute", top: 56, right: 20, width: 36, height: 36, borderRadius: 18, backgroundColor: "rgba(255,255,255,0.2)", alignItems: "center", justifyContent: "center" },
 });

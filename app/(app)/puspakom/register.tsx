@@ -4,7 +4,8 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { PspBusState, PspInspectionType, puspakomApi, uploadPuspakomPhoto } from "@/api/puspakom";
 import BusPickerField from "@/components/BusPickerField";
 import DateTimeField from "@/components/puspakom/DateTimeField";
@@ -15,6 +16,8 @@ import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { busLabel, fmtDate, mytDate, mytHourMinute, mytInstant } from "@/utils/puspakom";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 const ACCENT = ROLE_COLORS.fleet_manager.accent;
 const TYPES: PspInspectionType[] = ["PERIODIC", "REINSPECTION", "SPECIAL"];
@@ -151,7 +154,7 @@ export default function RegisterInspectionScreen() {
 
   return (
     <View style={s.page}>
-      <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled" bottomOffset={24}>
         <Section>
           <PuspakomMark />
           <Text style={s.h1}>{editId ? t("puspakom.form.editTitle") : t("puspakom.form.title")}</Text>
@@ -243,7 +246,7 @@ export default function RegisterInspectionScreen() {
             autoCapitalize="characters"
           />
           <FieldLabel>{t("puspakom.form.notes")}</FieldLabel>
-          <TextInput
+          <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
             value={notes}
             onChangeText={setNotes}
             placeholder={t("puspakom.form.notesPh")}
@@ -253,7 +256,7 @@ export default function RegisterInspectionScreen() {
             maxLength={500}
           />
         </Section>
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       <View style={s.bar}>
         <Pressable style={s.cancel} onPress={() => router.back()}>

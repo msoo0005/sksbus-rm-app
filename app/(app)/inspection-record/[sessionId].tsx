@@ -10,6 +10,7 @@ import BusIdentity from "@/components/BusIdentity";
 import TyreTreadProfile from "@/components/TyreTreadProfile";
 import TyreWearPill from "@/components/tyres/TyreWearPill";
 import TyrePositionMap from "@/components/tyres/TyrePositionMap";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 
 export default function TyreInspectionDetailScreen() {
@@ -59,7 +60,7 @@ export default function TyreInspectionDetailScreen() {
   }
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" style={styles.page} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
       <View style={styles.headerCard}>
         <BusIdentity
           busId={detail.bus_id}

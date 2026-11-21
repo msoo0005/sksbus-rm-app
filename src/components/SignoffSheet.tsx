@@ -7,6 +7,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,6 +17,8 @@ import { useSession } from "../ctx";
 import { useI18n } from "../i18n/i18n-ctx";
 import { roleColorsFor } from "../utils/roles";
 import { LocalMedia, pickImage, SELFIE_SIZE } from "./ImagePicker";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 export type SignoffVerb =
   | "submitting"
@@ -57,8 +60,10 @@ function formatNow(d: Date) {
 
 /**
  * S1–S3 · the one sign-off card used by every section: a front-camera selfie
- * and the signer's name, pre-filled from My profile and editable for this
- * sign-off only. Nothing is saved until Sign; Cancel keeps the screen as it was.
+ * and the signer's name. The name starts empty and is typed every time: a
+ * sign-off is the person at the phone saying who they are, so it is never
+ * filled in from the account. Nothing is saved until Sign; Cancel keeps the
+ * screen as it was.
  * The server stores the selfie, the name as signed, the username, the role and
  * its own time on the step's event.
  */
@@ -75,23 +80,19 @@ export default function SignoffSheet({
 }: Props) {
   const { t } = useI18n();
   const { dbUser } = useSession();
-  const profileName = dbUser?.full_name || dbUser?.user_name || "";
   const color = roleColorsFor(dbUser?.user_role);
 
   const [selfie, setSelfie] = useState<LocalMedia | null>(null);
-  const [name, setName] = useState(profileName);
+  const [name, setName] = useState("");
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
     if (!visible) return;
     setSelfie(null);
-    setName(profileName);
+    setName("");
     setNow(new Date());
     const id = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(id);
-    // profileName is read when the card opens; a later profile edit doesn't
-    // reset what the signer is typing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   const takeSelfie = async () => {
@@ -113,7 +114,17 @@ export default function SignoffSheet({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={() => !submitting && onCancel()}>
-      <KeyboardAvoidingView style={s.overlay} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardDoneAccessory />
+      <KeyboardAvoidingView style={s.overlay} behavior="padding">
+        {/* Scrolls when it doesn't fit: on an iPad held sideways the keyboard
+            covers half the screen, and the Sign button used to end up out of
+            reach behind it. */}
+        <ScrollView
+          contentContainerStyle={s.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={KEYBOARD_DISMISS_MODE}
+          showsVerticalScrollIndicator={false}
+        >
         <View style={s.card}>
           <View style={s.headRow}>
             <View style={[s.headIcon, { backgroundColor: color.light }]}>
@@ -162,12 +173,14 @@ export default function SignoffSheet({
                 value={name}
                 onChangeText={setName}
                 style={[s.nameInput, { borderColor: color.accent }]}
+                placeholder={t("signoff.namePlaceholder")}
+                placeholderTextColor="#9CA3AF"
                 autoCapitalize="words"
                 autoCorrect={false}
                 editable={!submitting}
                 maxLength={150}
               />
-              <Text style={s.fromProfile}>{t("signoff.fromProfile")}</Text>
+              <Text style={s.fromProfile}>{t("signoff.nameHint")}</Text>
               <View style={s.userRow}>
                 {!!dbUser?.username && <Text style={s.username}>@{dbUser.username}</Text>}
                 {!!dbUser && (
@@ -207,6 +220,7 @@ export default function SignoffSheet({
             </Pressable>
           </View>
         </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -216,9 +230,8 @@ const s = StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: "rgba(17,24,39,0.5)",
-    justifyContent: "center",
-    padding: 16,
   },
+  scrollContent: { flexGrow: 1, justifyContent: "center", padding: 16 },
   card: { backgroundColor: "#fff", borderRadius: 22, padding: 16, maxWidth: 440, width: "100%", alignSelf: "center" },
   headRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   headIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },

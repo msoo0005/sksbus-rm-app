@@ -4,7 +4,8 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { ApiError } from "@/api/client";
 import { PspCheckDef, puspakomApi, uploadPuspakomPhoto } from "@/api/puspakom";
 import Pill from "@/components/puspakom/Pill";
@@ -19,6 +20,8 @@ import { LocalAnswer, clearDraft, getDraft, markLocked, pendingCount, setRemarks
 import { TAG_TONE, fmtDateTime, fmtShortDateTime } from "@/utils/puspakom";
 import { localTag } from "@/utils/puspakomLocal";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 const ACCENT = ROLE_COLORS.technician.accent;
 
@@ -97,7 +100,7 @@ export default function ReviewSubmit() {
 
   return (
     <View style={s.page}>
-      <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled" bottomOffset={24}>
         <View style={s.busRow}>
           <PuspakomMark size={24} withText={false} />
           <View style={{ flex: 1 }}>
@@ -166,7 +169,7 @@ export default function ReviewSubmit() {
         )}
 
         <Section icon="pen" title={t("puspakom.checklist.remarks")}>
-          <TextInput
+          <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
             value={remarks}
             onChangeText={setRemarksText}
             onBlur={() => setRemarks(inspectionId, remarks)}
@@ -189,7 +192,7 @@ export default function ReviewSubmit() {
             <Text style={s.declareText}>{t("puspakom.tech.declaration")}</Text>
           </Pressable>
         </Section>
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       <View style={s.footer}>
         <Text style={s.footNote}>{t("puspakom.tech.fmNotified")}</Text>

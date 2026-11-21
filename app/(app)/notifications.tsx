@@ -18,6 +18,7 @@ import {
   type PushDiagnostic,
 } from "@/notifications/usePushRegistration";
 import { useI18n } from "@/i18n/i18n-ctx";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const PUSPAKOM_STYLE = { icon: "clipboard-check", color: "#F06A25", colorLight: "#FFF7ED" };
 
@@ -188,7 +189,7 @@ export default function NotificationsScreen() {
   const unreadCount = notifications.filter((n) => !n.is_read).length;
 
   return (
-    <ScrollView
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
       style={styles.page}
       contentContainerStyle={styles.content}
       refreshControl={

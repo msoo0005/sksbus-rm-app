@@ -13,6 +13,7 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { updateAnswer } from "@/offline/puspakomDrafts";
 import { localDone } from "@/utils/puspakomLocal";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const ACCENT = ROLE_COLORS.technician.accent;
 const GREEN = "#16A34A";
@@ -57,7 +58,7 @@ export default function StopScreen() {
 
   return (
     <View style={s.page}>
-      <ScrollView ref={scroll} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} ref={scroll} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
         <View style={s.tabs}>
           {stats.stops.map((st, i) => {
             const c = st.done === st.total ? GREEN : st.started ? ACCENT : "#D1D5DB";

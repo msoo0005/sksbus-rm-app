@@ -11,6 +11,7 @@ import { usePrecheck } from "@/hooks/usePrecheck";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { fmtShortDateTime } from "@/utils/puspakom";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const ACCENT = ROLE_COLORS.technician.accent;
 const GREEN = "#16A34A";
@@ -45,7 +46,7 @@ export default function WalkAroundRoute() {
 
   return (
     <View style={s.page}>
-      <ScrollView contentContainerStyle={s.content}>
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
         <View style={s.busRow}>
           <PuspakomMark size={24} withText={false} />
           <View style={{ flex: 1 }}>

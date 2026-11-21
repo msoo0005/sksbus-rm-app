@@ -6,6 +6,8 @@ import type { Bus } from "../api/client";
 import { useBusDirectory } from "../hooks/useBusDirectory";
 import { useI18n } from "../i18n/i18n-ctx";
 import { formatBusLabel } from "../utils/busLabel";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 type Props = {
   value: string | null;
@@ -66,6 +68,7 @@ export default function BusPickerField({ value, onChange, disabled, accent = "#4
       </Pressable>
 
       <Modal visible={open} animationType="slide" onRequestClose={() => setOpen(false)}>
+        <KeyboardDoneAccessory />
         <View style={[s.sheet, { paddingTop: insets.top + 12 }]}>
           <View style={s.sheetHeader}>
             <Text style={s.sheetTitle}>{t("jobOrder.selectBus")}</Text>
@@ -82,7 +85,7 @@ export default function BusPickerField({ value, onChange, disabled, accent = "#4
             autoCorrect={false}
             autoCapitalize="characters"
           />
-          <FlatList
+          <FlatList keyboardDismissMode={KEYBOARD_DISMISS_MODE}
             data={list}
             keyExtractor={(b) => String(b.bus_id)}
             keyboardShouldPersistTaps="handled"

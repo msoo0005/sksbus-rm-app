@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useI18n } from "../../i18n/i18n-ctx";
 import ImagePickerField, { LocalMedia } from "../ImagePicker";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 export type FollowupDraft = { issue: string; action: string; photos: LocalMedia[] };
 export const emptyFollowupDraft = (): FollowupDraft => ({ issue: "", action: "", photos: [] });
@@ -57,7 +58,7 @@ export default function FollowupEditorCard({ n, accent, saving = false, onSave }
       <Text style={s.label}>
         {t("job2.followups.issue")} <Text style={s.req}>*</Text>
       </Text>
-      <TextInput
+      <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
         value={draft.issue}
         onChangeText={(v) => {
           setDraft((d) => ({ ...d, issue: v }));
@@ -75,7 +76,7 @@ export default function FollowupEditorCard({ n, accent, saving = false, onSave }
       <Text style={s.label}>
         {t("job2.followups.action")} <Text style={s.req}>*</Text>
       </Text>
-      <TextInput
+      <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
         value={draft.action}
         onChangeText={(v) => {
           setDraft((d) => ({ ...d, action: v }));
@@ -100,6 +101,7 @@ export default function FollowupEditorCard({ n, accent, saving = false, onSave }
             if (m.length) setErrors((x) => ({ ...x, photos: false }));
           }}
           disabled={saving}
+          limit={MAX_PHOTOS}
         />
         {errors.photos && <Text style={s.error}>{t("job2.followups.addPhoto")}</Text>}
       </View>

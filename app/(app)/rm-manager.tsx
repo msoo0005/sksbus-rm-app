@@ -17,6 +17,7 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { Report } from "@/types/report";
 import { sortJobs } from "@/utils/jobSort";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type Tab = "pending" | "open" | "closed";
 
@@ -396,7 +397,7 @@ export default function RMManagerScreen() {
 
   return (
     <>
-      <ScrollView
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
         style={{ flex: 1, backgroundColor: "#F9FAFB" }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />

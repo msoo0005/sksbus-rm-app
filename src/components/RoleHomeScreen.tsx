@@ -4,6 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import AlertBubble from "./AlertBubble";
 import HomeHeader from "./HomeHeader";
 import { useI18n } from "../i18n/i18n-ctx";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type Highlight = {
   icon: string;
@@ -84,7 +85,7 @@ export default function RoleHomeScreen({
   const { t } = useI18n();
 
   return (
-    <ScrollView
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
       style={styles.page}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}

@@ -1,7 +1,9 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import React from "react";
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 type Props = {
   visible: boolean;
@@ -22,9 +24,15 @@ type Props = {
 export default function Sheet({ visible, title, subtitle, onClose, children, footer, tall }: Props) {
   const insets = useSafeAreaInsets();
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={s.flex}>
-        <Pressable style={s.backdrop} onPress={onClose} />
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
+      <KeyboardDoneAccessory />
+      {/* "padding" on Android too: the app draws edge-to-edge, so the window
+          is not resized for the keyboard and the footer's buttons (Send back,
+          Next…) used to sit hidden under it while typing. */}
+      <KeyboardAvoidingView behavior="padding" style={s.flex}>
+        {/* With the keyboard up, a tap outside only closes the keyboard. It
+            used to close the sheet, throwing away what had been typed. */}
+        <Pressable style={s.backdrop} onPress={() => (Keyboard.isVisible() ? Keyboard.dismiss() : onClose())} />
         <View style={[s.sheet, tall && s.tall, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <View style={s.grabber} />
           <View style={s.head}>
@@ -36,7 +44,7 @@ export default function Sheet({ visible, title, subtitle, onClose, children, foo
               <FontAwesome5 name="times" size={14} color="#374151" />
             </Pressable>
           </View>
-          <ScrollView style={s.body} keyboardShouldPersistTaps="handled">
+          <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} style={s.body} keyboardShouldPersistTaps="handled">
             {children}
           </ScrollView>
           {footer && <View style={s.footer}>{footer}</View>}

@@ -162,7 +162,10 @@ export type VerificationKind =
 export type JobState = "approved" | "accepted" | "arrived" | "pending_approval" | "closed";
 export type JobSource = "REPORT" | "FOLLOW_UP" | "TECH_ORDER";
 export type AfterSlot = "dashboard" | "front" | "back" | "left" | "right";
-export const AFTER_SLOTS: AfterSlot[] = ["dashboard", "front", "back", "left", "right"];
+/** Every slot an after photo can be filed under: older jobs used all five. */
+export const AFTER_SLOTS_ALL: AfterSlot[] = ["dashboard", "front", "back", "left", "right"];
+/** The after photos Complete Job needs, and the slots a technician fills. */
+export const AFTER_SLOTS: AfterSlot[] = ["dashboard", "front"];
 
 export type JobPhoto = {
   media_id: number;
@@ -197,7 +200,13 @@ export type JobEvent = {
     | "SENT_BACK"
     | "CLOSED"
     | "FM_REMARKS_SAVED"
-    | "FM_REMARKS_EDITED";
+    | "FM_REMARKS_EDITED"
+    | "ADMIN_EDITED"
+    | "ADMIN_STATUS"
+    | "ADMIN_REASSIGNED"
+    | "ADMIN_TASK_EDITED"
+    | "ADMIN_TASK_REMOVED"
+    | "ADMIN_PARTS_CHANGED";
   at: string;
   by: JobPerson;
   selfie_url: string | null;
@@ -310,6 +319,36 @@ export type JobDetails = {
     correct_odometer: boolean;
     fm_remarks: boolean;
   };
+};
+
+/** The admin's Reports & jobs list. */
+export type AdminRecordFilter = "all" | "pending" | "active" | "awaiting" | "closed" | "declined" | "draft";
+export type AdminRecordStatus = "draft" | "pending" | "declined" | JobState;
+export type AdminRecord = {
+  report_id: number;
+  job_id: number | null;
+  ref_no: string | null;
+  type: string;
+  source: "REPORT" | "FOLLOW_UP" | "TECH_ORDER" | null;
+  status: AdminRecordStatus;
+  desc: string | null;
+  priority: string | null;
+  category: { key: string; no: number; name: string } | null;
+  submitted_at: string | null;
+  bus_id: string;
+  bus_ev_no: string | null;
+  project_id: string | null;
+  reporter_name: string | null;
+  technician_name: string | null;
+};
+export type AdminPerson = { user_id: number; name: string; username: string | null; role: string };
+export type AdminReportEdit = {
+  report_desc?: string;
+  report_priority?: string;
+  report_issue_type?: string | null;
+  report_location?: string | null;
+  bus_id?: string;
+  reason?: string;
 };
 
 export type JobOrderEntry = {
@@ -1446,6 +1485,56 @@ export const api = {
       body: JSON.stringify({ text }),
     }),
 
+  // ===== ADMIN: REPORTS & JOBS =====
+  adminRecords: (p: { q?: string; status?: AdminRecordFilter; project_id?: string | null; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (p.q) qs.set("q", p.q);
+    if (p.status && p.status !== "all") qs.set("status", p.status);
+    if (p.project_id) qs.set("project_id", p.project_id);
+    if (p.offset) qs.set("offset", String(p.offset));
+    return requestWithIdToken<{ items: AdminRecord[]; has_more: boolean; next_offset: number }>(
+      `/admin/records${qs.toString() ? `?${qs}` : ""}`,
+    );
+  },
+  adminTechnicians: (projectId?: string | null) =>
+    requestWithIdToken<AdminPerson[]>(
+      `/admin/technicians${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`,
+    ),
+  adminEditReport: (reportId: number, body: AdminReportEdit) =>
+    requestWithIdToken<{ success: true; changed: Record<string, unknown> }>(`/admin/reports/${reportId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminDeleteRecord: (reportId: number, confirm: string) =>
+    requestWithIdToken<{ success: true; ref_no: string; files: { deleted: number; failed: number } }>(
+      `/admin/reports/${reportId}/delete`,
+      { method: "POST", body: JSON.stringify({ confirm }) },
+    ),
+  adminSetJobStatus: (jobId: number, body: { to: JobState; reason: string }) =>
+    requestWithIdToken<{ success: true; job_state: JobState }>(`/admin/jobs/${jobId}/status`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminAssignJob: (jobId: number, body: { technician_user_id: number; reason?: string }) =>
+    requestWithIdToken<{ success: true }>(`/admin/jobs/${jobId}/assign`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminDeleteTask: (taskId: number) =>
+    requestWithIdToken<{ success: true }>(`/tasks/${taskId}`, { method: "DELETE" }),
+  adminSetTaskPartQty: (taskId: number, partId: number, qty: number) =>
+    requestWithIdToken<{ success: true }>(`/tasks/${taskId}/parts/${partId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ qty }),
+    }),
+  adminRemoveTaskPart: (taskId: number, partId: number) =>
+    requestWithIdToken<{ success: true }>(`/tasks/${taskId}/parts/${partId}`, { method: "DELETE" }),
+  adminSetOdometer: (jobId: number, odometer: number, override: boolean) =>
+    requestWithIdToken<{ success: true; job_odometer: number }>(`/jobs/${jobId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ job_odometer: odometer, override }),
+    }),
+
   jobReportPdf: (jobId: number) =>
     requestWithIdToken<PdfStatus>(`/jobs/${jobId}/report-pdf`),
 
@@ -1484,7 +1573,7 @@ export const api = {
     requestWithIdToken<TaskPart[]>(`/tasks/${taskId}/parts`),
 
   // PATCH /jobs/{job_id} (odometer)
-  patchJob: (jobId: number, body: { job_odometer: number }) =>
+  patchJob: (jobId: number, body: { job_odometer: number; confirm_high?: boolean }) =>
     requestWithIdToken<{ success: true; job_odometer: number }>(
       `/jobs/${jobId}`,
       {

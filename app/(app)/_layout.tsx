@@ -12,6 +12,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/api/client";
 import AccountMenu from "@/components/AccountMenu";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
 import UserAvatar from "@/components/UserAvatar";
 import { useSession } from "@/ctx";
 import { useProject } from "@/project-ctx";
@@ -21,16 +22,15 @@ import { LANGUAGE_LABELS, Language } from "@/i18n/translations";
 
 // Native stack header height when no large title is used.
 const HEADER_HEIGHT = Platform.OS === "ios" ? 44 : 56;
-// Leaves room for the floating controls overlaying the right of the header.
-const HEADER_TITLE_MAX_WIDTH = 190;
 
 
 const ROLE_ALLOWED_PREFIXES: Record<RoleKey, string[]> = {
-  admin: ["/profile", "/job/", "/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres", "/performance", "/puspakom"],
+  admin: ["/profile", "/pdf-viewer", "/job/", "/admin/", "/fleet-manager", "/rm-manager", "/technician", "/inventory", "/form", "/project-selector", "/buses", "/notifications", "/inspection-record", "/tyres", "/performance", "/puspakom"],
   // /rm-manager/job: "View report" from a bus history opens the job (read-only).
-  fleet_manager: ["/profile", "/job/", "/fleet-manager-home", "/fleet-manager", "/form", "/project-selector", "/performance", "/rm-manager/job", "/puspakom", "/notifications"],
-  rm_manager: ["/profile", "/job/", "/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory", "/performance", "/puspakom"],
-  technician: ["/profile", "/job/", "/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/puspakom"],
+  fleet_manager: ["/profile", "/pdf-viewer", "/job/", "/fleet-manager-home", "/fleet-manager", "/form", "/project-selector", "/performance", "/rm-manager/job", "/puspakom", "/notifications"],
+  // /technician/job-order: R&M Managers register job orders too.
+  rm_manager: ["/profile", "/pdf-viewer", "/job/", "/technician/job-order", "/rm-manager-home", "/rm-manager", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/inventory", "/performance", "/puspakom"],
+  technician: ["/profile", "/pdf-viewer", "/job/", "/technician-home", "/technician", "/notifications", "/project-selector", "/inspection-record", "/tyres", "/puspakom"],
   inventory_manager: ["/profile", "/inventory", "/project-selector"],
   driver: ["/profile", "/form", "/project-selector"],
 };
@@ -92,20 +92,24 @@ function RouteGuard() {
   return null;
 }
 
-// Rendered as a floating overlay above the Stack rather than through
-// headerRight — on iOS 26, native headerRight content is wrapped in a
-// UIBarButtonItem, and the OS unconditionally draws its own "Liquid Glass"
-// pill background behind it with no opt-out. Floating outside the native
-// header sidesteps that entirely.
-function FloatingHeaderButtons({ onAvatarPress }: { onAvatarPress: () => void }) {
-  const { dbUser } = useSession();
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const [unreadCount, setUnreadCount] = React.useState(0);
+// The header is our own bar, not the native one. The bell and avatar used to
+// float over the native header (native headerRight is wrapped in a "Liquid
+// Glass" pill on iOS 26 with no opt-out), and because nothing reserved room for
+// them they covered long titles and any button a screen put in its header. Now
+// back, title, the screen's own header buttons, the bell and the avatar sit in
+// one row, so nothing can overlap.
 
+type HeaderState = { unreadCount: number; onAvatarPress: () => void };
+const HeaderContext = React.createContext<HeaderState>({ unreadCount: 0, onAvatarPress: () => {} });
+
+/** One poll for the whole app: every screen's header reads the same count. */
+function useUnreadCount() {
+  const { dbUser } = useSession();
+  const pathname = usePathname();
+  const [unreadCount, setUnreadCount] = React.useState(0);
   const canSeeNotifications = !!dbUser && NOTIFIABLE_ROLES.has(dbUser.user_role);
 
-  const refreshUnreadCount = React.useCallback(async () => {
+  const refresh = React.useCallback(async () => {
     try {
       const { count } = await api.unreadNotificationCount();
       setUnreadCount(count);
@@ -116,52 +120,79 @@ function FloatingHeaderButtons({ onAvatarPress }: { onAvatarPress: () => void })
 
   React.useEffect(() => {
     if (!canSeeNotifications) return;
-    refreshUnreadCount();
-    const interval = setInterval(refreshUnreadCount, 30_000);
+    refresh();
+    const interval = setInterval(refresh, 30_000);
     return () => clearInterval(interval);
-  }, [canSeeNotifications, refreshUnreadCount]);
+  }, [canSeeNotifications, refresh]);
 
-  if (!dbUser) return null;
+  // Coming back from Notifications, the badge should already be right.
+  React.useEffect(() => {
+    if (canSeeNotifications && !pathname.startsWith("/notifications")) refresh();
+  }, [pathname, canSeeNotifications, refresh]);
+
+  return unreadCount;
+}
+
+function AppHeader({ navigation, options, route, back }: any) {
+  const { dbUser } = useSession();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { unreadCount, onAvatarPress } = React.useContext(HeaderContext);
+  const canSeeNotifications = !!dbUser && NOTIFIABLE_ROLES.has(dbUser.user_role);
+  const title = typeof options.title === "string" ? options.title : route.name;
+  const screenRight = options.headerRight ? options.headerRight({ canGoBack: !!back }) : null;
 
   return (
-    <View
-      pointerEvents="box-none"
-      style={[
-        styles.floatingWrap,
-        { top: insets.top + (HEADER_HEIGHT - 34) / 2 },
-      ]}
-    >
-      {/* v2.0.0: the language globe moved into the account menu (A5). */}
-
-      {canSeeNotifications && (
-        <Pressable
-          onPress={() => router.push("/notifications")}
-          style={({ pressed }) => [styles.bellBtn, pressed && { opacity: 0.75 }]}
-        >
-          <Ionicons name="notifications-outline" size={19} color="#374151" />
-          {unreadCount > 0 && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>
-                {unreadCount > 99 ? "99+" : unreadCount}
-              </Text>
-            </View>
-          )}
-        </Pressable>
-      )}
-
-      <Pressable
-        onPress={onAvatarPress}
-        style={({ pressed }) => [styles.avatarBtn, pressed && { opacity: 0.8 }]}
-        accessibilityRole="button"
-        accessibilityLabel={dbUser.full_name || dbUser.user_name}
-      >
-        <UserAvatar
-          name={dbUser.full_name || dbUser.user_name || dbUser.user_email}
-          photoUrl={dbUser.avatar_url}
-          role={dbUser.user_role}
-          size={34}
-        />
-      </Pressable>
+    <View style={[styles.header, { paddingTop: insets.top }]}>
+      <View style={styles.headerRow}>
+        {back ? (
+          <Pressable
+            onPress={() => navigation.goBack()}
+            hitSlop={10}
+            style={styles.backBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <Ionicons name="chevron-back" size={24} color="#111827" />
+          </Pressable>
+        ) : (
+          <View style={{ width: 4 }} />
+        )}
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {title}
+        </Text>
+        {screenRight ? <View style={styles.screenRight}>{screenRight}</View> : null}
+        {dbUser && canSeeNotifications && (
+          <Pressable
+            onPress={() => router.push("/notifications")}
+            style={({ pressed }) => [styles.bellBtn, pressed && { opacity: 0.75 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Notifications"
+          >
+            <Ionicons name="notifications-outline" size={19} color="#374151" />
+            {unreadCount > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{unreadCount > 99 ? "99+" : unreadCount}</Text>
+              </View>
+            )}
+          </Pressable>
+        )}
+        {dbUser && (
+          <Pressable
+            onPress={onAvatarPress}
+            style={({ pressed }) => [styles.avatarBtn, pressed && { opacity: 0.8 }]}
+            accessibilityRole="button"
+            accessibilityLabel={dbUser.full_name || dbUser.user_name}
+          >
+            <UserAvatar
+              name={dbUser.full_name || dbUser.user_name || dbUser.user_email}
+              photoUrl={dbUser.avatar_url}
+              role={dbUser.user_role}
+              size={34}
+            />
+          </Pressable>
+        )}
+      </View>
     </View>
   );
 }
@@ -235,45 +266,22 @@ function LanguagePickerModal({
   );
 }
 
-// A4: while an administrator is inside a role's screens, a thin charcoal bar
-// says whose screens they are in, with a way back to the admin home.
-const ADMIN_VIEW_PREFIXES: { prefix: string; role: RoleKey }[] = [
-  { prefix: "/fleet-manager", role: "fleet_manager" },
-  { prefix: "/form", role: "fleet_manager" },
-  { prefix: "/rm-manager", role: "rm_manager" },
-  { prefix: "/technician", role: "technician" },
-];
-
-function AdminViewingBar() {
-  const { dbUser } = useSession();
-  const insets = useSafeAreaInsets();
-  const pathname = usePathname();
-  const router = useRouter();
-  const { t } = useI18n();
-  if (dbUser?.user_role !== "admin") return null;
-  const hit = ADMIN_VIEW_PREFIXES.find((p) => pathname.startsWith(p.prefix));
-  if (!hit) return null;
-  return (
-    <View style={[styles.adminBar, { top: insets.top + HEADER_HEIGHT }]}>
-      <Ionicons name="shield-checkmark" size={13} color="#fff" />
-      <Text style={styles.adminBarText} numberOfLines={1}>
-        {t("account.viewingAs", { role: t(`roles.${hit.role}`) })}
-      </Text>
-      <Pressable onPress={() => router.replace("/" as any)} hitSlop={8}>
-        <Text style={styles.adminBarLink}>{t("account.backToAdmin")}</Text>
-      </Pressable>
-    </View>
-  );
-}
-
 export default function RootLayout() {
   const { t } = useI18n();
   const [menuVisible, setMenuVisible] = React.useState(false);
   const [languageVisible, setLanguageVisible] = React.useState(false);
+  const unreadCount = useUnreadCount();
+  const headerState = React.useMemo(
+    () => ({ unreadCount, onAvatarPress: () => setMenuVisible((v) => !v) }),
+    [unreadCount],
+  );
 
   return (
+    <HeaderContext.Provider value={headerState}>
     <View style={styles.root}>
       <RouteGuard />
+      {/* The keyboard's Done bar for every screen (popups render their own). */}
+      <KeyboardDoneAccessory />
       <AccountMenu
         visible={menuVisible}
         topOffset={HEADER_HEIGHT + 6}
@@ -286,22 +294,9 @@ export default function RootLayout() {
       />
       <Stack
         screenOptions={{
-          // Keep the native title clear of FloatingHeaderButtons.
-          //
-          // Those three controls are absolutely positioned over the header at
-          // right: 16 with zIndex 20, because native headerRight gets wrapped in
-          // a "Liquid Glass" pill on iOS 26 with no opt-out (see the note on
-          // FloatingHeaderButtons). The cost is that the native title lays out at
-          // full width underneath them, so a long one — "Tyre Summary and Data",
-          // "Bus Inspection Record" — renders straight through the buttons.
-          //
-          // Constraining the title's own width makes it ellipsise before it gets
-          // there, without handing anything back to headerRight.
-          headerTitle: ({ children }) => (
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {children}
-            </Text>
-          ),
+          // Our own header bar (see AppHeader): back, title, the screen's own
+          // buttons, then the bell and avatar, in one row.
+          header: (props) => <AppHeader {...props} />,
         }}
       >
         <Stack.Screen name="index" options={{ title: "Home" }} />
@@ -339,6 +334,9 @@ export default function RootLayout() {
         <Stack.Screen name="inventory" options={{ title: t("inventory.navTitle") }} />
         <Stack.Screen name="form" options={{ title: t("reportForm.title") }} />
         <Stack.Screen name="buses" options={{ title: t("buses.navTitle") }} />
+        <Stack.Screen name="pdf-viewer" options={{ title: t("pdf.viewTitle") }} />
+        <Stack.Screen name="admin/records" options={{ title: t("adminRecords.title") }} />
+        <Stack.Screen name="admin/record/[id]" options={{ title: t("adminRecords.title") }} />
         <Stack.Screen name="notifications" options={{ title: t("notifications.navTitle") }} />
         <Stack.Screen name="profile" options={{ title: t("profile.title") }} />
         <Stack.Screen name="puspakom/index" options={{ title: t("puspakom.title") }} />
@@ -355,9 +353,8 @@ export default function RootLayout() {
         <Stack.Screen name="puspakom/tech/[id]/review" options={{ title: t("puspakom.tech.navReview") }} />
         <Stack.Screen name="puspakom/tech/[id]/recheck" options={{ title: t("puspakom.tech.navRecheck") }} />
       </Stack>
-      <AdminViewingBar />
-      <FloatingHeaderButtons onAvatarPress={() => setMenuVisible((v) => !v)} />
     </View>
+    </HeaderContext.Provider>
   );
 }
 
@@ -365,35 +362,28 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
   },
-  // Width reserved for the floating bell + avatar, plus breathing room.
-  headerTitle: {
-    maxWidth: HEADER_TITLE_MAX_WIDTH,
-    fontSize: 17,
-    fontWeight: "600",
-    color: "#111827",
+  header: {
+    backgroundColor: "#fff",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E5E7EB",
   },
-  adminBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    zIndex: 30,
-    height: 28,
-    backgroundColor: "#1F2937",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 16,
-  },
-  adminBarText: { flex: 1, color: "#fff", fontSize: 12.5, fontWeight: "700" },
-  adminBarLink: { color: "#D1D5DB", fontSize: 12.5, fontWeight: "800", textDecorationLine: "underline" },
-  floatingWrap: {
-    position: "absolute",
-    right: 16,
-    zIndex: 20,
+  headerRow: {
+    height: HEADER_HEIGHT,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    paddingLeft: 8,
+    paddingRight: 16,
   },
+  backBtn: { width: 32, height: 40, alignItems: "flex-start", justifyContent: "center" },
+  headerTitle: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  screenRight: { flexDirection: "row", alignItems: "center" },
   avatarBtn: {
     width: 34,
     height: 34,

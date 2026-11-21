@@ -124,6 +124,17 @@ ROUTES=(
   "DELETE /followups/{followup_id}"
   "POST /jobs/{job_id}/delay-updates"
   "PATCH /jobs/{job_id}/fm-remarks"
+
+  # Admin "Reports & jobs" tool: find, correct and permanently delete records.
+  "GET /admin/records"
+  "GET /admin/technicians"
+  "PATCH /admin/reports/{report_id}"
+  "POST /admin/reports/{report_id}/delete"
+  "POST /admin/jobs/{job_id}/status"
+  "POST /admin/jobs/{job_id}/assign"
+  "DELETE /tasks/{task_id}"
+  "PATCH /tasks/{task_id}/parts/{part_id}"
+  "DELETE /tasks/{task_id}/parts/{part_id}"
 )
 
 EXISTING="$(aws apigatewayv2 get-routes --api-id "$API_ID" --region "$REGION" \

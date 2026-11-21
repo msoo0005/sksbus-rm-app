@@ -17,7 +17,9 @@ import { formatBusLabel } from "../utils/busLabel";
 import { reportTypeTitleLabel } from "../utils/reportType";
 import { Report } from "../types/report";
 import ImageViewerOverlay from "./ImageViewerOverlay";
+import { PhotoIndexBadge } from "./PhotoStrip";
 import PersonChip from "./PersonChip";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type Props = {
   visible: boolean;
@@ -172,7 +174,7 @@ export default function JobDetailsModal({
         <View style={s.headerDivider} />
 
         {/* ── Body ── */}
-        <ScrollView
+        <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
           style={s.body}
           contentContainerStyle={s.bodyContent}
           showsVerticalScrollIndicator={false}
@@ -277,6 +279,7 @@ export default function JobDetailsModal({
                     <View style={s.thumbOverlay}>
                       <FontAwesome5 name="expand-alt" size={14} color="#fff" />
                     </View>
+                    <PhotoIndexBadge index={idx} total={photoUrls.length} />
                   </Pressable>
                 ))}
               </ScrollView>

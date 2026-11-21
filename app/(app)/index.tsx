@@ -10,6 +10,7 @@ import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { usePuspakomCount } from "@/hooks/usePuspakomCount";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { ROLE_COLORS, ROLE_HOME, ROLE_ICONS, type RoleKey } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const ADMIN = ROLE_COLORS.admin;
 
@@ -84,7 +85,7 @@ export default function HomeScreen() {
   const name = dbUser?.full_name || dbUser?.user_name || "";
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" style={styles.page} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.band}>
         <View style={[styles.circle, styles.circleA]} />
         <View style={[styles.circle, styles.circleB]} />
@@ -150,6 +151,19 @@ export default function HomeScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.roleTitle}>{t("adminHome.busFleetTitle")}</Text>
             <Text style={styles.waiting}>{t("adminHome.busFleetDesc")}</Text>
+          </View>
+          <FontAwesome5 name="chevron-right" size={12} color="#9CA3AF" />
+        </Pressable>
+        <Pressable
+          onPress={() => router.push("/admin/records" as any)}
+          style={({ pressed }) => [styles.toolRow, { marginTop: 10 }, pressed && { opacity: 0.75 }]}
+        >
+          <View style={[styles.roleIcon, { backgroundColor: ADMIN.accent }]}>
+            <FontAwesome5 name="folder-open" size={17} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.roleTitle}>{t("adminRecords.title")}</Text>
+            <Text style={styles.waiting}>{t("adminRecords.toolDesc")}</Text>
           </View>
           <FontAwesome5 name="chevron-right" size={12} color="#9CA3AF" />
         </Pressable>

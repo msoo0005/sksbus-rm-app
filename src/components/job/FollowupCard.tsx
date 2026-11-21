@@ -1,10 +1,10 @@
 import { FontAwesome5 } from "@expo/vector-icons";
-import React, { useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import React from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { JobFollowup } from "../../api/client";
 import { useI18n } from "../../i18n/i18n-ctx";
 import { formatDateTime } from "../../utils/datetime";
-import ImageViewerOverlay from "../ImageViewerOverlay";
+import PhotoStrip from "../PhotoStrip";
 
 function addedLabel(iso: string) {
   const d = new Date(iso);
@@ -26,7 +26,6 @@ type Props = {
 /** C4 / C11 · one saved follow-up, read only. */
 export default function FollowupCard({ followup: f, n, showJobOrderRequired, onRemove, onOpenJobOrder }: Props) {
   const { t } = useI18n();
-  const [preview, setPreview] = useState<string | null>(null);
   const issued = f.status === "JOB_ORDER_ISSUED";
 
   return (
@@ -51,17 +50,7 @@ export default function FollowupCard({ followup: f, n, showJobOrderRequired, onR
       <Text style={s.label}>{t("job2.followups.action")}</Text>
       <Text style={s.value}>{f.required_action}</Text>
 
-      {f.photos.length > 0 && (
-        <View style={s.photos}>
-          {f.photos.map((p) =>
-            p.url ? (
-              <Pressable key={p.media_id} onPress={() => setPreview(p.url)}>
-                <Image source={{ uri: p.url }} style={s.photo} />
-              </Pressable>
-            ) : null,
-          )}
-        </View>
-      )}
+      {f.photos.length > 0 && <PhotoStrip urls={f.photos.map((p) => p.url)} style={s.photos} />}
 
       {showJobOrderRequired && !issued && (
         <View style={s.amber}>
@@ -97,11 +86,6 @@ export default function FollowupCard({ followup: f, n, showJobOrderRequired, onR
         </Pressable>
       )}
 
-      <ImageViewerOverlay
-        visible={!!preview}
-        imageUrls={preview ? [{ url: preview }] : []}
-        onClose={() => setPreview(null)}
-      />
     </View>
   );
 }
@@ -119,8 +103,7 @@ const s = StyleSheet.create({
   pillText: { fontSize: 11.5, fontWeight: "800" },
   label: { fontSize: 11, fontWeight: "800", color: "#9CA3AF", letterSpacing: 0.5, marginTop: 10 },
   value: { fontSize: 14, color: "#111827", marginTop: 3, lineHeight: 19 },
-  photos: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
-  photo: { width: 72, height: 72, borderRadius: 10, backgroundColor: "#F3F4F6" },
+  photos: { marginTop: 10 },
   amber: {
     flexDirection: "row",
     gap: 8,

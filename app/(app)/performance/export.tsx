@@ -17,6 +17,7 @@ import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { formatBusLabel } from "@/utils/busLabel";
 import { periodFor } from "@/utils/kpiPeriod";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type Kind = "range" | "bus";
 type BusPeriod = "month" | "year" | "all";
@@ -105,7 +106,7 @@ export default function ExportScreen() {
   const selectedBus = buses.find((b) => String(b.bus_id) === busId);
 
   return (
-    <ScrollView style={s.page} contentContainerStyle={s.content}>
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" style={s.page} contentContainerStyle={s.content}>
       <Text style={s.step}>{t("export.step1")}</Text>
       {(["range", "bus"] as Kind[]).map((k) => {
         const active = kind === k;
@@ -260,7 +261,7 @@ export default function ExportScreen() {
               <Text style={s.doneText}>{t("reportForm.done")}</Text>
             </Pressable>
           </View>
-          <ScrollView>
+          <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled">
             <Pressable style={s.busRow} onPress={() => setBusIds([])}>
               <Text style={s.busRowText}>{t("export.allBuses", { count: buses.length })}</Text>
               {busIds.length === 0 && <FontAwesome5 name="check" size={14} color={KPI_GREEN} />}

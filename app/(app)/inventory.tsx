@@ -25,6 +25,8 @@ import {
 
 import { api, CatalogPart, PART_UNITS, PartInput, PartUnit } from '@/api/client';
 import { useI18n } from '@/i18n/i18n-ctx';
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID, KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 const formatPrice = (v: CatalogPart['part_cost']) => {
   if (v == null || v === '') return null;
@@ -183,7 +185,7 @@ export default function Inventory() {
 
   return (
     <View style={s.page}>
-      <FlatList
+      <FlatList keyboardDismissMode={KEYBOARD_DISMISS_MODE}
         data={filtered}
         keyExtractor={(p) => String(p.part_id)}
         renderItem={renderPart}
@@ -241,9 +243,10 @@ export default function Inventory() {
       />
 
       <Modal visible={!!editing} transparent animationType="fade" onRequestClose={closeForm}>
+        <KeyboardDoneAccessory />
         <KeyboardAvoidingView
           style={s.overlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
         >
           <View style={s.modalCard}>
             <Text style={s.modalTitle}>
@@ -347,7 +350,7 @@ function Field({
         {label}
         {required && <Text style={{ color: '#DC2626' }}> *</Text>}
       </Text>
-      <TextInput
+      <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
         value={value}
         onChangeText={onChange}
         placeholder={placeholder}

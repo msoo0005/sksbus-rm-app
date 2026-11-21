@@ -25,6 +25,12 @@ const STYLE: Record<string, { icon: string; color: string; colorLight: string }>
   CLOSED: { icon: "flag-checkered", color: "#111827", colorLight: "#F3F4F6" },
   FM_REMARKS_SAVED: { icon: "comment-alt", color: "#2563EB", colorLight: "#EFF6FF" },
   FM_REMARKS_EDITED: { icon: "comment-alt", color: "#2563EB", colorLight: "#EFF6FF" },
+  ADMIN_EDITED: { icon: "user-shield", color: "#1F2937", colorLight: "#F3F4F6" },
+  ADMIN_STATUS: { icon: "user-shield", color: "#1F2937", colorLight: "#F3F4F6" },
+  ADMIN_REASSIGNED: { icon: "user-shield", color: "#1F2937", colorLight: "#F3F4F6" },
+  ADMIN_TASK_EDITED: { icon: "user-shield", color: "#1F2937", colorLight: "#F3F4F6" },
+  ADMIN_TASK_REMOVED: { icon: "user-shield", color: "#1F2937", colorLight: "#F3F4F6" },
+  ADMIN_PARTS_CHANGED: { icon: "user-shield", color: "#1F2937", colorLight: "#F3F4F6" },
 };
 
 // Shown on the timeline; the follow-up add/remove steps are kept in the log
@@ -71,6 +77,20 @@ function eventSubtitle(e: JobEvent, t: T): string | null {
     }
     case "JOB_ORDER_ISSUED":
       return e.detail?.parent_ref_no ?? null;
+    case "ADMIN_EDITED":
+      return [Object.keys(e.detail?.changes ?? {}).join(", "), e.detail?.reason].filter(Boolean).join(" · ") || null;
+    case "ADMIN_STATUS":
+      return [
+        `${t(`adminRecords.status.${e.detail?.from}`)} → ${t(`adminRecords.status.${e.detail?.to}`)}`,
+        e.detail?.reason,
+      ].filter(Boolean).join(" · ");
+    case "ADMIN_REASSIGNED":
+      return [`${e.detail?.from_name ?? "—"} → ${e.detail?.to_name ?? "—"}`, e.detail?.reason].filter(Boolean).join(" · ");
+    case "ADMIN_TASK_EDITED":
+    case "ADMIN_TASK_REMOVED":
+      return e.detail?.task_name ?? null;
+    case "ADMIN_PARTS_CHANGED":
+      return `${e.detail?.part ?? ""} ${e.detail?.to_qty == null ? "✕" : `${e.detail?.from_qty} → ${e.detail?.to_qty}`}`.trim();
     default:
       return null;
   }

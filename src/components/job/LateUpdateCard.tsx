@@ -6,6 +6,7 @@ import { uploadJobKindPhoto, uploadVerificationSelfie } from "../../api/media";
 import { useI18n } from "../../i18n/i18n-ctx";
 import ImagePickerField, { LocalMedia } from "../ImagePicker";
 import SignoffSheet from "../SignoffSheet";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 type Reason = "TRAFFIC" | "BUS_IN_OPERATION" | "OTHER";
 
@@ -100,7 +101,7 @@ export default function LateUpdateCard({ jobId, refLabel, limitMin, repeatMin, o
       })}
 
       <Text style={s.label}>{t("job2.late.note")}</Text>
-      <TextInput
+      <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
         value={note}
         onChangeText={setNote}
         placeholder={t("job2.late.notePlaceholder")}

@@ -1,4 +1,4 @@
-// Job Order Registration: a technician logs a repair or maintenance job for
+// Job Order Registration: a technician (or an R&M Manager) logs a repair or maintenance job for
 // any bus, with no breakdown report and no approval step. It is saved as a
 // completed job straight away (see createJobOrder in the Lambda), so it shows
 // in Completed, R&M Closed, the bus history, the KPIs and the Job Completion
@@ -12,15 +12,14 @@ import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api } from "@/api/client";
@@ -42,15 +41,20 @@ import { useSession } from "@/ctx";
 import { useFormDraft } from "@/hooks/useFormDraft";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useI18n } from "@/i18n/i18n-ctx";
-import { ROLE_COLORS } from "@/utils/roles";
+import { ROLE_COLORS, roleColorsFor } from "@/utils/roles";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 // Technician orange, as in the mockup.
+// Static styles use the technician orange; the screen re-tints them for the
+// signed-in role (R&M Managers register job orders too).
 const ACCENT = ROLE_COLORS.technician.accent;
 const MAX_ODOMETER = 9_999_999;
 
-type BusSlot = "front" | "back" | "left" | "right";
-const BUS_SLOTS: BusSlot[] = ["front", "back", "left", "right"];
-const emptyBusPhotos = (): Record<BusSlot, LocalMedia[]> => ({ front: [], back: [], left: [], right: [] });
+// With the cluster (dashboard) photo above, the front of the bus is the only
+// bus photo a job order needs.
+type BusSlot = "front";
+const BUS_SLOTS: BusSlot[] = ["front"];
+const emptyBusPhotos = (): Record<BusSlot, LocalMedia[]> => ({ front: [] });
 
 type DraftValue = {
   busId: string | null;
@@ -67,6 +71,7 @@ export default function JobOrderScreen() {
   const { t } = useI18n();
   const { dbUser } = useSession() as any;
   const projectId = useProjectFilter();
+  const accent = roleColorsFor(dbUser?.user_role).accent;
 
   const [busId, setBusId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<TaskDraft[]>([emptyTaskDraft()]);
@@ -123,7 +128,7 @@ export default function JobOrderScreen() {
     setConfirmed(restoredTasks.map((_, i) => !!v.confirmed?.[i]));
     setOdometer(v.odometer ?? "");
     setClusterPhoto(v.clusterPhoto ?? []);
-    setBusPhotos({ ...emptyBusPhotos(), ...(v.busPhotos ?? {}) });
+    setBusPhotos({ front: v.busPhotos?.front ?? [] });
   };
 
   // ── Tasks ───────────────────────────────────────────────────────────────
@@ -307,8 +312,9 @@ export default function JobOrderScreen() {
   const busPhotoCount = BUS_SLOTS.filter((k) => busPhotos[k].length > 0).length;
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScrollView
+    <>
+      <KeyboardAwareScrollView
+        bottomOffset={24}
         style={s.page}
         contentContainerStyle={s.content}
         keyboardShouldPersistTaps="handled"
@@ -327,13 +333,13 @@ export default function JobOrderScreen() {
             </View>
           </View>
           <View style={s.chips}>
-            <View style={s.chip}>
-              <FontAwesome5 name="user" size={11} color={ACCENT} />
-              <Text style={s.chipText}>{dbUser?.user_name ?? "—"}</Text>
+            <View style={[s.chip, { borderColor: `${accent}55` }]}>
+              <FontAwesome5 name="user" size={11} color={accent} />
+              <Text style={[s.chipText, { color: accent }]}>{dbUser?.user_name ?? "—"}</Text>
             </View>
-            <View style={s.chip}>
-              <FontAwesome5 name="calendar-alt" size={11} color={ACCENT} />
-              <Text style={s.chipText}>{today}</Text>
+            <View style={[s.chip, { borderColor: `${accent}55` }]}>
+              <FontAwesome5 name="calendar-alt" size={11} color={accent} />
+              <Text style={[s.chipText, { color: accent }]}>{today}</Text>
             </View>
           </View>
           <View style={s.note}>
@@ -347,7 +353,7 @@ export default function JobOrderScreen() {
           <Text style={s.label}>
             {t("jobOrder.selectBus")} <Text style={s.req}>*</Text>
           </Text>
-          <BusPickerField value={busId} onChange={(id) => setBusId(id)} disabled={submitting} accent={ACCENT} />
+          <BusPickerField value={busId} onChange={(id) => setBusId(id)} disabled={submitting} accent={accent} />
         </Section>
 
         {/* Tasks */}
@@ -375,17 +381,17 @@ export default function JobOrderScreen() {
                 onDelete={() => removeTask(i)}
                 confirmLabel={t("jobDetail.addTaskButton")}
                 onConfirm={() => confirmTask(i)}
-                accent={ACCENT}
+                accent={accent}
               />
             ))}
           </View>
           <Pressable
-            style={({ pressed }) => [s.addTask, pressed && { opacity: 0.7 }]}
+            style={({ pressed }) => [s.addTask, { borderColor: `${accent}66` }, pressed && { opacity: 0.7 }]}
             onPress={addAnotherTask}
             disabled={submitting}
           >
-            <FontAwesome5 name="plus" size={13} color={ACCENT} />
-            <Text style={s.addTaskText}>{t("jobOrder.addAnotherTask")}</Text>
+            <FontAwesome5 name="plus" size={13} color={accent} />
+            <Text style={[s.addTaskText, { color: accent }]}>{t("jobOrder.addAnotherTask")}</Text>
           </Pressable>
         </Section>
 
@@ -395,7 +401,7 @@ export default function JobOrderScreen() {
             {t("jobOrder.odometerLabel")} <Text style={s.req}>*</Text>
           </Text>
           <View style={s.odoWrap}>
-            <TextInput
+            <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
               value={odometer}
               onChangeText={(v) => setOdometer(v.replace(/[^\d,]/g, ""))}
               placeholder="0"
@@ -424,9 +430,9 @@ export default function JobOrderScreen() {
           icon="camera"
           title={t("jobOrder.sectionBusPhotos")}
           right={
-            <View style={[s.countPill, busPhotoCount === 4 && s.countPillDone]}>
-              <Text style={[s.countPillText, busPhotoCount === 4 && s.countPillDoneText]}>
-                {t("jobOrder.ofFour", { count: busPhotoCount })}
+            <View style={[s.countPill, busPhotoCount === BUS_SLOTS.length && s.countPillDone]}>
+              <Text style={[s.countPillText, busPhotoCount === BUS_SLOTS.length && s.countPillDoneText]}>
+                {t("jobOrder.ofTotal", { count: busPhotoCount, total: BUS_SLOTS.length })}
               </Text>
             </View>
           }
@@ -435,9 +441,6 @@ export default function JobOrderScreen() {
             title=""
             slots={[
               { key: "front", label: t("jobDetail.photoSlotFront"), icon: "arrow-up" },
-              { key: "back", label: t("jobDetail.photoSlotBack"), icon: "arrow-down" },
-              { key: "left", label: t("jobDetail.photoSlotLeft"), icon: "arrow-left" },
-              { key: "right", label: t("jobDetail.photoSlotRight"), icon: "arrow-right" },
             ]}
             value={busPhotos}
             onChange={(k, next) => setBusPhotos((prev) => ({ ...prev, [k as BusSlot]: next }))}
@@ -445,7 +448,7 @@ export default function JobOrderScreen() {
           />
           <Text style={s.hint}>{t("jobOrder.busPhotosHint")}</Text>
         </Section>
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       {/* Footer */}
       <View style={[s.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
@@ -453,7 +456,7 @@ export default function JobOrderScreen() {
           <Text style={s.draftBtnText}>{t("jobOrder.saveDraft")}</Text>
         </Pressable>
         <Pressable
-          style={[s.submitBtn, submitting && { opacity: 0.6 }]}
+          style={[s.submitBtn, { backgroundColor: accent }, submitting && { opacity: 0.6 }]}
           onPress={startSubmit}
           disabled={submitting}
         >
@@ -471,7 +474,7 @@ export default function JobOrderScreen() {
         onCancel={() => !submitting && setVerifyVisible(false)}
         onConfirm={doSubmit}
       />
-    </KeyboardAvoidingView>
+    </>
   );
 }
 

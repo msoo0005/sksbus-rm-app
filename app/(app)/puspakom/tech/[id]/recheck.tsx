@@ -4,10 +4,13 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { ApiError } from "@/api/client";
 import { puspakomApi, uploadPuspakomPhoto } from "@/api/puspakom";
+import ImageViewerOverlay from "@/components/ImageViewerOverlay";
 import { pickImage } from "@/components/ImagePicker";
+import { PhotoIndexBadge } from "@/components/PhotoStrip";
 import Pill from "@/components/puspakom/Pill";
 import PuspakomMark from "@/components/puspakom/PuspakomMark";
 import SyncBadge from "@/components/puspakom/SyncBadge";
@@ -27,6 +30,8 @@ import {
 import { TECH_PILL_TONE, addDays, daysBetween, fmtDayDate, fmtShortDateTime, mytDate } from "@/utils/puspakom";
 import { photoUri } from "@/utils/puspakomLocal";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 const ACCENT = ROLE_COLORS.technician.accent;
 const MAX_PHOTOS = 5;
@@ -40,7 +45,8 @@ export default function RecheckScreen() {
   const { t } = useI18n();
   const { detail, draft, online, busy } = useInspectionDraft(inspectionId, "RECHECK");
   const [slipOpen, setSlipOpen] = useState(false);
-  const [zoom, setZoom] = useState<string | null>(null);
+  // Full screen: the slips, or one item's after-fix photos from the one tapped.
+  const [zoom, setZoom] = useState<{ urls: string[]; index: number; checkId?: string } | null>(null);
   const [signing, setSigning] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -102,7 +108,7 @@ export default function RecheckScreen() {
 
   return (
     <View style={s.page}>
-      <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled" bottomOffset={24}>
         <View style={s.card}>
           <PuspakomMark />
           <Text style={s.plate}>
@@ -166,29 +172,23 @@ export default function RecheckScreen() {
                 onCommit={(v) => updateFix(inspectionId, f.check_id, { fixed_text: v, photos: getDraft(inspectionId)?.fixes[f.check_id]?.photos ?? [] })}
               />
               <Text style={s.lbl}>{t("puspakom.tech.photosAfterFix")} *</Text>
-              <View style={s.photos}>
-                {(fix?.photos ?? []).map((p, i) => (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.photos}>
+                {(fix?.photos ?? []).map((p, i, all) => (
                   <Pressable
                     key={`${i}-${p.localUri ?? p.s3_key}`}
-                    onPress={() => {
-                      const u = photoUri(p);
-                      if (readOnly) return u && setZoom(u);
-                      Alert.alert(f.label, undefined, [
-                        { text: t("puspakom.tech.viewPhoto"), onPress: () => u && setZoom(u) },
-                        {
-                          text: t("puspakom.tech.deletePhoto"),
-                          style: "destructive",
-                          onPress: () =>
-                            updateFix(inspectionId, f.check_id, { photos: (fix?.photos ?? []).filter((_, j) => j !== i), fixed_text: fix?.fixed_text ?? "" }),
-                        },
-                        { text: t("common.cancel"), style: "cancel" },
-                      ]);
-                    }}
+                    onPress={() =>
+                      setZoom({
+                        urls: all.map((x) => photoUri(x) ?? "").filter(Boolean),
+                        index: i,
+                        checkId: readOnly ? undefined : f.check_id,
+                      })
+                    }
                   >
                     <Image source={{ uri: photoUri(p) ?? undefined }} style={s.photo} />
                     <View style={[s.tick, !p.s3_key && { backgroundColor: "#D97706" }]}>
                       <FontAwesome5 name={p.s3_key ? "check" : "cloud-upload-alt"} size={8} color="#fff" />
                     </View>
+                    <PhotoIndexBadge index={i} total={all.length} />
                   </Pressable>
                 ))}
                 {!readOnly && (fix?.photos.length ?? 0) < MAX_PHOTOS && (
@@ -196,11 +196,11 @@ export default function RecheckScreen() {
                     <FontAwesome5 name="camera" size={16} color={ACCENT} />
                   </Pressable>
                 )}
-              </View>
+              </ScrollView>
             </View>
           );
         })}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       {!readOnly && (
         <View style={s.footer}>
@@ -224,15 +224,22 @@ export default function RecheckScreen() {
         </View>
       )}
 
-      <Modal visible={slipOpen || !!zoom} transparent animationType="fade" onRequestClose={() => (setSlipOpen(false), setZoom(null))}>
-        <Pressable style={s.zoomBg} onPress={() => (setSlipOpen(false), setZoom(null))}>
-          <ScrollView contentContainerStyle={{ gap: 12, padding: 20, paddingTop: 60 }}>
-            {(zoom ? [zoom] : slips.map((m) => m.url).filter((u): u is string => !!u)).map((u) => (
-              <Image key={u} source={{ uri: u }} style={s.zoomImg} resizeMode="contain" />
-            ))}
-          </ScrollView>
-        </Pressable>
-      </Modal>
+      <ImageViewerOverlay
+        visible={slipOpen || !!zoom}
+        imageUrls={(zoom ? zoom.urls : slips.map((m) => m.url).filter((u): u is string => !!u)).map((url) => ({ url }))}
+        startIndex={zoom?.index ?? 0}
+        onClose={() => (setSlipOpen(false), setZoom(null))}
+        onRemove={
+          zoom?.checkId
+            ? (i) => {
+                const id = zoom.checkId!;
+                const cur = getDraft(inspectionId)?.fixes[id];
+                updateFix(inspectionId, id, { photos: (cur?.photos ?? []).filter((_, j) => j !== i), fixed_text: cur?.fixed_text ?? "" });
+                setZoom(null);
+              }
+            : undefined
+        }
+      />
 
       <SignoffSheet
         visible={signing}
@@ -259,7 +266,7 @@ function FixText({ value, editable, onCommit }: { value: string; editable: boole
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text]);
   return (
-    <TextInput
+    <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
       value={text}
       onChangeText={setText}
       onBlur={() => text !== value && onCommit(text)}
@@ -299,7 +306,7 @@ const s = StyleSheet.create({
   foundText: { fontSize: 13, color: "#7F1D1D" },
   lbl: { fontSize: 11, fontWeight: "800", color: "#6B7280", letterSpacing: 0.4, marginTop: 12, marginBottom: 6, textTransform: "uppercase" },
   input: { borderWidth: 1, borderColor: "#D1D5DB", borderRadius: 12, padding: 12, minHeight: 70, textAlignVertical: "top", fontSize: 14, color: "#111827" },
-  photos: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  photos: { flexDirection: "row", gap: 8 },
   photo: { width: 64, height: 64, borderRadius: 10, backgroundColor: "#E5E7EB" },
   tick: { position: "absolute", top: 3, right: 3, width: 16, height: 16, borderRadius: 8, backgroundColor: "#16A34A", alignItems: "center", justifyContent: "center" },
   addPhoto: { width: 64, height: 64, borderRadius: 10, borderWidth: 1.5, borderStyle: "dashed", borderColor: ACCENT, backgroundColor: "#FFF7ED", alignItems: "center", justifyContent: "center" },
@@ -309,6 +316,4 @@ const s = StyleSheet.create({
   backText: { fontSize: 15, fontWeight: "700", color: "#374151" },
   btn: { flex: 1, borderRadius: 12, paddingVertical: 15, alignItems: "center", justifyContent: "center" },
   btnText: { color: "#fff", fontSize: 16, fontWeight: "800" },
-  zoomBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.92)" },
-  zoomImg: { width: "100%", height: 480 },
 });

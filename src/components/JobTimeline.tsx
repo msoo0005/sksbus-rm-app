@@ -94,6 +94,10 @@ export default function JobTimeline({
     [events],
   );
 
+  // Every selfie in Job Progress, oldest first, so the full-screen view
+  // swipes between them.
+  const shots = sorted.filter((e) => !!e.selfieUrl);
+
   if (sorted.length === 0 && !pendingStage) {
     return <Text style={s.mutedText}>{t("jobTimeline.noActivity")}</Text>;
   }
@@ -149,7 +153,9 @@ export default function JobTimeline({
 
       <ImageViewerOverlay
         visible={!!previewUrl}
-        imageUrls={previewUrl ? [{ url: previewUrl }] : []}
+        imageUrls={shots.map((e) => ({ url: e.selfieUrl! }))}
+        captions={shots.map((e) => [e.title, e.by].filter(Boolean).join(" · "))}
+        startIndex={Math.max(0, shots.findIndex((e) => e.selfieUrl === previewUrl))}
         onClose={() => setPreviewUrl(null)}
       />
     </View>

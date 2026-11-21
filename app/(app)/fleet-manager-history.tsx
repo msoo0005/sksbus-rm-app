@@ -22,6 +22,7 @@ import SegmentedTabs from "@/components/SegmentedTabs";
 import { useSession } from "@/ctx";
 import { Report } from "@/types/report";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type Tab = "submitted" | "open" | "closed";
 
@@ -235,7 +236,7 @@ export default function FleetManagerHistoryScreen() {
 
   return (
     <>
-      <ScrollView
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
         style={styles.page}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />

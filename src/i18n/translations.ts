@@ -9,6 +9,7 @@
 // t("common.cancel") or t("jobDetail.sectionTasks").
 
 import { PUSPAKOM_STRINGS } from "./puspakom";
+import { ADMIN_STRINGS } from "./admin";
 import { JOB_STRINGS } from "./jobs";
 import { V2_STRINGS } from "./v2";
 
@@ -25,6 +26,9 @@ export const translations: Record<Language, TranslationTree> = {
   en: {
     common: {
       cancel: "Cancel",
+      done: "Done",
+      photoLimitTitle: "Photo limit reached",
+      photoLimitBody: "You can add up to {count} photos here. Remove one to add another.",
       confirm: "Confirm",
       save: "Save",
       submit: "Submit",
@@ -850,6 +854,14 @@ export const translations: Record<Language, TranslationTree> = {
       tapToInteract: "Tap to interact with map",
       locationNeeded: "Location access is needed.",
       locationFailed: "Failed to get current location.",
+      useCurrentLocation: "Use Current Location",
+      selected: "Selected: {address}",
+      pastePlaceholder: "Paste coordinates or Google Maps link",
+      pasteGo: "Go",
+      pasteInvalid: "Couldn't read a location from that. Paste coordinates like 3.139, 101.687 or a Google Maps link.",
+      outsideMalaysiaTitle: "Outside Malaysia?",
+      outsideMalaysiaBody: "This location is outside Malaysia. Use it anyway?",
+      useAnyway: "Use it",
     },
     inspectionRecord: {
       notFound: "Inspection not found.",
@@ -1029,13 +1041,13 @@ export const translations: Record<Language, TranslationTree> = {
       odometerLabel: "Current ODO reading",
       odometerHint: "Make sure the ODO reading is clear and readable in the photo.",
       sectionBusPhotos: "Bus Photos",
-      ofFour: "{count} of 4",
+      ofTotal: "{count} of {total}",
       busPhotosHint: "Tap a photo to retake it. Each slot opens the camera directly.",
       saveDraft: "Save draft",
       submit: "Submit Report",
       needBus: "Please choose the bus.",
       needOdometer: "Enter the current odometer reading (digits only).",
-      needBusPhotos: "Take all four bus photos (front, rear, left and right).",
+      needBusPhotos: "Take the photo of the front of the bus.",
       cantSubmitTitle: "Not ready to submit",
       signoffTitle: "Sign off this job",
       signoffMessage: "Type your full name and take a selfie to confirm you did this work.",
@@ -1169,12 +1181,20 @@ export const translations: Record<Language, TranslationTree> = {
       preparing: "Preparing PDF…",
       failedTitle: "Couldn't get the PDF",
       timeout: "The PDF is taking longer than usual. Please try again in a minute.",
+      viewTitle: "PDF",
+      share: "Save / Share",
+      page: "Page {n} of {total}",
+      openFailed: "Couldn't show this PDF here. You can still save or share it.",
+      openInApp: "Open in another app",
     },
   },
 
   ms: {
     common: {
       cancel: "Batal",
+      done: "Selesai",
+      photoLimitTitle: "Had gambar dicapai",
+      photoLimitBody: "Anda boleh menambah sehingga {count} gambar di sini. Buang satu untuk menambah yang lain.",
       confirm: "Sahkan",
       save: "Simpan",
       submit: "Hantar",
@@ -1993,6 +2013,14 @@ export const translations: Record<Language, TranslationTree> = {
       tapToInteract: "Ketik untuk berinteraksi dengan peta",
       locationNeeded: "Akses lokasi diperlukan.",
       locationFailed: "Gagal mendapatkan lokasi semasa.",
+      useCurrentLocation: "Guna Lokasi Semasa",
+      selected: "Dipilih: {address}",
+      pastePlaceholder: "Tampal koordinat atau pautan Google Maps",
+      pasteGo: "Pergi",
+      pasteInvalid: "Lokasi tidak dapat dibaca. Tampal koordinat seperti 3.139, 101.687 atau pautan Google Maps.",
+      outsideMalaysiaTitle: "Di luar Malaysia?",
+      outsideMalaysiaBody: "Lokasi ini di luar Malaysia. Guna juga?",
+      useAnyway: "Guna",
     },
     inspectionRecord: {
       notFound: "Pemeriksaan tidak dijumpai.",
@@ -2172,13 +2200,13 @@ export const translations: Record<Language, TranslationTree> = {
       odometerLabel: "Bacaan ODO semasa",
       odometerHint: "Pastikan bacaan ODO jelas dan boleh dibaca dalam foto.",
       sectionBusPhotos: "Foto Bas",
-      ofFour: "{count} daripada 4",
+      ofTotal: "{count} daripada {total}",
       busPhotosHint: "Ketik foto untuk ambil semula. Setiap slot membuka kamera terus.",
       saveDraft: "Simpan draf",
       submit: "Hantar Laporan",
       needBus: "Sila pilih bas.",
       needOdometer: "Masukkan bacaan odometer semasa (nombor sahaja).",
-      needBusPhotos: "Ambil keempat-empat foto bas (depan, belakang, kiri dan kanan).",
+      needBusPhotos: "Ambil foto bahagian depan bas.",
       cantSubmitTitle: "Belum boleh dihantar",
       signoffTitle: "Sahkan kerja ini",
       signoffMessage: "Taip nama penuh anda dan ambil swafoto untuk mengesahkan anda melakukan kerja ini.",
@@ -2312,6 +2340,11 @@ export const translations: Record<Language, TranslationTree> = {
       preparing: "Menyediakan PDF…",
       failedTitle: "Tidak dapat mendapatkan PDF",
       timeout: "PDF mengambil masa lebih lama daripada biasa. Sila cuba lagi sebentar lagi.",
+      viewTitle: "PDF",
+      share: "Simpan / Kongsi",
+      page: "Halaman {n} daripada {total}",
+      openFailed: "Tidak dapat memaparkan PDF ini di sini. Anda masih boleh menyimpan atau berkongsinya.",
+      openInApp: "Buka dalam aplikasi lain",
     },
   },
 };
@@ -2334,4 +2367,5 @@ function mergeTree(into: TranslationTree, from: TranslationTree) {
 for (const lang of ["en", "ms"] as const) {
   mergeTree(translations[lang], V2_STRINGS[lang] as TranslationTree);
   mergeTree(translations[lang], JOB_STRINGS[lang]);
+  mergeTree(translations[lang], ADMIN_STRINGS[lang]);
 }

@@ -55,10 +55,11 @@ test("status groups for the Sort by menu", () => {
 
 test("Complete Job names the first missing item", () => {
   assert.equal(R.jobCompleteProblem({ taskCount: 0, afterSlots: [] }).code, "TASK_REQUIRED");
-  const p = R.jobCompleteProblem({ taskCount: 2, afterSlots: ["dashboard", "front", "back", "left"] });
+  const p = R.jobCompleteProblem({ taskCount: 2, afterSlots: ["dashboard", "back", "left"] });
   assert.equal(p.code, "AFTER_PHOTOS_REQUIRED");
-  assert.deepEqual(p.missing, ["right"]);
-  assert.match(p.message, /4\/5/);
+  assert.deepEqual(p.missing, ["front"]);
+  assert.match(p.message, /1\/2/);
+  assert.equal(R.jobCompleteProblem({ taskCount: 1, afterSlots: ["front", "dashboard"] }), null);
   assert.equal(R.jobCompleteProblem({ taskCount: 1, afterSlots: [...R.JOB_AFTER_SLOTS] }), null);
 });
 
@@ -66,7 +67,8 @@ test("odometer: digits, not 0, within last..last+2000", () => {
   assert.equal(R.odometerProblem("325712", 325000), null);
   assert.equal(R.odometerProblem("325000", 325000), null);
   assert.equal(R.odometerProblem("327000", 325000), null);
-  assert.equal(R.odometerProblem("327001", 325000), "Check the reading");
+  assert.equal(R.odometerProblem("327001", 325000), "ODOMETER_HIGH");
+  assert.equal(R.odometerProblem("400000", 325689), "ODOMETER_HIGH");
   assert.equal(R.odometerProblem("324999", 325000), "Check the reading");
   assert.equal(R.odometerProblem("0", null), "Check the reading");
   assert.equal(R.odometerProblem("12.5", null), "Check the reading");

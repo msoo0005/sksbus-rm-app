@@ -1,13 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useI18n } from "../i18n/i18n-ctx";
+import ImageViewerOverlay from "./ImageViewerOverlay";
+import { PhotoIndexBadge } from "./PhotoStrip";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  Dimensions,
   Image,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -69,11 +69,46 @@ export async function pickImage(
 
   if (result.canceled || !result.assets?.length) return null;
 
-  const asset = result.assets[0];
+  return shrink(result.assets[0], size);
+}
 
-  // Scale by the LONGER side. This used to always set the width to 1920, so
-  // an upright (portrait) photo — narrower than it is tall — was stretched
-  // UP to ~1920×3400 and uploaded bigger than it was taken.
+/**
+ * Several photos from the gallery at once (technicians upload a batch they
+ * already took). `limit` is how many more the field can take; 0 = no limit.
+ * Each photo goes through the same resize and compress as a single one.
+ */
+export async function pickImages(
+  labels?: PermissionLabels,
+  { limit = 0, size = PHOTO_SIZE }: { limit?: number; size?: ImageSize } = {},
+): Promise<LocalMedia[]> {
+  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!permission.granted) {
+    Alert.alert(
+      labels?.title ?? "Permission required",
+      labels?.galleryBody ?? "Permission to access gallery is required!",
+    );
+    return [];
+  }
+
+  const result = await ImagePicker.launchImageLibraryAsync({
+    quality: 0.7,
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    allowsMultipleSelection: limit !== 1,
+    selectionLimit: Math.max(0, limit),
+    orderedSelection: true,
+  });
+  if (result.canceled || !result.assets?.length) return [];
+
+  const assets = limit > 0 ? result.assets.slice(0, limit) : result.assets;
+  const out: LocalMedia[] = [];
+  for (const a of assets) out.push(await shrink(a, size));
+  return out;
+}
+
+// Scale by the LONGER side. This used to always set the width to 1920, so an
+// upright (portrait) photo — narrower than it is tall — was stretched UP to
+// ~1920×3400 and uploaded bigger than it was taken.
+async function shrink(asset: ImagePicker.ImagePickerAsset, size: ImageSize): Promise<LocalMedia> {
   const w = asset.width ?? 0;
   const h = asset.height ?? 0;
   const ctx = ImageManipulator.manipulate(asset.uri);
@@ -82,7 +117,6 @@ export async function pickImage(
   }
   const ref = await ctx.renderAsync();
   const manipulated = await ref.saveAsync({ compress: size.quality, format: SaveFormat.JPEG });
-
   return { localUri: manipulated.uri, mime_type: "image/jpeg" };
 }
 
@@ -112,10 +146,12 @@ type Props = {
   // replaces the existing one(s) instead of appending — used for fixed
   // single-photo "slots" (e.g. one photo per side of a vehicle).
   maxItems?: number;
+
+  // The most photos the field holds. The gallery lets the user pick several
+  // at once, up to what is left.
+  limit?: number;
 };
 
-const SCREEN_WIDTH = Dimensions.get("window").width;
-const SCREEN_HEIGHT = Dimensions.get("window").height;
 
 export default function ImagePickerField({
   title,
@@ -131,6 +167,7 @@ export default function ImagePickerField({
   showUploadButton = true,
   disabled = false,
   maxItems,
+  limit,
 }: Props) {
   const { t } = useI18n();
   const [items, setItems] = useState<LocalMedia[]>(value);
@@ -155,16 +192,29 @@ export default function ImagePickerField({
     }
     if (disabled) return;
 
-    const newItem = await pickImage(fromCamera, undefined, {
+    const labels = {
       title: t("common.permissionRequired"),
       cameraBody: t("common.cameraPermissionBody"),
       galleryBody: t("common.galleryPermissionBody"),
-    });
-    if (!newItem) return;
+    };
 
-    commit(
-      maxItems && items.length >= maxItems ? [newItem] : [...items, newItem],
-    );
+    // A fixed single-photo slot takes one photo, which replaces the last.
+    if (fromCamera || maxItems === 1) {
+      const newItem = await pickImage(fromCamera, undefined, labels);
+      if (!newItem) return;
+      commit(maxItems && items.length >= maxItems ? [newItem] : [...items, newItem]);
+      return;
+    }
+
+    // Gallery: several at once, up to what the field still has room for.
+    const room = limit ? limit - items.length : 0;
+    if (limit && room <= 0) {
+      Alert.alert(t("common.photoLimitTitle"), t("common.photoLimitBody", { count: limit }));
+      return;
+    }
+    const picked = await pickImages(labels, { limit: room });
+    if (!picked.length) return;
+    commit(limit ? [...items, ...picked].slice(0, limit) : [...items, ...picked]);
   };
 
   const removeImage = (index: number) => {
@@ -178,8 +228,6 @@ export default function ImagePickerField({
   };
 
   const buttonDisabled = disabled || readOnly;
-
-  const previewItem = previewIndex !== null ? items[previewIndex] : null;
 
   return (
     <View style={styles.card}>
@@ -244,6 +292,7 @@ export default function ImagePickerField({
                 <View style={styles.thumbOverlay}>
                   <Ionicons name="expand-outline" size={16} color="#fff" />
                 </View>
+                <PhotoIndexBadge index={idx} total={items.length} />
               </Pressable>
 
               <Pressable
@@ -262,74 +311,14 @@ export default function ImagePickerField({
         </ScrollView>
       )}
 
-      {/* Full-screen photo preview modal */}
-      <Modal
-        visible={previewItem !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setPreviewIndex(null)}
-      >
-        <View style={styles.previewModal}>
-          {/* Close button */}
-          <Pressable
-            style={styles.previewClose}
-            onPress={() => setPreviewIndex(null)}
-            hitSlop={12}
-          >
-            <Text style={styles.previewCloseText}>✕</Text>
-          </Pressable>
-
-          {/* Counter */}
-          {items.length > 1 && previewIndex !== null && (
-            <View style={styles.previewCounter}>
-              <Text style={styles.previewCounterText}>
-                {previewIndex + 1} / {items.length}
-              </Text>
-            </View>
-          )}
-
-          {/* Image */}
-          {previewItem && (
-            <Image
-              source={{ uri: previewItem.localUri }}
-              style={styles.previewImage}
-              resizeMode="contain"
-            />
-          )}
-
-          {/* Prev / Next navigation */}
-          {items.length > 1 && previewIndex !== null && (
-            <View style={styles.previewNav}>
-              <Pressable
-                style={[styles.navBtn, previewIndex === 0 && styles.navBtnDisabled]}
-                onPress={() => setPreviewIndex((i) => Math.max(0, (i ?? 1) - 1))}
-                disabled={previewIndex === 0}
-              >
-                <Text style={styles.navBtnText}>‹</Text>
-              </Pressable>
-
-              <Pressable
-                style={[styles.navBtn, previewIndex === items.length - 1 && styles.navBtnDisabled]}
-                onPress={() => setPreviewIndex((i) => Math.min(items.length - 1, (i ?? 0) + 1))}
-                disabled={previewIndex === items.length - 1}
-              >
-                <Text style={styles.navBtnText}>›</Text>
-              </Pressable>
-            </View>
-          )}
-
-          {/* Delete from preview */}
-          {!readOnly && !disabled && previewIndex !== null && (
-            <Pressable
-              style={styles.previewDeleteBtn}
-              onPress={() => removeImage(previewIndex)}
-            >
-              <Ionicons name="trash-outline" size={20} color="#fff" />
-              <Text style={styles.previewDeleteText}>{t("common.remove")}</Text>
-            </Pressable>
-          )}
-        </View>
-      </Modal>
+      {/* Full screen: swipe through this field's photos, or remove one. */}
+      <ImageViewerOverlay
+        visible={previewIndex !== null && previewIndex < items.length}
+        imageUrls={items.map((m) => ({ url: m.localUri }))}
+        startIndex={previewIndex ?? 0}
+        onClose={() => setPreviewIndex(null)}
+        onRemove={!readOnly && !disabled ? removeImage : undefined}
+      />
     </View>
   );
 }
@@ -436,85 +425,4 @@ const styles = StyleSheet.create({
     lineHeight: 15,
   },
 
-  // Preview modal
-  previewModal: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.92)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  previewClose: {
-    position: "absolute",
-    top: 54,
-    right: 20,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 10,
-  },
-  previewCloseText: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  previewCounter: {
-    position: "absolute",
-    top: 60,
-    left: 0,
-    right: 0,
-    alignItems: "center",
-    zIndex: 10,
-  },
-  previewCounterText: {
-    color: "rgba(255,255,255,0.7)",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  previewImage: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT * 0.72,
-  },
-  previewNav: {
-    position: "absolute",
-    bottom: 110,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
-  },
-  navBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  navBtnDisabled: { opacity: 0.25 },
-  navBtnText: {
-    color: "#fff",
-    fontSize: 32,
-    fontWeight: "300",
-    lineHeight: 36,
-  },
-  previewDeleteBtn: {
-    position: "absolute",
-    bottom: 48,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "rgba(239,68,68,0.85)",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 999,
-  },
-  previewDeleteText: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-  },
 });

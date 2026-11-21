@@ -3,16 +3,44 @@ import { useI18n } from "../i18n/i18n-ctx";
 import * as Location from "expo-location";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import MapView, { MapPressEvent, Marker } from "react-native-maps";
+import { coordsFromUrlText, isInMalaysia, parseLocationText } from "../utils/coordinates";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
+
+const SHORT_LINK_TIMEOUT_MS = 6000;
+
+/**
+ * Where a short link (maps.app.goo.gl/…) points. Fetched from the phone: the
+ * redirect target usually carries the coordinates, and the page itself does
+ * when it doesn't.
+ */
+async function resolveShortLink(url: string): Promise<{ latitude: number; longitude: number } | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SHORT_LINK_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { redirect: "follow", signal: ctrl.signal });
+    const fromUrl = coordsFromUrlText(res.url ?? "");
+    if (fromUrl?.kind === "coords") return fromUrl;
+    const body = await res.text();
+    const fromBody = coordsFromUrlText(body);
+    return fromBody?.kind === "coords" ? fromBody : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export type LocationValue = {
   latitude: number;
@@ -37,6 +65,10 @@ export default function MapSelector({
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [mapInteractive, setMapInteractive] = useState(false);
   const [fullScreenVisible, setFullScreenVisible] = useState(false);
+  // Pasted coordinates or a map link.
+  const [pasteText, setPasteText] = useState("");
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [pasteError, setPasteError] = useState(false);
 
   const { height: windowHeight } = useWindowDimensions();
 
@@ -200,6 +232,85 @@ export default function MapSelector({
     }
   };
 
+  const placeAt = async (latitude: number, longitude: number) => {
+    const address = await reverseGeocode(latitude, longitude);
+    await moveTo(latitude, longitude);
+    onChange({ latitude, longitude, address });
+    setPasteText("");
+    setPasteError(false);
+  };
+
+  const usePasted = async () => {
+    const text = pasteText.trim();
+    if (!text || pasteBusy) return;
+    setPasteBusy(true);
+    setPasteError(false);
+    try {
+      const parsed = parseLocationText(text);
+      let point: { latitude: number; longitude: number } | null = null;
+      if (parsed?.kind === "coords") point = parsed;
+      else if (parsed?.kind === "shortLink") point = await resolveShortLink(parsed.url);
+      else if (parsed?.kind === "query") {
+        try {
+          const hits = await Location.geocodeAsync(parsed.text);
+          if (hits.length) point = { latitude: hits[0].latitude, longitude: hits[0].longitude };
+        } catch {
+          // fall through to the error line
+        }
+      }
+      if (!point) {
+        setPasteError(true);
+        return;
+      }
+      const found = point;
+      if (!isInMalaysia(found.latitude, found.longitude)) {
+        Alert.alert(t("mapView.outsideMalaysiaTitle"), t("mapView.outsideMalaysiaBody"), [
+          { text: t("common.cancel"), style: "cancel" },
+          { text: t("mapView.useAnyway"), onPress: () => placeAt(found.latitude, found.longitude) },
+        ]);
+        return;
+      }
+      await placeAt(found.latitude, found.longitude);
+    } finally {
+      setPasteBusy(false);
+    }
+  };
+
+  const pasteRow = (
+    <View style={styles.pasteWrap}>
+      <View style={[styles.pasteRow, pasteError && styles.pasteRowError]}>
+        <Ionicons name="link-outline" size={16} color="#6B7280" />
+        <TextInput
+          value={pasteText}
+          onChangeText={(v) => {
+            setPasteText(v);
+            if (pasteError) setPasteError(false);
+          }}
+          placeholder={t("mapView.pastePlaceholder")}
+          placeholderTextColor="#9CA3AF"
+          style={styles.pasteInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="go"
+          onSubmitEditing={usePasted}
+          editable={!pasteBusy}
+        />
+        <Pressable
+          style={[styles.pasteGo, (!pasteText.trim() || pasteBusy) && { opacity: 0.45 }]}
+          onPress={usePasted}
+          disabled={!pasteText.trim() || pasteBusy}
+        >
+          {pasteBusy ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.pasteGoText}>{t("mapView.pasteGo")}</Text>
+          )}
+        </Pressable>
+      </View>
+      {pasteError && <Text style={styles.pasteErrorText}>{t("mapView.pasteInvalid")}</Text>}
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <Text style={styles.label}>
@@ -261,11 +372,13 @@ export default function MapSelector({
       </View>
 
       <Pressable style={styles.gpsButton} onPress={useCurrentLocation}>
-        <Text style={styles.gpsText}>📍 Use Current Location</Text>
+        <Text style={styles.gpsText}>📍 {t("mapView.useCurrentLocation")}</Text>
       </Pressable>
 
+      {pasteRow}
+
       {value?.address ? (
-        <Text style={styles.addressText}>Selected: {value.address}</Text>
+        <Text style={styles.addressText}>{t("mapView.selected", { address: value.address })}</Text>
       ) : null}
 
       <Modal
@@ -273,6 +386,7 @@ export default function MapSelector({
         animationType="slide"
         onRequestClose={() => setFullScreenVisible(false)}
       >
+        <KeyboardDoneAccessory />
         {/* Modal opens a separate native window, so the app's root
             SafeAreaProvider never re-measures insets for it — nest a fresh
             one here so the header doesn't render under the status bar. */}
@@ -316,11 +430,13 @@ export default function MapSelector({
 
             <View style={styles.fullScreenFooter}>
               <Pressable style={styles.gpsButton} onPress={useCurrentLocation}>
-                <Text style={styles.gpsText}>📍 Use Current Location</Text>
+                <Text style={styles.gpsText}>📍 {t("mapView.useCurrentLocation")}</Text>
               </Pressable>
 
+              {pasteRow}
+
               {value?.address ? (
-                <Text style={styles.addressText}>Selected: {value.address}</Text>
+                <Text style={styles.addressText}>{t("mapView.selected", { address: value.address })}</Text>
               ) : null}
 
               <Pressable
@@ -409,6 +525,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   gpsText: { fontSize: 14, fontWeight: "500" },
+  pasteWrap: { marginHorizontal: 10, marginBottom: 6 },
+  pasteRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 12,
+    paddingLeft: 12,
+    paddingRight: 4,
+    paddingVertical: 4,
+  },
+  pasteRowError: { borderColor: "#DC2626" },
+  pasteInput: { flex: 1, fontSize: 14, color: "#111827", paddingVertical: 8 },
+  pasteGo: {
+    backgroundColor: "#111827",
+    borderRadius: 9,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    minWidth: 48,
+    alignItems: "center",
+  },
+  pasteGoText: { color: "#fff", fontSize: 13, fontWeight: "700" },
+  pasteErrorText: { fontSize: 12, color: "#DC2626", fontWeight: "600", marginTop: 4 },
   addressText: { margin: 6, fontSize: 13, color: "#374151" },
 
   // Full screen

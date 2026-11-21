@@ -1,9 +1,10 @@
 import * as FileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
+import { useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
-import { Alert, Linking } from "react-native";
+import { Alert, Linking, Platform } from "react-native";
 import type { PdfStatus } from "../api/client";
 import { useI18n } from "../i18n/i18n-ctx";
+import { filePath, getBlobUtil } from "../utils/blobUtil";
 
 const POLL_MS = 2500;
 // The first PDF after a quiet spell waits for the renderer to start Chrome.
@@ -13,13 +14,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * PDFs are made on the server (sksbus-pdf-renderer). This asks for one, waits
- * while it is "pending", then downloads it and opens the share sheet, so it
- * can be saved to Files, printed, or sent on WhatsApp/email.
+ * while it is "pending", downloads it, and shows it before anything is saved:
+ *  - iPhone: iOS's own document preview (as in Mail and Files), with zoom,
+ *    pages and its share button for Save to Files, WhatsApp, email or print.
+ *  - Android: the in-app viewer (app/(app)/pdf-viewer.tsx), with Save / Share.
+ * A build without the viewer's native code goes to the share sheet as before.
  *
  * `run` takes the request to make: e.g. () => api.jobReportPdf(jobId).
  */
 export function usePdfDownload() {
   const { t } = useI18n();
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
 
@@ -44,11 +49,12 @@ export function usePdfDownload() {
           return;
         }
         const { uri } = await FileSystem.downloadAsync(st.url, `${dir}${name}`);
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(uri, { mimeType: "application/pdf", UTI: "com.adobe.pdf", dialogTitle: name });
-        } else {
-          await Linking.openURL(st.url);
+        const blob = getBlobUtil();
+        if (Platform.OS === "ios" && blob?.ios?.presentPreview) {
+          await blob.ios.presentPreview(filePath(uri));
+          return;
         }
+        router.push({ pathname: "/pdf-viewer", params: { uri, name } } as any);
       } catch (e: any) {
         Alert.alert(t("pdf.failedTitle"), e?.message ?? t("common.unknownError"));
       } finally {
@@ -56,7 +62,7 @@ export function usePdfDownload() {
         setBusy(false);
       }
     },
-    [t],
+    [t, router],
   );
 
   return { busy, run };

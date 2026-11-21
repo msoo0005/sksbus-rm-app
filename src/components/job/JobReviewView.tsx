@@ -5,15 +5,16 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Platform,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { AFTER_SLOTS, api, JobDetails, JobOrderEntry } from "../../api/client";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { AFTER_SLOTS, AFTER_SLOTS_ALL, AfterSlot, api, JobDetails, JobOrderEntry } from "../../api/client";
 import { uploadVerificationSelfie } from "../../api/media";
 import { useSession } from "../../ctx";
 import { usePdfDownload } from "../../hooks/usePdfDownload";
@@ -24,12 +25,15 @@ import { formatElapsed, useElapsedMs } from "../../utils/elapsedTime";
 import { buildJobProgress } from "../../utils/jobProgress";
 import { roleColorsFor } from "../../utils/roles";
 import ImageViewerOverlay from "../ImageViewerOverlay";
+import PhotoStrip, { PhotoIndexBadge } from "../PhotoStrip";
 import JobTaskCard from "../JobTaskCard";
 import JobTimeline from "../JobTimeline";
 import SignoffSheet from "../SignoffSheet";
 import StatusBadge from "../StatusBadge";
 import { IssueJobOrdersSheet, SendBackSheet } from "./ApprovalSheets";
 import FollowupCard from "./FollowupCard";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 const SLOT_LABEL: Record<string, string> = {
   dashboard: "jobDetail.photoSlotDashboard",
@@ -78,6 +82,15 @@ function Field({ label, value }: { label: string; value?: string | null }) {
  *   C16–C17 Fleet Manager remarks on a closed job
  * Coloured for the viewer's role.
  */
+/**
+ * Opens the next popup once the one before it has finished closing. iOS
+ * refuses to show a modal while another is still sliding away, so opening
+ * the sign-off straight after the reason sheet left nothing on screen.
+ */
+function afterSheetCloses(open: () => void) {
+  setTimeout(open, Platform.OS === "ios" ? 450 : 0);
+}
+
 export default function JobReviewView({ jobId }: { jobId: number }) {
   const { t } = useI18n();
   const router = useRouter();
@@ -88,7 +101,8 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
   const [d, setD] = useState<JobDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [preview, setPreview] = useState<string | null>(null);
+  // Index into afterViewer of the after photo open full screen.
+  const [preview, setPreview] = useState<number | null>(null);
 
   // Approval: step 1 (job orders) -> step 2 (sign-off). Nothing is saved
   // until Sign & approve; cancelling the sign-off returns to step 1 intact.
@@ -136,6 +150,15 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
     );
   }
   if (!d) return null;
+
+  // After photos: the required slots always show (empty if not taken yet);
+  // the back and sides only on older jobs that have them. All of them can be
+  // swiped through full screen.
+  const afterShown = AFTER_SLOTS_ALL.filter((k) => AFTER_SLOTS.includes(k) || !!d.after_photos[k]?.url).map((k) => ({
+    k,
+    url: d.after_photos[k]?.url ?? null,
+  }));
+  const afterViewer = afterShown.filter((x): x is { k: AfterSlot; url: string } => !!x.url);
 
   const bus = formatBusLabel(d.bus.bus_id, d.bus.bus_ev_no);
   const ref = d.job.ref_no ?? `#${d.job.job_id}`;
@@ -216,9 +239,11 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
 
   return (
     <>
-      <ScrollView
+      <KeyboardAwareScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE}
         style={s.page}
         contentContainerStyle={s.content}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}
       >
         {/* Title card */}
@@ -270,18 +295,19 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
           </View>
         )}
 
-        {/* Odometer */}
+        {/* Odometer: the reading the technician enters after accepting the job.
+            The Fleet Manager's instrument-cluster photo is part of the report,
+            not this reading, so it stays with the report photos below. */}
         <Section title={t("job2.odometer.title")} icon="tachometer-alt">
-          <Text style={s.odo}>{d.job.odometer != null ? `${d.job.odometer.toLocaleString()} km` : "—"}</Text>
-          {!!d.job.arrived_at && (
-            <Text style={s.muted}>{t("job2.odometer.recordedOnArrival", { time: formatDateTime(d.job.arrived_at) })}</Text>
-          )}
-          {d.report.photos.filter((p) => p.kind === "cluster").map((p) =>
-            p.url ? (
-              <Pressable key={p.media_id} onPress={() => setPreview(p.url)}>
-                <Image source={{ uri: p.url }} style={s.cluster} />
-              </Pressable>
-            ) : null,
+          {d.job.odometer != null ? (
+            <>
+              <Text style={s.odo}>{`${d.job.odometer.toLocaleString()} km`}</Text>
+              {!!d.job.arrived_at && (
+                <Text style={s.muted}>{t("job2.odometer.recordedOnArrival", { time: formatDateTime(d.job.arrived_at) })}</Text>
+              )}
+            </>
+          ) : (
+            <Text style={s.muted}>{t("job2.odometer.notRecorded")}</Text>
           )}
         </Section>
 
@@ -292,15 +318,7 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
             <Field label={t("job2.jobOrderCard.issue")} value={d.job.desc} />
             <Field label={t("job2.jobOrderCard.requiredAction")} value={d.job.required_action} />
             <Field label={t("job2.jobOrderCard.remarks")} value={d.job.remarks} />
-            <View style={s.photoRow}>
-              {(d.followup_origin?.photos ?? []).map((p) =>
-                p.url ? (
-                  <Pressable key={p.media_id} onPress={() => setPreview(p.url)}>
-                    <Image source={{ uri: p.url }} style={s.thumb} />
-                  </Pressable>
-                ) : null,
-              )}
-            </View>
+            <PhotoStrip urls={(d.followup_origin?.photos ?? []).map((p) => p.url)} size={76} style={s.photoRow} />
           </Section>
         ) : d.job.source === "REPORT" ? (
           <Section title={t("jobDetail.sectionInitialReport")} icon="file-alt">
@@ -308,15 +326,7 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
             <Field label={t("job2.jobOrderCard.priority")} value={d.report.priority} />
             <Field label={t("job2.jobOrderCard.issue")} value={d.report.desc} />
             <Field label={t("job2.category")} value={d.report.category ? `${d.report.category.no} · ${d.report.category.name}` : t("job2.categoryNotSet")} />
-            <View style={s.photoRow}>
-              {d.report.photos.filter((p) => p.kind !== "cluster").map((p) =>
-                p.url ? (
-                  <Pressable key={p.media_id} onPress={() => setPreview(p.url)}>
-                    <Image source={{ uri: p.url }} style={s.thumb} />
-                  </Pressable>
-                ) : null,
-              )}
-            </View>
+            <PhotoStrip urls={d.report.photos.map((p) => p.url)} size={76} style={s.photoRow} />
           </Section>
         ) : null}
 
@@ -387,27 +397,20 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
         {/* After photos */}
         <Section title={t("job2.afterPhotos.title")} icon="camera">
           <View style={s.slotGrid}>
-            {AFTER_SLOTS.map((k) => {
-              const ph = d.after_photos[k];
+            {afterShown.map(({ k, url }) => {
+              const at = afterViewer.findIndex((x) => x.k === k);
               return (
-                <Pressable key={k} style={s.slot} onPress={() => ph?.url && setPreview(ph.url)} disabled={!ph?.url}>
-                  {ph?.url ? <Image source={{ uri: ph.url }} style={s.slotImg} /> : <View style={[s.slotImg, s.slotEmpty]} />}
+                <Pressable key={k} style={s.slot} onPress={() => setPreview(at)} disabled={!url}>
+                  <View>
+                    {url ? <Image source={{ uri: url }} style={s.slotImg} /> : <View style={[s.slotImg, s.slotEmpty]} />}
+                    {!!url && <PhotoIndexBadge index={at} total={afterViewer.length} />}
+                  </View>
                   <Text style={s.slotLabel}>{t(SLOT_LABEL[k])}</Text>
                 </Pressable>
               );
             })}
           </View>
-          {d.after_photos_unslotted.length > 0 && (
-            <View style={s.photoRow}>
-              {d.after_photos_unslotted.map((p) =>
-                p.url ? (
-                  <Pressable key={p.media_id} onPress={() => setPreview(p.url)}>
-                    <Image source={{ uri: p.url }} style={s.thumb} />
-                  </Pressable>
-                ) : null,
-              )}
-            </View>
-          )}
+          <PhotoStrip urls={d.after_photos_unslotted.map((p) => p.url)} size={76} style={s.photoRow} />
         </Section>
 
         {/* C16–C17 Fleet Manager remarks */}
@@ -419,7 +422,7 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
           >
             {showRemarksEditor ? (
               <>
-                <TextInput
+                <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                   value={remarksText}
                   onChangeText={setRemarksText}
                   placeholder={t("job2.remarks.placeholder")}
@@ -481,7 +484,7 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
             </View>
           </View>
         )}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       <IssueJobOrdersSheet
         visible={step1Open}
@@ -495,7 +498,7 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
         onNext={(e) => {
           setEntries(e);
           setStep1Open(false);
-          setApproveSignOpen(true);
+          afterSheetCloses(() => setApproveSignOpen(true));
         }}
       />
       <SignoffSheet
@@ -512,7 +515,7 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
           if (approving) return;
           setApproveSignOpen(false);
           // Cancel returns to step 1 with everything kept.
-          if (entries?.length) setStep1Open(true);
+          if (entries?.length) afterSheetCloses(() => setStep1Open(true));
         }}
         onConfirm={doApprove}
       />
@@ -523,7 +526,7 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
         onClose={() => setSendBackOpen(false)}
         onNext={(reason) => {
           setSendBackOpen(false);
-          setSendBackReason(reason);
+          afterSheetCloses(() => setSendBackReason(reason));
         }}
       />
       <SignoffSheet
@@ -536,7 +539,13 @@ export default function JobReviewView({ jobId }: { jobId: number }) {
         onConfirm={doSendBack}
       />
 
-      <ImageViewerOverlay visible={!!preview} imageUrls={preview ? [{ url: preview }] : []} onClose={() => setPreview(null)} />
+      <ImageViewerOverlay
+        visible={preview !== null}
+        imageUrls={afterViewer.map((x) => ({ url: x.url }))}
+        captions={afterViewer.map((x) => t(SLOT_LABEL[x.k]))}
+        startIndex={preview ?? 0}
+        onClose={() => setPreview(null)}
+      />
     </>
   );
 }
@@ -575,11 +584,9 @@ const s = StyleSheet.create({
   redReason: { fontSize: 14, color: "#111827", fontWeight: "700", marginTop: 6 },
   odo: { fontSize: 22, fontWeight: "800", color: "#111827" },
   muted: { fontSize: 13, color: "#6B7280", marginTop: 2 },
-  cluster: { width: "100%", height: 160, borderRadius: 12, marginTop: 10, backgroundColor: "#F3F4F6" },
   fieldLabel: { fontSize: 11, fontWeight: "800", color: "#9CA3AF", letterSpacing: 0.5 },
   fieldValue: { fontSize: 14, color: "#111827", marginTop: 2, lineHeight: 19 },
-  photoRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
-  thumb: { width: 76, height: 76, borderRadius: 10, backgroundColor: "#F3F4F6" },
+  photoRow: { marginTop: 6 },
   countPill: {
     fontSize: 11.5,
     fontWeight: "800",

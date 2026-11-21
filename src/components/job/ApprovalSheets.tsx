@@ -1,9 +1,11 @@
 import { FontAwesome5 } from "@expo/vector-icons";
+import PhotoStrip from "../PhotoStrip";
 import React, { useEffect, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { JobFollowup, JobOrderEntry, JobPerson } from "../../api/client";
 import { useI18n } from "../../i18n/i18n-ctx";
 import Sheet from "../Sheet";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 type Priority = JobOrderEntry["priority"];
 const PRIORITIES: { key: Priority; color: string; bg: string }[] = [
@@ -101,7 +103,7 @@ export function IssueJobOrdersSheet({
             <Text style={s.sectionTitle}>{t("job2.review.followUpNofM", { n: i + 1, m: followups.length })}</Text>
 
             <Text style={s.label}>{t("job2.followups.issue")} *</Text>
-            <TextInput
+            <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
               value={d.issue}
               onChangeText={(v) => set(f.followup_id, { issue: v })}
               style={s.input}
@@ -109,7 +111,7 @@ export function IssueJobOrdersSheet({
               maxLength={300}
             />
             <Text style={s.label}>{t("job2.followups.action")} *</Text>
-            <TextInput
+            <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
               value={d.action}
               onChangeText={(v) => set(f.followup_id, { action: v })}
               style={s.input}
@@ -120,11 +122,7 @@ export function IssueJobOrdersSheet({
             <Text style={s.label}>{t("job2.review.bus")}</Text>
             <Text style={s.fixed}>{busLabel}</Text>
 
-            {f.photos.length > 0 && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.photos}>
-                {f.photos.map((p) => (p.url ? <Image key={p.media_id} source={{ uri: p.url }} style={s.photo} /> : null))}
-              </ScrollView>
-            )}
+            {f.photos.length > 0 && <PhotoStrip urls={f.photos.map((p) => p.url)} size={64} style={{ marginTop: 8 }} />}
 
             <Text style={s.label}>{t("job2.review.priority")} *</Text>
             <View style={s.prioRow}>
@@ -143,7 +141,7 @@ export function IssueJobOrdersSheet({
             </View>
 
             <Text style={s.label}>{t("job2.review.remarks")}</Text>
-            <TextInput
+            <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
               value={d.remarks}
               onChangeText={(v) => set(f.followup_id, { remarks: v })}
               placeholder={t("job2.review.remarksPlaceholder")}
@@ -205,7 +203,7 @@ export function SendBackSheet({
         {technician?.username ? `  @${technician.username}` : ""}
       </Text>
       <Text style={s.label}>{t("job2.review.reason")} *</Text>
-      <TextInput
+      <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
         value={reason}
         onChangeText={setReason}
         placeholder={t("job2.review.reasonPlaceholder")}
@@ -239,8 +237,6 @@ const s = StyleSheet.create({
     textAlignVertical: "top",
   },
   fixed: { fontSize: 14, fontWeight: "700", color: "#374151" },
-  photos: { gap: 8, marginTop: 10 },
-  photo: { width: 64, height: 64, borderRadius: 8, backgroundColor: "#F3F4F6" },
   prioRow: { flexDirection: "row", gap: 6, flexWrap: "wrap" },
   prio: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: "#E5E7EB" },
   prioText: { fontSize: 13, fontWeight: "800", color: "#4B5563" },

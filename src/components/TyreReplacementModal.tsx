@@ -4,7 +4,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -33,6 +32,8 @@ import { classifyUnevenWear } from "../utils/tyreWear";
 import type { TyrePosition } from "../utils/tyrePositions";
 import { uploadTyrePhoto } from "../utils/tyrePhotoUpload";
 import { useI18n } from "../i18n/i18n-ctx";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID, KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 export type { TyrePosition };
 
@@ -408,9 +409,10 @@ export default function TyreReplacementModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={submitting ? undefined : onClose}>
+      <KeyboardDoneAccessory />
       <KeyboardAvoidingView
         style={s.overlay}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         <View style={s.sheet}>
           <View style={s.header}>
@@ -427,7 +429,7 @@ export default function TyreReplacementModal({
             </Pressable>
           </View>
 
-          <ScrollView contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
+          <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
             {draft.pending && (
               <DraftRestoreBar
                 savedAt={draft.savedAt}
@@ -541,7 +543,7 @@ export default function TyreReplacementModal({
               {renderThicknessRow(incomingThickness, setIncomingThickness)}
 
               <Text style={s.fieldLabel}>{t("tyres.replacementForm.pressure")}</Text>
-              <TextInput
+              <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                 value={incomingPressure}
                 onChangeText={setIncomingPressure}
                 placeholder={t("tyres.replacementForm.pressurePlaceholder")}

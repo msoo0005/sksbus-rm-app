@@ -18,6 +18,7 @@ import { UNEVEN_WEAR_I18N_KEY } from "../../../utils/tyreWear";
 import { positionLabelFor } from "../../../utils/tyrePositions";
 import { useProjectFilter } from "../../../hooks/useProjectFilter";
 import { formatBusLabel } from "../../../utils/busLabel";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 // Fleet tread analysis: the distribution, the statistics behind it, and the
 // buses that need attention first.
@@ -110,7 +111,7 @@ export default function SummaryPanel({ active }: { active: boolean }) {
   const hasReadings = data.measured_count > 0;
 
   return (
-    <ScrollView
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
       style={styles.page}
       contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
       refreshControl={

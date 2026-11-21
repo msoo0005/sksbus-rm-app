@@ -2,6 +2,7 @@
 // only). One screen per bus: its booking, the technician's pre-inspection or
 // re-check, the result, and the chronology.
 
+import PhotoStrip, { PhotoIndexBadge } from "@/components/PhotoStrip";
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
@@ -17,6 +18,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { PspAnswer, PspCheckDef, PspDetail, PspEvent, puspakomApi, uploadPuspakomPhoto } from "../../api/puspakom";
 import { useI18n } from "../../i18n/i18n-ctx";
 import {
@@ -40,6 +42,8 @@ import Pill from "./Pill";
 import PuspakomMark from "./PuspakomMark";
 import { FieldLabel, InfoRow, Section } from "./Section";
 import StatusPill from "./StatusPill";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 const FM = ROLE_COLORS.fleet_manager.accent;
 
@@ -80,9 +84,11 @@ export default function BusInspectionView({ busId, inspectionId }: Props) {
   const bus = data.bus;
 
   return (
-    <ScrollView
+    <KeyboardAwareScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE}
       style={s.page}
       contentContainerStyle={s.content}
+      keyboardShouldPersistTaps="handled"
+      bottomOffset={24}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
@@ -93,7 +99,6 @@ export default function BusInspectionView({ busId, inspectionId }: Props) {
           }}
         />
       }
-      keyboardShouldPersistTaps="handled"
     >
       <Section>
         <PuspakomMark />
@@ -112,7 +117,7 @@ export default function BusInspectionView({ busId, inspectionId }: Props) {
       )}
 
       <Chronology events={isOpen ? data.events : data.events.filter((e) => e.type === "RESULT_PASSED" || e.type === "RESULT_FAILED").slice(-1)} />
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 
@@ -436,7 +441,7 @@ function ResultSection({ data, onSaved }: { data: PspDetail; onSaved: () => void
                   </Pressable>
                 </View>
                 <Text style={s.foundLabel}>{t("puspakom.bus.whatFound")}</Text>
-                <TextInput
+                <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                   value={f.found}
                   onChangeText={(v) => setFailed(failed.map((x) => (x.check_id === f.check_id ? { ...x, found: v } : x)))}
                   placeholder={t("puspakom.bus.whatFoundPh")}
@@ -537,10 +542,11 @@ function ResultCard({ kind, selected, disabled, onPress }: { kind: "PASSED" | "F
 function SlipPicker({ slips, onAdd, onRemove }: { slips: LocalMedia[]; onAdd: () => void; onRemove: (i: number) => void }) {
   const { t } = useI18n();
   return (
-    <View style={s.slipRow}>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.slipRow}>
       {slips.map((m, i) => (
         <View key={m.localUri} style={s.slipThumb}>
           <Image source={{ uri: m.localUri }} style={s.slipImg} />
+          <PhotoIndexBadge index={i} total={slips.length} />
           <Pressable style={s.slipRemove} onPress={() => onRemove(i)} hitSlop={8}>
             <FontAwesome5 name="times" size={9} color="#fff" />
           </Pressable>
@@ -550,20 +556,12 @@ function SlipPicker({ slips, onAdd, onRemove }: { slips: LocalMedia[]; onAdd: ()
         <FontAwesome5 name="camera" size={16} color={FM} />
         <Text style={[s.slipAddText, { color: FM }]}>{t("puspakom.bus.addPhoto")}</Text>
       </Pressable>
-    </View>
+    </ScrollView>
   );
 }
 
 function PhotoRow({ urls }: { urls: (string | null)[] }) {
-  const shown = urls.filter((u): u is string => !!u);
-  if (!shown.length) return null;
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingTop: 8 }}>
-      {shown.map((u) => (
-        <Image key={u} source={{ uri: u }} style={s.photo} />
-      ))}
-    </ScrollView>
-  );
+  return <PhotoStrip urls={urls} size={72} style={{ paddingTop: 8 }} />;
 }
 
 /** "Stop 4 · Left side · pre-inspection: 3.6 mm · Check soon" */
@@ -814,7 +812,6 @@ const s = StyleSheet.create({
   fixItem: { paddingTop: 10, marginTop: 6, borderTopWidth: 1, borderTopColor: "#F3F4F6" },
   fixTitle: { fontSize: 13, fontWeight: "800", color: "#111827" },
   fixText: { fontSize: 13, color: "#374151", marginTop: 2 },
-  photo: { width: 96, height: 72, borderRadius: 8, backgroundColor: "#E5E7EB" },
   resultRow: { flexDirection: "row", gap: 10, marginTop: 6 },
   resultCard: { flex: 1, borderWidth: 1, borderColor: "#E5E7EB", borderRadius: 14, padding: 12, backgroundColor: "#fff" },
   resultIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: "#F3F4F6", alignItems: "center", justifyContent: "center", marginBottom: 8 },
@@ -854,7 +851,7 @@ const s = StyleSheet.create({
     paddingVertical: 12,
   },
   addFailedText: { color: "#B91C1C", fontWeight: "800", fontSize: 14 },
-  slipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  slipRow: { flexDirection: "row", gap: 8 },
   slipThumb: { width: 76, height: 76, borderRadius: 10, overflow: "hidden" },
   slipImg: { width: "100%", height: "100%" },
   slipRemove: {

@@ -4,6 +4,8 @@ import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from "r
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useI18n } from "../i18n/i18n-ctx";
 import { BUS_SYSTEM_KEYS, busSystemNo, normaliseBusSystem, type BusSystemKey } from "../utils/busSystems";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 type Props = {
   value: string | null;
@@ -61,6 +63,7 @@ export default function BusSystemPicker({ value, onChange, disabled, onLockedPre
       </Pressable>
 
       <Modal visible={open} animationType="slide" onRequestClose={() => setOpen(false)}>
+        <KeyboardDoneAccessory />
         <View style={[s.sheet, { paddingTop: insets.top + 12 }]}>
           <View style={s.head}>
             <Text style={s.title}>{t("busSystems.pickerTitle")}</Text>
@@ -76,7 +79,7 @@ export default function BusSystemPicker({ value, onChange, disabled, onLockedPre
             style={s.search}
             autoCorrect={false}
           />
-          <FlatList
+          <FlatList keyboardDismissMode={KEYBOARD_DISMISS_MODE}
             data={rows}
             keyExtractor={(r) => r.key}
             keyboardShouldPersistTaps="handled"

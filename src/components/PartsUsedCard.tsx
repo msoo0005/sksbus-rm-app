@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useI18n } from "../i18n/i18n-ctx";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { PartUsed } from '../types/report';
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 export type PartCatalogItem = {
   id: number;
@@ -85,7 +86,7 @@ export default function PartsUsedCard({ catalog, value, onChange }: Props) {
 
       {/* Catalog list (scrollable) */}
       <View style={styles.list}>
-        <ScrollView
+        <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE}
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"

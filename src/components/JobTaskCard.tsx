@@ -16,7 +16,9 @@ import type { TaskPart } from "../api/client";
 import { api } from "../api/client";
 import ImagePickerField, { LocalMedia } from "./ImagePicker";
 import ImageViewerOverlay from "./ImageViewerOverlay";
+import { PhotoIndexBadge } from "./PhotoStrip";
 import { busSystemLabel } from "../utils/busSystems";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 export type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -258,7 +260,7 @@ export default function JobTaskCard({ task, jobId, editable, onUpdated }: Props)
           {/* Description */}
           {editingDesc ? (
             <View style={{ marginBottom: 12 }}>
-              <TextInput
+              <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                 value={descDraft}
                 onChangeText={setDescDraft}
                 placeholder={t("jobTask.descriptionPlaceholder")}
@@ -369,6 +371,7 @@ export default function JobTaskCard({ task, jobId, editable, onUpdated }: Props)
                     style={s.thumb}
                   >
                     <Image source={{ uri }} style={s.thumbImg} />
+                    <PhotoIndexBadge index={idx} total={photoUrls.length} />
                   </Pressable>
                 ))}
               </ScrollView>

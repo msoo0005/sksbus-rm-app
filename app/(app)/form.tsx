@@ -43,6 +43,8 @@ import { reportTypeTitleLabel } from "@/utils/reportType";
 import { getRouteColourHex, routeColourNeedsBorder } from "@/utils/routeColours";
 import { getProjectLogo } from "@/utils/projectLogos";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID, KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 type Priority = "low" | "medium" | "high" | "critical";
 
@@ -110,6 +112,7 @@ function PriorityPickerModal({
       transparent
       onRequestClose={onClose}
     >
+      <KeyboardDoneAccessory />
       <View style={priorityModalStyles.backdrop}>
         <View style={priorityModalStyles.sheet}>
           <View style={priorityModalStyles.header}>
@@ -122,7 +125,7 @@ function PriorityPickerModal({
             <View style={{ width: 24 }} />
           </View>
 
-          <ScrollView contentContainerStyle={priorityModalStyles.body}>
+          <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" contentContainerStyle={priorityModalStyles.body}>
             <Text style={priorityModalStyles.sectionLabel}>
               {t("reportForm.selectPriorityLevel")}{" "}
               <Text style={priorityModalStyles.required}>*</Text>
@@ -237,6 +240,7 @@ function VehiclePickerModal({
       transparent
       onRequestClose={onClose}
     >
+      <KeyboardDoneAccessory />
       <View style={vehicleModalStyles.backdrop}>
         <View style={vehicleModalStyles.sheet}>
           <View style={vehicleModalStyles.header}>
@@ -267,7 +271,7 @@ function VehiclePickerModal({
             )}
           </View>
 
-          <FlatList
+          <FlatList keyboardDismissMode={KEYBOARD_DISMISS_MODE}
             data={filtered}
             keyExtractor={(item) => item.value}
             keyboardShouldPersistTaps="handled"
@@ -793,7 +797,7 @@ export default function ReportFormScreen() {
       <Text style={styles.sectionHead}>{t("reportForm.section2")}</Text>
 
       <Text style={styles.label}>{t("reportForm.descriptionLabel")}</Text>
-      <TextInput
+      <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
         style={styles.textArea}
         placeholder={t("reportForm.descriptionPlaceholder")}
         placeholderTextColor="#9CA3AF"
@@ -845,6 +849,7 @@ export default function ReportFormScreen() {
         required
         value={issuePhotos}
         onChange={(m) => setIssuePhotos(m.slice(0, 10))}
+        limit={10}
         disabled={submitting}
       />
 
@@ -856,6 +861,7 @@ export default function ReportFormScreen() {
         required
         value={dashboardPhoto}
         onChange={(m) => setDashboardPhoto(m.slice(0, 5))}
+        limit={5}
         disabled={submitting}
       />
 
@@ -866,6 +872,7 @@ export default function ReportFormScreen() {
         iconAccentLight="#F0FDF4"
         value={exteriorPhoto}
         onChange={(m) => setExteriorPhoto(m.slice(0, 4))}
+        limit={4}
         disabled={submitting}
       />
 

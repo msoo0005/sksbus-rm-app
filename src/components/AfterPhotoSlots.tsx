@@ -3,8 +3,9 @@ import { useI18n } from "../i18n/i18n-ctx";
 import React, { useState } from "react";
 import { Alert, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import type { LocalMedia } from "./ImagePicker";
-import { pickImage } from "./ImagePicker";
+import { pickImage, pickImages } from "./ImagePicker";
 import ImageViewerOverlay from "./ImageViewerOverlay";
+import { PhotoIndexBadge } from "./PhotoStrip";
 
 export type PhotoSlot = {
   key: string;
@@ -21,7 +22,9 @@ type Props = {
   title?: string;
   slots: PhotoSlot[];
   value: Record<string, LocalMedia[]>;
-  onChange: (key: string, next: LocalMedia[]) => void;
+  // May return a promise (an upload): several slots filled at once from the
+  // gallery are then saved one after another, not all at the same moment.
+  onChange: (key: string, next: LocalMedia[]) => void | Promise<void>;
   disabled?: boolean;
   readOnly?: boolean;
   onPressReadOnly?: () => void;
@@ -45,12 +48,27 @@ export default function AfterPhotoSlots({
   const filledCount = slots.filter((s) => (value[s.key]?.length ?? 0) > 0).length;
 
   const capture = async (slot: PhotoSlot, fromCamera: boolean) => {
-    const item = await pickImage(fromCamera, undefined, {
+    const labels = {
       title: t("common.permissionRequired"),
       cameraBody: t("common.cameraPermissionBody"),
       galleryBody: t("common.galleryPermissionBody"),
-    });
-    if (item) onChange(slot.key, [item]);
+    };
+    if (fromCamera) {
+      const item = await pickImage(true, undefined, labels);
+      if (item) await onChange(slot.key, [item]);
+      return;
+    }
+    // From the gallery, several photos fill this slot and then the empty
+    // slots after it, in the order they were picked.
+    const targets = [
+      slot,
+      ...slots.slice(slots.indexOf(slot) + 1).filter((x) => !(value[x.key]?.length)),
+      ...slots.slice(0, slots.indexOf(slot)).filter((x) => !(value[x.key]?.length)),
+    ];
+    const picked = await pickImages(labels, { limit: targets.length });
+    for (let i = 0; i < picked.length && i < targets.length; i++) {
+      await onChange(targets[i].key, [picked[i]]);
+    }
   };
 
   const openActionSheet = (slot: PhotoSlot) => {
@@ -71,8 +89,9 @@ export default function AfterPhotoSlots({
     ]);
   };
 
-  const previewSlot = slots.find((s) => s.key === previewKey);
-  const previewItem = previewSlot ? value[previewSlot.key]?.[0] : null;
+  // Every filled slot, in order, so the full-screen view swipes through them.
+  const filled = slots.filter((x) => !!value[x.key]?.[0]);
+  const previewIndex = filled.findIndex((x) => x.key === previewKey);
 
   // An odd slot count can't tile evenly into pairs — pull the first slot out
   // as a full-width "featured" tile so the remainder always forms a clean
@@ -100,6 +119,7 @@ export default function AfterPhotoSlots({
           {media ? (
             <>
               <Image source={{ uri: media.localUri }} style={styles.tileImage} />
+              <PhotoIndexBadge index={filled.indexOf(slot)} total={filled.length} />
               {!readOnly && !disabled && (
                 <Pressable
                   style={styles.tileEditBtn}
@@ -138,9 +158,10 @@ export default function AfterPhotoSlots({
       </View>
 
       <ImageViewerOverlay
-        visible={!!previewItem}
-        imageUrls={previewItem ? [{ url: previewItem.localUri }] : []}
-        startIndex={0}
+        visible={previewIndex >= 0}
+        imageUrls={filled.map((x) => ({ url: value[x.key][0].localUri }))}
+        captions={filled.map((x) => x.label)}
+        startIndex={Math.max(previewIndex, 0)}
         onClose={() => setPreviewKey(null)}
       />
     </View>

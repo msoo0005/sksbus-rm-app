@@ -37,6 +37,7 @@ import {
 } from "@/utils/tyrePositions";
 import { useFormDraft } from "@/hooks/useFormDraft";
 import { uploadTyrePhoto } from "@/utils/tyrePhotoUpload";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 // Matches the odometer validation on the technician job page — an
 // unrealistic reading (letters, decimals, commas, or an absurd value) is
@@ -435,7 +436,7 @@ export default function TyreInspectionFormScreen() {
         ) : (
           <>
             <Text style={styles.helperText}>{t("tyres.inspectionForm.odometerHelper")}</Text>
-            <TextInput
+            <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
               style={[styles.input, { marginTop: 10 }]}
               value={odometer}
               onChangeText={setOdometer}

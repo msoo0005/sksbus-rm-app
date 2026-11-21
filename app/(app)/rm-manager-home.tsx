@@ -40,20 +40,30 @@ export default function RmManagerHomeScreen() {
         { icon: "check-circle", label: t("rmManagerHome.highlight1") },
         { icon: "tasks", label: t("rmManagerHome.highlight2") },
       ]}
-      // Rows by importance (v2.0.0 A2): Tyres, PUSPAKOM, Parts, then KPIs.
+      // Rows by importance (v2.0.0 A2): Job Order Registration, Tyres,
+      // PUSPAKOM, Parts, then KPIs.
       secondaryAction={{
-        title: t("rmManagerHome.secondaryTitle"),
-        description: t("rmManagerHome.secondaryDescription"),
-        icon: "dot-circle",
-        iconElement: <TyreIcon size={20} color={accent} />,
+        title: t("jobOrder.homeTitle"),
+        description: t("jobOrder.homeDescription"),
+        icon: "clipboard-list",
         accent,
         accentLight: light,
-        // Tyre management is a main job for this role, not a side trip.
         prominent: true,
-        badge: waiting > 0 ? t("tyres.section.homeBadge", { count: waiting }) : null,
-        onPress: () => router.push("/tyres" as any),
+        onPress: () => router.push("/technician/job-order" as any),
       }}
       extraActions={[
+        {
+          title: t("rmManagerHome.secondaryTitle"),
+          description: t("rmManagerHome.secondaryDescription"),
+          icon: "dot-circle",
+          iconElement: <TyreIcon size={20} color={accent} />,
+          accent,
+          accentLight: light,
+          // Tyre management is a main job for this role, not a side trip.
+          prominent: true,
+          badge: waiting > 0 ? t("tyres.section.homeBadge", { count: waiting }) : null,
+          onPress: () => router.push("/tyres" as any),
+        },
         {
           // View only: nothing for this role to act on, so no count (spec p.59).
           title: t("puspakom.home.rmTitle"),

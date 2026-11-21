@@ -17,6 +17,7 @@ import { formatDate, formatDateTime } from "@/utils/datetime";
 import { detailLine, formatReading } from "@/utils/tyreFormat";
 import { positionLabelFor } from "@/utils/tyrePositions";
 import { formatBusLabel } from "@/utils/busLabel";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 // A single tyre's life: where it is now, every bus it has been fitted to, and
 // every inspection it has been through.
@@ -81,7 +82,7 @@ export default function TyreDetailScreen() {
     : [];
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" style={styles.page} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
       {/* The serial, once loaded — the layout's static "Tyre Details" is only
           the fallback shown while the record is still arriving. */}
       <Stack.Screen options={{ title: tyre.tyre_serial_number }} />

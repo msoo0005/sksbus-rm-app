@@ -6,6 +6,8 @@ import { useI18n } from "../i18n/i18n-ctx";
 import type { BusSystemKey } from "../utils/busSystems";
 import BusSystemPicker from "./BusSystemPicker";
 import ImagePickerField, { type LocalMedia } from "./ImagePicker";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 // One task being written, before it is saved. Used by the technician's job
 // screen ("Add task") and by Job Order Registration, so both ask for the same
@@ -249,7 +251,7 @@ export default function TaskEditorCard({
                 </Text>
                 <Text style={s.labelHint}>{t("taskEditor.repairOnly")}</Text>
               </View>
-              <TextInput
+              <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                 value={value.issue}
                 onChangeText={(v) => set({ issue: v })}
                 placeholder={t("jobDetail.taskIssuePlaceholder")}
@@ -265,7 +267,7 @@ export default function TaskEditorCard({
           <Text style={s.label}>
             {t("taskEditor.workDone")} <Text style={s.req}>*</Text>
           </Text>
-          <TextInput
+          <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
             value={value.workDone}
             onChangeText={(v) => set({ workDone: v })}
             placeholder={t("taskEditor.workDonePlaceholder")}
@@ -350,7 +352,7 @@ export default function TaskEditorCard({
                 style={s.input}
                 autoCorrect={false}
               />
-              <ScrollView style={{ maxHeight: 240, marginTop: 8 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+              <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} style={{ maxHeight: 240, marginTop: 8 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
                 {filtered.length === 0 ? (
                   <Text style={s.muted}>{loadingParts ? t("taskEditor.loadingParts") : t("partsUsed.noPartsFound")}</Text>
                 ) : (

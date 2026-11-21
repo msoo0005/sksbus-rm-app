@@ -15,6 +15,7 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { syncAllDrafts } from "@/offline/puspakomDrafts";
 import { TECH_PILL_TONE, daysBetween, fmtDateTime, fmtDayMonth, fmtShortDateTime, mytDate } from "@/utils/puspakom";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const ACCENT = ROLE_COLORS.technician.accent;
 type Tab = "TODO" | "DONE" | "ALL";
@@ -90,7 +91,7 @@ export default function PreInspectionList() {
 
   return (
     <View style={s.page}>
-      <ScrollView
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE}
         contentContainerStyle={s.content}
         refreshControl={
           <RefreshControl

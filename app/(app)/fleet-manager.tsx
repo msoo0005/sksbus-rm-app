@@ -4,6 +4,7 @@ import React, { useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { useI18n } from "@/i18n/i18n-ctx";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type ReportType = "problem" | "repair" | "accident";
 
@@ -62,7 +63,7 @@ export default function FleetManagerScreen() {
   };
 
   return (
-    <ScrollView
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
       style={styles.page}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}

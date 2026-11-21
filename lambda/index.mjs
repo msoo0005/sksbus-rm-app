@@ -304,6 +304,44 @@ export const handler = async (event) => {
       return await withConn((c) => getJobReportPdf(c, auth, jobId));
     }
 
+    // ===== ADMIN: REPORTS & JOBS =====
+    if (method === "GET" && path === "/admin/records") {
+      return await withConn((c) => adminListRecords(c, auth, qs));
+    }
+
+    if (method === "GET" && path === "/admin/technicians") {
+      return await withConn((c) => adminListTechnicians(c, auth, qs));
+    }
+
+    if (method === "PATCH" && /^\/admin\/reports\/\d+$/.test(path)) {
+      const reportId = getIdFromParamsOrPath(params.report_id, path, /^\/admin\/reports\/(\d+)$/);
+      return await withConn((c) => adminEditReport(c, auth, reportId, mustJson(event)));
+    }
+
+    if (method === "POST" && /^\/admin\/reports\/\d+\/delete$/.test(path)) {
+      const reportId = getIdFromParamsOrPath(params.report_id, path, /^\/admin\/reports\/(\d+)\/delete$/);
+      return await withConn((c) => adminDeleteRecord(c, auth, reportId, mustJson(event)));
+    }
+
+    if (method === "POST" && /^\/admin\/jobs\/\d+\/(status|assign)$/.test(path)) {
+      const jobId = getIdFromParamsOrPath(params.job_id, path, /^\/admin\/jobs\/(\d+)\//);
+      const fn = path.endsWith("/status") ? adminSetJobStatus : adminAssignJob;
+      return await withConn((c) => fn(c, auth, jobId, mustJson(event)));
+    }
+
+    if (method === "DELETE" && /^\/tasks\/\d+$/.test(path)) {
+      const taskId = getIdFromParamsOrPath(params.task_id, path, /^\/tasks\/(\d+)$/);
+      return await withConn((c) => adminDeleteTask(c, auth, taskId));
+    }
+
+    if ((method === "PATCH" || method === "DELETE") && /^\/tasks\/\d+\/parts\/\d+$/.test(path)) {
+      const m = path.match(/^\/tasks\/(\d+)\/parts\/(\d+)$/);
+      const taskId = toId(params.task_id ?? m[1], "task_id");
+      const partId = toId(params.part_id ?? m[2], "part_id");
+      const body = method === "PATCH" ? mustJson(event) : {};
+      return await withConn((c) => adminSetTaskPart(c, auth, taskId, partId, body, { remove: method === "DELETE" }));
+    }
+
     // ===== JOBS =====
 
     if (method === "PATCH" && isJobIdPath(path)) {
@@ -2391,7 +2429,10 @@ function jobStatusGroup(state) {
   return { pending_approval: 1, arrived: 2, accepted: 3, approved: 4 }[state] ?? null;
 }
 
-const JOB_AFTER_SLOTS = Object.freeze(["dashboard", "front", "back", "left", "right"]);
+// Every after-photo slot a photo may be filed under (older jobs used all five),
+// and the ones Complete Job needs: the dashboard and the front.
+const JOB_AFTER_SLOTS_ALL = Object.freeze(["dashboard", "front", "back", "left", "right"]);
+const JOB_AFTER_SLOTS = Object.freeze(["dashboard", "front"]);
 
 /** Why Complete Job can't run yet, naming the first missing item (C3), or null. */
 function jobCompleteProblem({ taskCount, afterSlots }) {
@@ -2403,7 +2444,7 @@ function jobCompleteProblem({ taskCount, afterSlots }) {
   if (missing.length) {
     return {
       code: "AFTER_PHOTOS_REQUIRED",
-      message: `Please add all 5 after photos before completing the job (${JOB_AFTER_SLOTS.length - missing.length}/5).`,
+      message: `Please add the dashboard and front after photos before completing the job (${JOB_AFTER_SLOTS.length - missing.length}/${JOB_AFTER_SLOTS.length}).`,
       missing,
     };
   }
@@ -2411,8 +2452,15 @@ function jobCompleteProblem({ taskCount, afterSlots }) {
 }
 
 const ODOMETER_MAX_JUMP_KM = 2000;
+// Returned by odometerProblem for a reading more than ODOMETER_MAX_JUMP_KM past
+// the bus's last one: allowed once the technician confirms it.
+const ODOMETER_HIGH = "ODOMETER_HIGH";
 
-/** C3: digits only, not 0, at least the bus's last reading and at most last + 2,000 km. */
+/**
+ * C3: digits only, not 0, and at least the bus's last reading. More than
+ * 2,000 km past it returns ODOMETER_HIGH, which the technician may confirm
+ * (a bus can go a long time between jobs, or the last reading was wrong).
+ */
 function odometerProblem(value, lastOdo) {
   const s = String(value ?? "").trim();
   if (!/^\d+$/.test(s)) return "Check the reading";
@@ -2420,7 +2468,8 @@ function odometerProblem(value, lastOdo) {
   if (n <= 0) return "Check the reading";
   if (lastOdo != null && Number.isFinite(Number(lastOdo))) {
     const last = Number(lastOdo);
-    if (n < last || n > last + ODOMETER_MAX_JUMP_KM) return "Check the reading";
+    if (n < last) return "Check the reading";
+    if (n > last + ODOMETER_MAX_JUMP_KM) return ODOMETER_HIGH;
   }
   return null;
 }
@@ -2612,8 +2661,11 @@ function toWholeNumber(v, name) {
   return n;
 }
 
+// Applies to whoever does the work on a job: a technician, or an R&M Manager
+// filling in a job order they registered. Either may only change a job they
+// hold, while it is still open.
 async function assertTechJobUnlocked(conn, auth, jobId) {
-  if (auth.role !== "technician") return;
+  if (auth.role !== "technician" && auth.role !== "rm_manager") return;
 
   const techUserId = await getOrCreateUserId(conn, auth);
   const [rows] = await conn.execute(
@@ -2636,7 +2688,7 @@ async function assertTechJobUnlocked(conn, auth, jobId) {
 }
 
 async function assertTechTaskUnlocked(conn, auth, taskId) {
-  if (auth.role !== "technician") return;
+  if (auth.role !== "technician" && auth.role !== "rm_manager") return;
 
   const [rows] = await conn.execute(`SELECT job_id FROM JOB_TASK WHERE task_id=? LIMIT 1`, [taskId]);
   if (!rows.length) throw new Error("task_id not found");
@@ -2661,8 +2713,18 @@ async function patchJob(conn, auth, jobId, b) {
   // C3: digits only, not 0, at least the bus's last reading and at most
   // last + 2,000 km.
   const lastOdo = job.bus_id != null ? await lastBusOdometer(conn, job.bus_id, jobId) : null;
-  const problem = odometerProblem(rawOdo, lastOdo);
-  if (problem) {
+  // The admin may fix a reading outside the usual range (a wrong earlier
+  // reading on the bus can make the right one look impossible). Digits only, still.
+  const override = auth.role === "admin" && b?.override === true;
+  const problem = odometerProblem(rawOdo, override ? null : lastOdo);
+  if (problem === ODOMETER_HIGH && b?.confirm_high !== true) {
+    return json(400, {
+      code: "ODOMETER_HIGH",
+      message: `This is more than ${ODOMETER_MAX_JUMP_KM.toLocaleString("en-US")} km past the last reading. Confirm it to save.`,
+      last_odometer: lastOdo,
+    });
+  }
+  if (problem && problem !== ODOMETER_HIGH) {
     return json(400, { code: "ODOMETER_CHECK", message: problem, last_odometer: lastOdo });
   }
   const odo = Number(String(rawOdo).trim());
@@ -2706,6 +2768,7 @@ async function patchJob(conn, auth, jobId, b) {
     auth,
     detail: correcting ? { from_km: Number(job.job_odometer), to_km: odo } : { odometer_km: odo },
   });
+  await requeuePdfIfClosed(conn, jobId);
   return json(200, { success: true, job_odometer: odo });
 }
 
@@ -2976,7 +3039,7 @@ async function updateJobStatus(conn, auth, jobId, b) {
   const job = jRows[0];
   const state = jobState(job.job_status, job);
 
-  if (auth.role === "technician" && Number(job.technician_user_id) !== userId) {
+  if ((auth.role === "technician" || auth.role === "rm_manager") && Number(job.technician_user_id) !== userId) {
     return json(403, { code: "FORBIDDEN", message: "Forbidden" });
   }
   // A retry after a lost response: success, and nothing is sent twice.
@@ -2998,7 +3061,7 @@ async function updateJobStatus(conn, auth, jobId, b) {
   // TECH_ORDER: the technician's own job order closes on submit.
   const lock = await assertTechJobUnlocked(conn, auth, jobId);
   if (lock) return lock;
-  if (auth.role === "technician" && !job.job_selfie_s3_key) {
+  if (auth.role !== "admin" && !job.job_selfie_s3_key) {
     return json(400, { code: "VERIFICATION_REQUIRED", message: "Your name and a selfie are required to complete a job" });
   }
   const problem = await checkTasksComplete(conn, jobId);
@@ -3031,7 +3094,7 @@ async function updateJobStatus(conn, auth, jobId, b) {
 
   try {
     await ensureJobRefNo(conn, jobId);
-    await queueJobReportPdf(conn, jobId);
+    await queueJobReportPdf(conn, jobId, { force: true });
   } catch (e) {
     console.error("[PDF] queue after close failed", { jobId, message: e?.message });
   }
@@ -3303,9 +3366,10 @@ async function approveJob(conn, auth, jobId, b) {
   }
 
   // The Job Completion Report. Best-effort: GET report-pdf queues it again.
+  // force: a job the admin reopened already has a file, now out of date.
   try {
     await ensureJobRefNo(conn, jobId);
-    await queueJobReportPdf(conn, jobId);
+    await queueJobReportPdf(conn, jobId, { force: true });
   } catch (e) {
     console.error("[PDF] queue after approval failed", { jobId, message: e?.message });
   }
@@ -3677,7 +3741,7 @@ async function listJobTasks(conn, auth, jobId) {
 }
 
 async function createJobTask(conn, auth, jobId, b) {
-  const deny = requireRole(auth, ["admin", "technician"]);
+  const deny = requireRole(auth, ["admin", "technician", "rm_manager"]);
   if (deny) return deny;
 
   const lock = await assertTechJobUnlocked(conn, auth, jobId);
@@ -3776,10 +3840,43 @@ async function updateJobTask(conn, auth, taskId, b) {
   }
   if (b.task_order != null)     { updates.push("task_order=?");  vals.push(Number(b.task_order)); }
 
+  // The admin may also correct what the task is (Reports & jobs tool).
+  if (auth.role === "admin") {
+    if (b.task_name !== undefined) {
+      const name = String(b.task_name ?? "").trim();
+      if (!name || name.length > 255) throw new Error("Invalid task_name");
+      updates.push("task_name=?"); vals.push(name);
+    }
+    if (b.task_job_type !== undefined) {
+      const jt = String(b.task_job_type ?? "").trim().toLowerCase();
+      if (!TASK_JOB_TYPES.includes(jt)) throw new Error("Invalid task_job_type: repair or maintenance");
+      updates.push("task_job_type=?"); vals.push(jt);
+    }
+    if (b.task_category !== undefined) {
+      const cat = normaliseBusSystem(b.task_category);
+      if (!cat) throw new Error("Invalid task_category");
+      updates.push("task_category=?"); vals.push(cat);
+    }
+  }
+
   if (!updates.length) return json(200, { success: true });
 
   vals.push(taskId);
   await conn.execute(`UPDATE JOB_TASK SET ${updates.join(", ")} WHERE task_id=?`, vals);
+
+  if (auth.role === "admin") {
+    const task = await adminTaskJob(conn, taskId);
+    if (task) {
+      await logJobEvent(conn, {
+        jobId: task.job_id,
+        type: "ADMIN_TASK_EDITED",
+        userId: await getOrCreateUserId(conn, auth),
+        auth,
+        detail: { task_id: Number(taskId), task_name: task.task_name, fields: Object.keys(b ?? {}) },
+      });
+      await requeuePdfIfClosed(conn, task.job_id);
+    }
+  }
   return json(200, { success: true });
 }
 
@@ -3803,7 +3900,7 @@ async function listTaskParts(conn, auth, taskId) {
 }
 
 async function addTaskPart(conn, auth, taskId, b) {
-  const deny = requireRole(auth, ["admin", "inventory_manager", "technician"]);
+  const deny = requireRole(auth, ["admin", "inventory_manager", "technician", "rm_manager"]);
   if (deny) return deny;
 
   const lock = await assertTechTaskUnlocked(conn, auth, taskId);
@@ -3858,7 +3955,8 @@ async function addTaskPart(conn, auth, taskId, b) {
 const JOB_ORDER_TYPE = "job_order";
 
 async function createJobOrder(conn, auth, b) {
-  const deny = requireRole(auth, ["admin", "technician"]);
+  // R&M Managers register job orders too (they log work they did themselves).
+  const deny = requireRole(auth, ["admin", "technician", "rm_manager"]);
   if (deny) return deny;
 
   const userId = await getOrCreateUserId(conn, auth);
@@ -4234,6 +4332,604 @@ async function getJobDetails(conn, auth, jobId) {
   });
 }
 
+// ===================== ADMIN: REPORTS & JOBS =====================
+//
+// The admin's "Reports & jobs" tool: find any report or job, correct it, move
+// a job to another step or technician, fix its tasks, parts and odometer, or
+// delete it permanently. Every change is logged in Job Progress (JOB_EVENT)
+// with the reason given; a deletion leaves only a CloudWatch line, since the
+// rows it would be logged against are gone.
+
+const ADMIN_ONLY = ["admin"];
+const ADMIN_JOB_TARGETS = ["approved", "accepted", "arrived", "pending_approval", "closed"];
+const ADMIN_LIST_MAX = 100;
+
+/** The record's status as one word: draft, pending, declined, or the job's state. */
+function adminRecordStatus(r) {
+  const rs = String(r.report_status ?? "").trim().toLowerCase();
+  if (rs === REPORT_STATUS_DRAFT) return "draft";
+  if (r.job_id == null) return rs === "declined" ? "declined" : rs === "closed" ? "closed" : "pending";
+  return jobState(r.job_status, r);
+}
+
+const ADMIN_STATUS_SQL = {
+  draft: "LOWER(TRIM(COALESCE(r.report_status,''))) = 'draft'",
+  pending:
+    "r.job_id IS NULL AND (r.report_status IS NULL OR LOWER(TRIM(r.report_status)) IN ('','submitted','pending'))",
+  declined: "LOWER(TRIM(COALESCE(r.report_status,''))) = 'declined'",
+  active: `j.job_id IS NOT NULL AND j.job_status NOT IN ${JOB_DONE_SQL} AND j.job_status <> 'pending_approval'`,
+  awaiting: "j.job_status = 'pending_approval'",
+  closed: `(j.job_status IN ${JOB_DONE_SQL} OR (r.job_id IS NULL AND LOWER(TRIM(COALESCE(r.report_status,''))) = 'closed'))`,
+};
+
+// GET /admin/records?q=&status=&project_id=&offset=
+async function adminListRecords(conn, auth, qs) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+
+  const where = [];
+  const vals = [];
+  const status = String(qs?.status ?? "all");
+  if (ADMIN_STATUS_SQL[status]) where.push(ADMIN_STATUS_SQL[status]);
+  else where.push(ADMIN_STATUS_SQL.draft.replace("=", "<>"));
+  if (qs?.project_id) { where.push("r.project_id=?"); vals.push(String(qs.project_id).trim()); }
+
+  const q = String(qs?.q ?? "").trim().slice(0, 100);
+  if (q) {
+    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const parts = [
+      "r.report_ref_no LIKE ?", "j.job_ref_no LIKE ?", "r.bus_id LIKE ?", "b.bus_ev_no LIKE ?",
+      "r.report_desc LIKE ?", "u.user_name LIKE ?", "t.user_name LIKE ?",
+    ];
+    vals.push(like, like, like, like, like, like, like);
+    if (/^\d+$/.test(q)) { parts.push("r.report_id=?", "r.job_id=?"); vals.push(Number(q), Number(q)); }
+    where.push(`(${parts.join(" OR ")})`);
+  }
+
+  const offset = Math.max(0, Number.parseInt(String(qs?.offset ?? "0"), 10) || 0);
+  const [rows] = await conn.query(
+    `SELECT r.report_id, r.report_ref_no, r.report_type, r.report_status, r.report_desc, r.report_priority,
+            r.report_issue_type, r.report_uploaded_at, r.bus_id, r.project_id, r.job_id,
+            b.bus_ev_no, u.user_name AS reporter_name,
+            j.job_status, j.job_ref_no, j.job_source, j.technician_user_id, j.job_odometer, j.job_updated_at,
+            t.user_name AS technician_name
+     FROM REPORT r
+     LEFT JOIN JOB j ON j.job_id = r.job_id
+     LEFT JOIN BUS b ON b.bus_id = r.bus_id
+     LEFT JOIN \`USER\` u ON u.user_id = r.user_id
+     LEFT JOIN \`USER\` t ON t.user_id = j.technician_user_id
+     WHERE ${where.join(" AND ")}
+     ORDER BY r.report_uploaded_at DESC, r.report_id DESC
+     LIMIT ${ADMIN_LIST_MAX + 1} OFFSET ${offset}`,
+    vals
+  );
+  const items = rows.slice(0, ADMIN_LIST_MAX).map((r) => ({
+    report_id: Number(r.report_id),
+    job_id: r.job_id == null ? null : Number(r.job_id),
+    ref_no: r.report_ref_no ?? r.job_ref_no ?? null,
+    type: r.report_type,
+    source: r.job_source ?? null,
+    status: adminRecordStatus(r),
+    desc: r.report_desc,
+    priority: r.report_priority,
+    category: busSystemInfo(r.report_issue_type),
+    submitted_at: r.report_uploaded_at,
+    bus_id: r.bus_id,
+    bus_ev_no: r.bus_ev_no ?? null,
+    project_id: r.project_id,
+    reporter_name: r.reporter_name ?? null,
+    technician_name: r.technician_name ?? null,
+  }));
+  return json(200, { items, has_more: rows.length > ADMIN_LIST_MAX, next_offset: offset + items.length });
+}
+
+// GET /admin/technicians?project_id= : who a job can be given to.
+async function adminListTechnicians(conn, auth, qs) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+  const projectId = qs?.project_id ? String(qs.project_id).trim() : null;
+  const [rows] = await conn.execute(
+    `SELECT u.user_id, u.user_name, u.user_username, u.user_role FROM \`USER\` u
+     WHERE LOWER(TRIM(u.user_role)) IN ('technician','rm_manager')
+       ${projectId ? "AND EXISTS (SELECT 1 FROM USER_PROJECT up WHERE up.user_id=u.user_id AND up.project_id=?)" : ""}
+     ORDER BY LOWER(TRIM(u.user_role)) DESC, u.user_name`,
+    projectId ? [projectId] : []
+  );
+  return json(200, rows.map((u) => ({
+    user_id: Number(u.user_id), name: u.user_name, username: u.user_username ?? null, role: u.user_role,
+  })));
+}
+
+/** After an admin change to a closed job, print its report again over the old file. */
+async function requeuePdfIfClosed(conn, jobId) {
+  if (jobId == null) return;
+  try {
+    const [r] = await conn.execute("SELECT job_status FROM JOB WHERE job_id=?", [jobId]);
+    if (r.length && JOB_DONE_STATUSES.includes(r[0].job_status)) {
+      await queueJobReportPdf(conn, jobId, { force: true });
+      _pdfQueuedAt.set(Number(jobId), Date.now());
+    }
+  } catch (e) {
+    console.error("[PDF] requeue after admin edit failed", { jobId, message: e?.message });
+  }
+}
+
+function adminReason(b, { required = true } = {}) {
+  const reason = String(b?.reason ?? "").trim();
+  if (required && !reason) throw new Error("reason required: say why the change is being made");
+  if (reason.length > 300) throw new Error("Invalid reason: at most 300 characters");
+  return reason || null;
+}
+
+// PATCH /admin/reports/{id}: description, priority, category, location, bus.
+async function adminEditReport(conn, auth, reportId, b) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+  const reason = adminReason(b, { required: false });
+
+  const [rows] = await conn.execute(
+    `SELECT report_id, job_id, report_desc, report_priority, report_issue_type, report_location,
+            report_lat, report_lng, bus_id, project_id
+     FROM REPORT WHERE report_id=?`,
+    [reportId]
+  );
+  if (!rows.length) return json(404, { message: "Report not found" });
+  const r = rows[0];
+
+  const sets = [];
+  const vals = [];
+  const changes = {};
+  const change = (col, label, to) => {
+    const from = r[col] ?? null;
+    if (String(from ?? "") === String(to ?? "")) return;
+    sets.push(`${col}=?`);
+    vals.push(to);
+    changes[label] = { from, to };
+  };
+
+  if (b?.report_desc !== undefined) {
+    const v = String(b.report_desc ?? "").trim();
+    if (!v) throw new Error("Invalid report_desc: cannot be empty");
+    if (v.length > 2000) throw new Error("Invalid report_desc: at most 2000 characters");
+    change("report_desc", "description", v);
+  }
+  if (b?.report_priority !== undefined) {
+    const v = String(b.report_priority ?? "").trim().toLowerCase();
+    if (!JOB_PRIORITIES.includes(v)) throw new Error("Invalid report_priority: low, medium, high or critical");
+    change("report_priority", "priority", v);
+  }
+  if (b?.report_issue_type !== undefined) {
+    const v = b.report_issue_type == null || b.report_issue_type === "" ? null : normaliseBusSystem(b.report_issue_type);
+    if (b.report_issue_type && !v) throw new Error("Invalid report_issue_type");
+    change("report_issue_type", "category", v);
+  }
+  if (b?.report_location !== undefined) {
+    const v = String(b.report_location ?? "").trim() || null;
+    if (v && v.length > 500) throw new Error("Invalid report_location: at most 500 characters");
+    change("report_location", "location", v);
+  }
+  if (b?.report_lat !== undefined || b?.report_lng !== undefined) {
+    const lat = b.report_lat == null || b.report_lat === "" ? null : Number(b.report_lat);
+    const lng = b.report_lng == null || b.report_lng === "" ? null : Number(b.report_lng);
+    if ((lat == null) !== (lng == null)) throw new Error("Invalid report_lat/report_lng: send both or neither");
+    if (lat != null && !(Math.abs(lat) <= 90 && Math.abs(lng) <= 180)) throw new Error("Invalid report_lat/report_lng");
+    change("report_lat", "latitude", lat);
+    change("report_lng", "longitude", lng);
+  }
+  if (b?.bus_id !== undefined) {
+    const busId = String(b.bus_id ?? "").trim();
+    const [bus] = await conn.execute("SELECT bus_id, project_id FROM BUS WHERE bus_id=?", [busId]);
+    if (!bus.length) return json(400, { message: "Invalid bus_id: bus not found" });
+    change("bus_id", "bus", busId);
+    // The report belongs to the bus's project.
+    change("project_id", "project", bus[0].project_id);
+  }
+
+  if (!sets.length) return json(200, { success: true, changed: {} });
+
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(`UPDATE REPORT SET ${sets.join(", ")} WHERE report_id=?`, [...vals, reportId]);
+  await logJobEvent(conn, {
+    reportId,
+    jobId: r.job_id ?? null,
+    type: "ADMIN_EDITED",
+    userId,
+    auth,
+    detail: { changes, reason },
+  });
+  await requeuePdfIfClosed(conn, r.job_id);
+  return json(200, { success: true, changed: changes });
+}
+
+// POST /admin/jobs/{id}/status {to, reason}: put a job on any step.
+async function adminSetJobStatus(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+  const to = String(b?.to ?? "").trim().toLowerCase();
+  if (!ADMIN_JOB_TARGETS.includes(to)) throw new Error(`Invalid to: one of ${ADMIN_JOB_TARGETS.join(", ")}`);
+  const reason = adminReason(b);
+  const userId = await getOrCreateUserId(conn, auth);
+  const adminName = await getDisplayName(conn, auth);
+
+  let job;
+  let from;
+  await conn.beginTransaction();
+  try {
+    const loaded = await loadJobForReview(conn, auth, jobId, { lock: true });
+    if (loaded.error) { await conn.rollback(); return loaded.error; }
+    job = loaded.job;
+    from = loaded.state;
+    if (from === to) { await conn.rollback(); return json(200, { success: true, already: true, job_state: to }); }
+
+    const hasTech = job.technician_user_id != null;
+    const hasOdo = job.job_odometer != null;
+    if (["accepted", "arrived", "pending_approval"].includes(to) && !hasTech) {
+      await conn.rollback();
+      return json(409, { code: "NO_TECHNICIAN", message: "Assign a technician to the job first." });
+    }
+    if (["arrived", "pending_approval"].includes(to) && !hasOdo) {
+      await conn.rollback();
+      return json(409, { code: "NO_ODOMETER", message: "Enter the odometer reading first." });
+    }
+
+    // What each step means, so the job behaves as if it had got there itself.
+    const clearArrival = "job_odometer=NULL, job_arrived_at=NULL";
+    const clearCompletion = "job_completed_at=NULL, job_verified_name=NULL, job_selfie_s3_bucket=NULL, job_selfie_s3_key=NULL";
+    const clearApproval =
+      "job_approved_by=NULL, job_approved_at=NULL, job_approved_verified_name=NULL, job_approved_selfie_s3_bucket=NULL, job_approved_selfie_s3_key=NULL";
+    const clearLate = "job_late_flag=0, job_late_prompted_at=NULL, job_last_delay_at=NULL";
+    const set = {
+      approved: `technician_user_id=NULL, job_accepted_at=NULL, job_accept_verified_name=NULL,
+                 job_accept_selfie_s3_bucket=NULL, job_accept_selfie_s3_key=NULL,
+                 ${clearArrival}, ${clearCompletion}, ${clearApproval}, ${clearLate}`,
+      // The late-arrival clock restarts from now.
+      accepted: `job_accepted_at=NOW(), ${clearArrival}, ${clearCompletion}, ${clearApproval}, ${clearLate}`,
+      arrived: `job_arrived_at=COALESCE(job_arrived_at, NOW()), ${clearCompletion}, ${clearApproval}, job_late_flag=0`,
+      pending_approval: `job_completed_at=COALESCE(job_completed_at, NOW()), ${clearApproval}, job_late_flag=0`,
+      closed: `job_completed_at=COALESCE(job_completed_at, NOW()), job_approved_by=?, job_approved_at=NOW(),
+               job_approved_verified_name=?, job_approved_selfie_s3_bucket=NULL, job_approved_selfie_s3_key=NULL, job_late_flag=0`,
+    }[to];
+    await conn.execute(
+      `UPDATE JOB SET job_status=?, job_updated_at=NOW(), ${set} WHERE job_id=?`,
+      to === "closed" ? [to, userId, adminName, jobId] : [to, jobId]
+    );
+    await conn.execute(
+      "UPDATE REPORT SET report_status=? WHERE job_id=?",
+      [to === "closed" ? "closed" : "open", jobId]
+    );
+    await logJobEvent(conn, {
+      reportId: job.report_id,
+      jobId,
+      type: "ADMIN_STATUS",
+      userId,
+      auth,
+      detail: { from, to, reason },
+    });
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+
+  if (to === "closed") {
+    try {
+      await ensureJobRefNo(conn, jobId);
+      await queueJobReportPdf(conn, jobId, { force: true });
+      _pdfQueuedAt.set(Number(jobId), Date.now());
+    } catch (e) {
+      console.error("[PDF] queue after admin close failed", { jobId, message: e?.message });
+    }
+  }
+  if (to === "pending_approval") {
+    await notifyUsersByRole(conn, {
+      roles: ["rm_manager"],
+      projectId: job.project_id ?? null,
+      excludeUserId: userId,
+      type: "job_approval",
+      title: "Job waiting for your approval",
+      body: `Job ${await jobRefLabel(conn, jobId)} was moved to awaiting approval by the administrator.`,
+      reportId: job.report_id ?? null,
+      jobId: Number(jobId),
+    });
+  }
+  if (to === "approved") {
+    await notifyUsersByRole(conn, {
+      roles: ["technician"],
+      projectId: job.project_id ?? null,
+      excludeUserId: userId,
+      type: "new_job",
+      title: "Job available again",
+      body: `Job ${await jobRefLabel(conn, jobId)} for bus ${await busLabel(conn, job.bus_id)} is back in Available jobs.`,
+      reportId: job.report_id ?? null,
+      jobId: Number(jobId),
+    });
+  }
+  return json(200, { success: true, from, job_state: to });
+}
+
+// POST /admin/jobs/{id}/assign {technician_user_id, reason}
+async function adminAssignJob(conn, auth, jobId, b) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+  const techId = toId(b?.technician_user_id, "technician_user_id");
+  const reason = adminReason(b, { required: false });
+
+  const loaded = await loadJobForReview(conn, auth, jobId);
+  if (loaded.error) return loaded.error;
+  const job = loaded.job;
+  if (Number(job.technician_user_id) === techId) return json(200, { success: true, already: true });
+
+  const [users] = await conn.execute(
+    `SELECT u.user_id, u.user_name, u.user_role FROM \`USER\` u
+     WHERE u.user_id=? AND LOWER(TRIM(u.user_role)) IN ('technician','rm_manager')
+       AND (? IS NULL OR EXISTS (SELECT 1 FROM USER_PROJECT up WHERE up.user_id=u.user_id AND up.project_id=?))`,
+    [techId, job.project_id ?? null, job.project_id ?? null]
+  );
+  if (!users.length) {
+    return json(400, { code: "NOT_A_TECHNICIAN", message: "Pick a technician or R&M Manager on this job's project." });
+  }
+
+  let fromName = null;
+  if (job.technician_user_id != null) {
+    const [f] = await conn.execute("SELECT user_name FROM `USER` WHERE user_id=?", [job.technician_user_id]);
+    fromName = f[0]?.user_name ?? null;
+  }
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.execute(
+    // job_status first: MySQL applies these left to right, and an approved
+    // (untaken) job becomes accepted by the person it is given to.
+    `UPDATE JOB SET job_status=IF(job_status IN ('approved','open'), 'accepted', job_status),
+       technician_user_id=?, job_updated_at=NOW(), job_accepted_at=COALESCE(job_accepted_at, NOW())
+     WHERE job_id=?`,
+    [techId, jobId]
+  );
+  await logJobEvent(conn, {
+    reportId: job.report_id,
+    jobId,
+    type: "ADMIN_REASSIGNED",
+    userId,
+    auth,
+    detail: { from_user_id: job.technician_user_id ?? null, from_name: fromName, to_user_id: techId, to_name: users[0].user_name, reason },
+  });
+
+  if (loaded.state !== JOB_STATE.CLOSED && techId !== userId) {
+    await notifyUsers(conn, {
+      userIds: [techId],
+      type: "new_job",
+      title: "Job assigned to you",
+      body: `The administrator gave you job ${await jobRefLabel(conn, jobId)} for bus ${await busLabel(conn, job.bus_id)}.`,
+      reportId: job.report_id ?? null,
+      jobId: Number(jobId),
+    });
+  }
+  await requeuePdfIfClosed(conn, jobId);
+  return json(200, { success: true });
+}
+
+/** The task's job, for the admin task and part endpoints. */
+async function adminTaskJob(conn, taskId) {
+  const [rows] = await conn.execute(
+    "SELECT t.task_id, t.job_id, t.task_name FROM JOB_TASK t WHERE t.task_id=?",
+    [taskId]
+  );
+  return rows[0] ?? null;
+}
+
+// DELETE /tasks/{id} (admin): the task, its parts and its photos.
+async function adminDeleteTask(conn, auth, taskId) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+  const task = await adminTaskJob(conn, taskId);
+  if (!task) return json(404, { message: "Task not found" });
+  if (SYSTEM_TASK_NAMES.includes(task.task_name)) {
+    return json(400, { message: "This is a system task and can't be removed." });
+  }
+  const userId = await getOrCreateUserId(conn, auth);
+  await conn.beginTransaction();
+  try {
+    await conn.execute("DELETE FROM JOB_TASK_PART WHERE task_id=?", [taskId]);
+    await conn.execute("DELETE FROM JOB_MEDIA WHERE task_id=?", [taskId]);
+    await conn.execute("DELETE FROM JOB_TASK WHERE task_id=?", [taskId]);
+    await logJobEvent(conn, {
+      jobId: task.job_id,
+      type: "ADMIN_TASK_REMOVED",
+      userId,
+      auth,
+      detail: { task_id: Number(taskId), task_name: task.task_name },
+    });
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+  await requeuePdfIfClosed(conn, task.job_id);
+  return json(200, { success: true });
+}
+
+// PATCH /tasks/{id}/parts/{part_id} {qty} and DELETE /tasks/{id}/parts/{part_id} (admin).
+async function adminSetTaskPart(conn, auth, taskId, partId, b, { remove = false } = {}) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+  const task = await adminTaskJob(conn, taskId);
+  if (!task) return json(404, { message: "Task not found" });
+  const [rows] = await conn.execute(
+    `SELECT tp.qty, p.part_name, p.part_unit, p.part_cost FROM JOB_TASK_PART tp JOIN PART p ON p.part_id = tp.part_id
+     WHERE tp.task_id=? AND tp.part_id=?`,
+    [taskId, partId]
+  );
+  if (!rows.length) return json(404, { message: "That part isn't on this task" });
+  const row = rows[0];
+  const userId = await getOrCreateUserId(conn, auth);
+
+  let qty = null;
+  if (remove) {
+    await conn.execute("DELETE FROM JOB_TASK_PART WHERE task_id=? AND part_id=?", [taskId, partId]);
+  } else {
+    qty = parsePartQty(b?.qty, row.part_unit || "pc");
+    if (qty == null) return json(400, { message: "Invalid qty: must be greater than 0 (whole numbers for pc and set)" });
+    const unitCost = Number(row.part_cost);
+    const lineCost = row.part_cost != null && Number.isFinite(unitCost) ? Math.round(unitCost * qty * 100) / 100 : null;
+    await conn.execute("UPDATE JOB_TASK_PART SET qty=?, line_cost=? WHERE task_id=? AND part_id=?", [qty, lineCost, taskId, partId]);
+  }
+  await logJobEvent(conn, {
+    jobId: task.job_id,
+    type: "ADMIN_PARTS_CHANGED",
+    userId,
+    auth,
+    detail: { task_id: Number(taskId), part: row.part_name, from_qty: Number(row.qty), to_qty: qty },
+  });
+  await requeuePdfIfClosed(conn, task.job_id);
+  return json(200, { success: true });
+}
+
+/** Rows that point at a job's or report's files, so a delete can take them too. */
+async function adminCollectS3Keys(conn, reportId, jobId) {
+  const keys = new Set();
+  const add = (k) => { if (k) keys.add(String(k)); };
+  const [r] = await conn.execute(
+    "SELECT report_selfie_s3_key, report_review_selfie_s3_key FROM REPORT WHERE report_id=?",
+    [reportId]
+  );
+  for (const x of r) { add(x.report_selfie_s3_key); add(x.report_review_selfie_s3_key); }
+  const [rm] = await conn.execute("SELECT s3_key FROM REPORT_MEDIA WHERE report_id=?", [reportId]);
+  rm.forEach((x) => add(x.s3_key));
+  const [ev] = await conn.execute(
+    `SELECT selfie_s3_key, detail FROM JOB_EVENT WHERE report_id=? ${jobId != null ? "OR job_id=?" : ""}`,
+    jobId != null ? [reportId, jobId] : [reportId]
+  );
+  for (const e of ev) {
+    add(e.selfie_s3_key);
+    let d = e.detail;
+    if (typeof d === "string") { try { d = JSON.parse(d); } catch { d = null; } }
+    if (Array.isArray(d?.photo_keys)) d.photo_keys.forEach(add);
+  }
+  if (jobId != null) {
+    const [j] = await conn.execute(
+      `SELECT job_selfie_s3_key, job_accept_selfie_s3_key, job_approved_selfie_s3_key, job_report_pdf_s3_key
+       FROM JOB WHERE job_id=?`,
+      [jobId]
+    );
+    for (const x of j) {
+      add(x.job_selfie_s3_key); add(x.job_accept_selfie_s3_key); add(x.job_approved_selfie_s3_key); add(x.job_report_pdf_s3_key);
+    }
+    const [jm] = await conn.execute("SELECT s3_key FROM JOB_MEDIA WHERE job_id=?", [jobId]);
+    jm.forEach((x) => add(x.s3_key));
+  }
+  // An approval selfie is also the sign-off on every job order it issued.
+  // Those stay, so their files stay too.
+  const out = [];
+  for (const k of keys) {
+    const [used] = await conn.execute(
+      "SELECT 1 FROM REPORT WHERE report_id<>? AND (report_review_selfie_s3_key=? OR report_selfie_s3_key=?) LIMIT 1",
+      [reportId, k, k]
+    );
+    if (!used.length) out.push(k);
+  }
+  return out;
+}
+
+async function adminDeleteS3(keys) {
+  if (!keys.length) return { deleted: 0, failed: 0 };
+  const { DeleteObjectsCommand } = await import("@aws-sdk/client-s3");
+  let deleted = 0;
+  let failed = 0;
+  for (let i = 0; i < keys.length; i += 1000) {
+    const chunk = keys.slice(i, i + 1000);
+    try {
+      const client = await s3QueueClient();
+      const res = await client.send(
+        new DeleteObjectsCommand({ Bucket: S3_BUCKET, Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true } })
+      );
+      const errs = res?.Errors?.length ?? 0;
+      failed += errs;
+      deleted += chunk.length - errs;
+      if (errs) console.warn("[ADMIN_DELETE] some files not deleted", { errors: res.Errors.slice(0, 5) });
+    } catch (e) {
+      failed += chunk.length;
+      console.warn("[ADMIN_DELETE] S3 delete failed (needs s3:DeleteObject)", { message: e?.message });
+    }
+  }
+  return { deleted, failed };
+}
+
+// POST /admin/reports/{id}/delete {confirm}: permanent. `confirm` must be the
+// record's reference number (or "#<report id>" when it has none).
+async function adminDeleteRecord(conn, auth, reportId, b) {
+  const deny = requireRole(auth, ADMIN_ONLY);
+  if (deny) return deny;
+
+  const [rows] = await conn.execute(
+    `SELECT r.report_id, r.report_ref_no, r.job_id, r.bus_id, r.report_type, j.job_ref_no
+     FROM REPORT r LEFT JOIN JOB j ON j.job_id = r.job_id WHERE r.report_id=?`,
+    [reportId]
+  );
+  if (!rows.length) return json(404, { message: "Report not found" });
+  const rec = rows[0];
+  const ref = rec.report_ref_no ?? rec.job_ref_no ?? `#${reportId}`;
+  if (String(b?.confirm ?? "").trim().toUpperCase() !== ref.toUpperCase()) {
+    return json(400, { code: "CONFIRM_MISMATCH", message: `Type ${ref} exactly to confirm.` });
+  }
+
+  const jobId = rec.job_id == null ? null : Number(rec.job_id);
+  // A job shared by another report (never made by the app, but possible in
+  // old data) is left alone; only this report goes.
+  let deleteJob = jobId != null;
+  if (deleteJob) {
+    const [shared] = await conn.execute("SELECT COUNT(*) AS n FROM REPORT WHERE job_id=? AND report_id<>?", [jobId, reportId]);
+    if (Number(shared[0].n) > 0) deleteJob = false;
+  }
+  const keys = await adminCollectS3Keys(conn, reportId, deleteJob ? jobId : null);
+
+  const counts = {};
+  const run = async (label, sql, vals) => {
+    const [res] = await conn.execute(sql, vals);
+    counts[label] = (counts[label] ?? 0) + (res.affectedRows ?? 0);
+  };
+  await conn.beginTransaction();
+  try {
+    if (deleteJob) {
+      // Job orders issued from this job's follow-ups stay, as jobs of their own.
+      await run("job_orders_detached", "UPDATE JOB SET parent_job_id=NULL, followup_id=NULL WHERE parent_job_id=?", [jobId]);
+      // If this job was itself a job order, its follow-up forgets it.
+      await run("followups_unlinked", "UPDATE JOB_FOLLOWUP SET job_order_job_id=NULL WHERE job_order_job_id=?", [jobId]);
+      await run("notifications", "DELETE FROM NOTIFICATION WHERE job_id=?", [jobId]);
+      await run("events", "DELETE FROM JOB_EVENT WHERE job_id=?", [jobId]);
+      await run("parts", "DELETE tp FROM JOB_TASK_PART tp JOIN JOB_TASK t ON t.task_id = tp.task_id WHERE t.job_id=?", [jobId]);
+      await run("job_photos", "DELETE FROM JOB_MEDIA WHERE job_id=?", [jobId]);
+      await run("tasks", "DELETE FROM JOB_TASK WHERE job_id=?", [jobId]);
+      await run("history", "DELETE FROM JOB_HISTORY WHERE job_id=?", [jobId]);
+      await run("followups", "DELETE FROM JOB_FOLLOWUP WHERE job_id=?", [jobId]);
+    }
+    await run("notifications", "DELETE FROM NOTIFICATION WHERE report_id=?", [reportId]);
+    await run("events", "DELETE FROM JOB_EVENT WHERE report_id=?", [reportId]);
+    await run("report_photos", "DELETE FROM REPORT_MEDIA WHERE report_id=?", [reportId]);
+    await run("reports", "DELETE FROM REPORT WHERE report_id=?", [reportId]);
+    if (deleteJob) await run("jobs", "DELETE FROM JOB WHERE job_id=?", [jobId]);
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  }
+
+  // Files go after the rows are gone: a failure here leaves unused files, never
+  // a record with missing photos.
+  const files = await adminDeleteS3(keys);
+  const adminName = await getDisplayName(conn, auth);
+  console.log(JSON.stringify({
+    tag: "ADMIN_DELETE",
+    by: adminName,
+    by_sub: auth.sub,
+    report_id: Number(reportId),
+    job_id: deleteJob ? jobId : null,
+    ref_no: ref,
+    bus_id: rec.bus_id,
+    type: rec.report_type,
+    rows: counts,
+    files,
+  }));
+  return json(200, { success: true, ref_no: ref, rows: counts, files });
+}
+
 // ===================== LATE ARRIVAL (scheduled) =====================
 
 // Every minute (EventBridge, task "job_late_tick"): any accepted job with no
@@ -4419,7 +5115,7 @@ async function buildJobReportData(conn, jobId) {
             r.report_priority, r.report_uploaded_at, r.report_verified_name, r.report_review_by,
             r.report_review_at, r.report_review_verified_name, r.bus_id, r.project_id,
             reporter.user_name AS reporter_username, reporter.user_role AS reporter_role,
-            tech.user_name AS technician_username,
+            tech.user_name AS technician_username, tech.user_role AS technician_role,
             b.bus_ev_no, b.bus_model
      FROM JOB j
      LEFT JOIN REPORT r ON r.job_id = j.job_id
@@ -4487,6 +5183,13 @@ async function buildJobReportData(conn, jobId) {
   });
   const taskNoById = new Map(tasks.map((t, i) => [Number(t.task_id), i + 1]));
   const DELAY_LABEL = { TRAFFIC: "Stuck in traffic", BUS_IN_OPERATION: "Bus still in operation", OTHER: "Other reason" };
+  const STATE_LABEL = {
+    approved: "Not accepted yet",
+    accepted: "Accepted",
+    arrived: "In progress",
+    pending_approval: "Awaiting approval",
+    closed: "Closed",
+  };
   const eventTextFor = (e) => {
     const d = e.detail ?? {};
     switch (e.event_type) {
@@ -4510,6 +5213,12 @@ async function buildJobReportData(conn, jobId) {
       }
       case "FM_REMARKS_SAVED": return "Fleet Manager remarks added";
       case "FM_REMARKS_EDITED": return "Fleet Manager remarks edited";
+      case "ADMIN_EDITED": return `Report details corrected by admin${d.changes ? ` · ${Object.keys(d.changes).join(", ")}` : ""}`;
+      case "ADMIN_STATUS": return `Status changed by admin · ${STATE_LABEL[d.from] ?? d.from} → ${STATE_LABEL[d.to] ?? d.to}${d.reason ? ` · ${d.reason}` : ""}`;
+      case "ADMIN_REASSIGNED": return `Reassigned by admin · ${d.from_name ?? "nobody"} → ${d.to_name ?? "—"}`;
+      case "ADMIN_TASK_EDITED": return `Task corrected by admin · ${d.task_name ?? ""}`;
+      case "ADMIN_TASK_REMOVED": return `Task removed by admin · ${d.task_name ?? ""}`;
+      case "ADMIN_PARTS_CHANGED": return `Parts corrected by admin · ${d.part ?? ""} ${d.to_qty == null ? "removed" : `${d.from_qty} → ${d.to_qty}`}`;
       default: return e.event_type;
     }
   };
@@ -4555,13 +5264,6 @@ async function buildJobReportData(conn, jobId) {
      WHERE f.job_id=? AND f.status <> 'REMOVED' ORDER BY f.created_at, f.followup_id`,
     [jobId]
   );
-  const STATE_LABEL = {
-    approved: "Not accepted yet",
-    accepted: "Accepted",
-    arrived: "In progress",
-    pending_approval: "Awaiting approval",
-    closed: "Closed",
-  };
   const followups = fuRows.map((f, i) => ({
     no: i + 1,
     issue: f.issue,
@@ -4589,7 +5291,7 @@ async function buildJobReportData(conn, jobId) {
   }
 
   const SLOT_CAPTION = { dashboard: "Dashboard", front: "Front", back: "Back", left: "Left side", right: "Right side" };
-  const afterSlotted = JOB_AFTER_SLOTS.map((k) => {
+  const afterSlotted = JOB_AFTER_SLOTS_ALL.map((k) => {
     const m = [...jobMedia].reverse().find((x) => x.media_kind === "after" && x.media_slot === k);
     return m ? { ...photo(m), caption: SLOT_CAPTION[k] } : null;
   }).filter(Boolean);
@@ -4634,7 +5336,7 @@ async function buildJobReportData(conn, jobId) {
     location: j.report_location,
     reported_by: isFollowUp ? issuedEvent?.actor_name_signed ?? null : isJobOrder ? technician : j.reporter_username,
     reporter_name: isFollowUp ? issuedEvent?.actor_name_signed ?? null : isJobOrder ? technician : (j.report_verified_name || j.reporter_username),
-    reporter_role: isFollowUp ? "R&M Manager" : isJobOrder ? "Technician" : roleLabel(j.reporter_role),
+    reporter_role: isFollowUp ? "R&M Manager" : isJobOrder ? (roleLabel(j.technician_role) ?? "Technician") : roleLabel(j.reporter_role),
     approved_by: isJobOrder && !isFollowUp ? null : (j.job_approved_verified_name ?? j.report_review_by),
     technician,
     report_date: isFollowUp ? j.job_issued_at ?? j.job_created_at : isJobOrder ? j.job_created_at : j.report_uploaded_at,
@@ -7211,7 +7913,7 @@ async function confirmJobMedia(conn, auth, jobId, b) {
   // Side, Right Side). A retake replaces that slot's photo. Builds before
   // v2.0.0 send neither field: no task means an after photo with no slot.
   const slot = b.media_slot != null ? String(b.media_slot) : null;
-  if (slot != null && !JOB_AFTER_SLOTS.includes(slot)) throw new Error("Invalid media_slot");
+  if (slot != null && !JOB_AFTER_SLOTS_ALL.includes(slot)) throw new Error("Invalid media_slot");
   const mediaKind = taskId != null ? "task" : "after";
 
   const mediaType = b.mime_type.toString().startsWith("video") ? "video" : "image";

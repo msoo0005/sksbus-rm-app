@@ -4,15 +4,17 @@
 
 import { FontAwesome5 } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
-import { Alert, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { PspCheckDef, PspDamageType, PspNgReason, PspSettings, PspTag } from "../../api/puspakom";
 import { useI18n } from "../../i18n/i18n-ctx";
 import { keepPhoto, LocalAnswer, LocalDamage, LocalPhoto } from "../../offline/puspakomDrafts";
 import { TAG_TONE, tyreFieldTags } from "../../utils/puspakom";
 import { localDone, localTag, needsAttention, photoUri } from "../../utils/puspakomLocal";
+import ImageViewerOverlay from "../ImageViewerOverlay";
 import { pickImage } from "../ImagePicker";
 import BusDrawing, { DrawingView } from "./BusDrawing";
 import Pill from "./Pill";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 const ORANGE = "#C4501A";
 const NG_REASONS: PspNgReason[] = ["NOT_WORKING", "FLICKERING", "CRACKED", "LOOSE", "OTHER"];
@@ -52,6 +54,13 @@ export default function CheckRowEditor({ def, no, answer: a, current, settings, 
   const tag = localTag(def, a, settings);
   const color = rowColor(def, a, current, settings);
   const [zoom, setZoom] = useState<string | null>(null);
+  // This check's photo and its damage close-ups, swiped through full screen.
+  const shots = [
+    ...(photoUri(a?.photo ?? null) ? [{ url: photoUri(a?.photo ?? null)!, caption: def.label }] : []),
+    ...(a?.damages ?? [])
+      .filter((d) => !!photoUri(d.photo))
+      .map((d) => ({ url: photoUri(d.photo)!, caption: t("puspakom.checklist.damageN", { no: d.no }) })),
+  ];
 
   const takePhoto = async (onSaved: (p: LocalPhoto) => void) => {
     const m = await pickImage(true);
@@ -196,11 +205,13 @@ export default function CheckRowEditor({ def, no, answer: a, current, settings, 
 
       {!!a?.entered_by && readOnly && <Text style={s.by}>{a.entered_by}</Text>}
 
-      <Modal visible={!!zoom} transparent animationType="fade" onRequestClose={() => setZoom(null)}>
-        <Pressable style={s.zoomBg} onPress={() => setZoom(null)}>
-          {!!zoom && <Image source={{ uri: zoom }} style={s.zoomImg} resizeMode="contain" />}
-        </Pressable>
-      </Modal>
+      <ImageViewerOverlay
+        visible={!!zoom}
+        imageUrls={shots.map((x) => ({ url: x.url }))}
+        captions={shots.map((x) => x.caption)}
+        startIndex={Math.max(0, shots.findIndex((x) => x.url === zoom))}
+        onClose={() => setZoom(null)}
+      />
     </View>
   );
 }
@@ -290,7 +301,7 @@ function NumField({
       <Text style={s.numLabel}>{label}</Text>
       <View style={s.numRow}>
         <View style={[s.numBox, value == null && !readOnly && { borderColor: ORANGE }, bad && { borderColor: "#DC2626" }]}>
-          <TextInput
+          <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
             value={text}
             editable={!readOnly}
             onChangeText={(v) => {
@@ -336,7 +347,7 @@ function DebouncedText({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text]);
   return (
-    <TextInput
+    <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
       value={text}
       onChangeText={setText}
       onBlur={() => text !== value && onCommit(text.trim())}
@@ -541,6 +552,4 @@ const s = StyleSheet.create({
   whereInput: { flex: 1, fontSize: 13, fontWeight: "700", color: "#111827", paddingVertical: 6 },
   another: { borderWidth: 1, borderStyle: "dashed", borderColor: "#FCA5A5", borderRadius: 10, paddingVertical: 10, alignItems: "center", marginTop: 8 },
   anotherText: { color: "#B91C1C", fontWeight: "800", fontSize: 13 },
-  zoomBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.92)", alignItems: "center", justifyContent: "center" },
-  zoomImg: { width: "100%", height: "80%" },
 });

@@ -1,20 +1,33 @@
+// Full-screen photo viewer: swipe left and right through every photo in the
+// section it was opened from, with an "n / N" counter, pinch to zoom, and
+// swipe down to close.
+
+import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import ImageViewer from "react-native-image-zoom-viewer";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { useI18n } from "@/i18n/i18n-ctx";
 
 type Props = {
   visible: boolean;
   imageUrls: { url: string }[];
   startIndex?: number;
   onClose: () => void;
+  /** A label under each photo (e.g. "Dashboard"), by position. */
+  captions?: (string | null | undefined)[];
+  /** Shows a Remove button for the photo on screen. */
+  onRemove?: (index: number) => void;
 };
 
 function ImageViewerContent({
   imageUrls,
   startIndex = 0,
   onClose,
+  captions,
+  onRemove,
 }: Omit<Props, "visible">) {
+  const { t } = useI18n();
   const [index, setIndex] = React.useState(startIndex);
 
   React.useEffect(() => {
@@ -23,6 +36,7 @@ function ImageViewerContent({
 
   const total = imageUrls.length;
   const current = total ? Math.min(Math.max(index, 0), total - 1) + 1 : 0;
+  const caption = captions?.[current - 1];
 
   return (
     <View style={styles.overlay}>
@@ -44,13 +58,26 @@ function ImageViewerContent({
               <Text style={styles.counter}>
                 {total ? `${current} / ${total}` : ""}
               </Text>
-              <Pressable onPress={onClose} style={styles.closeBtn}>
-                <Text style={styles.closeText}>Close</Text>
+              <Pressable onPress={onClose} style={styles.closeBtn} hitSlop={8}>
+                <Text style={styles.closeText}>{t("common.close")}</Text>
               </Pressable>
             </View>
           </SafeAreaView>
         )}
       />
+      {(!!caption || !!onRemove) && (
+        <SafeAreaView edges={["bottom"]} pointerEvents="box-none" style={styles.footerSafeArea}>
+          <View style={styles.footer} pointerEvents="box-none">
+            {!!caption && <Text style={styles.caption}>{caption}</Text>}
+            {!!onRemove && total > 0 && (
+              <Pressable onPress={() => onRemove(current - 1)} style={styles.removeBtn}>
+                <Ionicons name="trash-outline" size={18} color="#fff" />
+                <Text style={styles.closeText}>{t("common.remove")}</Text>
+              </Pressable>
+            )}
+          </View>
+        </SafeAreaView>
+      )}
     </View>
   );
 }
@@ -60,6 +87,8 @@ export default function ImageViewerOverlay({
   imageUrls,
   startIndex = 0,
   onClose,
+  captions,
+  onRemove,
 }: Props) {
   return (
     <Modal
@@ -75,6 +104,8 @@ export default function ImageViewerOverlay({
           imageUrls={imageUrls}
           startIndex={startIndex}
           onClose={onClose}
+          captions={captions}
+          onRemove={onRemove}
         />
       </SafeAreaProvider>
     </Modal>
@@ -117,4 +148,25 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   closeText: { color: "#fff", fontWeight: "700" },
+  footerSafeArea: { position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 10000 },
+  footer: { alignItems: "center", gap: 12, paddingHorizontal: 16, paddingBottom: 16 },
+  caption: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 14,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  removeBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    backgroundColor: "rgba(220,38,38,0.9)",
+    borderRadius: 12,
+  },
 });

@@ -24,6 +24,8 @@ import { useFormDraft } from "@/hooks/useFormDraft";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { getRouteColourHex, routeColourNeedsBorder } from "@/utils/routeColours";
 import { useProjectFilter } from "@/hooks/useProjectFilter";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 type BusForm = {
   bus_id: string;
@@ -316,7 +318,7 @@ export default function BusesScreen() {
           <Text style={styles.loadingText}>{t("buses.loading")}</Text>
         </View>
       ) : (
-        <FlatList
+        <FlatList keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled"
           data={filtered}
           keyExtractor={(item) => String(item.bus_id)}
           renderItem={renderBus}
@@ -340,6 +342,7 @@ export default function BusesScreen() {
         transparent
         onRequestClose={closeModal}
       >
+        <KeyboardDoneAccessory />
         <KeyboardAvoidingView
           style={styles.modalKeyboardView}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -484,7 +487,7 @@ export default function BusesScreen() {
                       <Text style={styles.emptySub}>{t("buses.noProjectsFound")}</Text>
                     </View>
                   ) : (
-                    <ScrollView nestedScrollEnabled style={{ maxHeight: 200 }}>
+                    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" nestedScrollEnabled style={{ maxHeight: 200 }}>
                       <Pressable
                         style={[styles.projectRow, !form.project_id && styles.projectRowSelected]}
                         onPress={() => {
@@ -538,7 +541,8 @@ export default function BusesScreen() {
             </Pressable>
             </ScrollView>
 
-            {/* Rendered inside this same Modal (not as a second <Modal>) —
+            {/* Rendered inside this same Modal (not as a second <Modal>
+<KeyboardDoneAccessory />) —
                 two native Modals presented at once don't reliably stack on
                 iOS, so the confirm step has to live inside the edit sheet. */}
             {confirmVisible && (

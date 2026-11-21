@@ -17,6 +17,7 @@ import { useProjectFilter } from "@/hooks/useProjectFilter";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { STATUS_TONE, fmtDate, fmtDayDate, monthKey, monthLabel, mytDate } from "@/utils/puspakom";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type Tab = "reports" | "kpis";
 type PeriodKey = "thisMonth" | "last3" | "last6" | "thisYear" | "custom";
@@ -144,7 +145,7 @@ function ReportsTab({ accent, busFilter, setBusFilter }: { accent: string; busFi
 
   return (
     <>
-      <ScrollView
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE}
         contentContainerStyle={s.content}
         refreshControl={
           <RefreshControl
@@ -408,7 +409,7 @@ function KpisTab({ accent, onBus }: { accent: string; onBus: (busId: string) => 
   const maxItem = Math.max(1, ...(data?.failed_items ?? []).map((f) => f.count));
 
   return (
-    <ScrollView contentContainerStyle={s.content}>
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
       <PuspakomMark />
       <Text style={s.h1}>{t("puspakom.kpis.title")}</Text>
       <View style={s.seg}>

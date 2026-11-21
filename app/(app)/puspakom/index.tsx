@@ -23,6 +23,7 @@ import {
   monthLabel,
 } from "@/utils/puspakom";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 type SortKey = "earliest" | "latest" | "urgent" | "inspection" | "busNo" | "fleetNo";
 const SORTS: SortKey[] = ["earliest", "latest", "urgent", "inspection", "busNo", "fleetNo"];
@@ -174,7 +175,7 @@ export default function PuspakomScheduleScreen() {
 
   return (
     <View style={s.page}>
-      <ScrollView
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE}
         contentContainerStyle={s.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         keyboardShouldPersistTaps="handled"

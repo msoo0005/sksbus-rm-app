@@ -44,6 +44,7 @@ import {
   positionLabelFor,
   type TyrePosition,
 } from "@/utils/tyrePositions";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 // Everything about one bus's tyres in one place: what is fitted, what the last
 // inspection found, and both ways of acting on it — record an inspection, or
@@ -245,7 +246,7 @@ export default function BusTyresScreen() {
   }
 
   return (
-    <ScrollView style={styles.page} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" style={styles.page} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
       {/* Name the screen after the bus. Every title in this app is a static
           string from the layout, so three levels in you saw "Bus Tyres" with
           nothing saying which bus — half of "I lose track of where I am". */}

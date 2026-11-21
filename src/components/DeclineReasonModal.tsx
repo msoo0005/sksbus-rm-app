@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useI18n } from '../i18n/i18n-ctx';
+import { KEYBOARD_DONE_ID, KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 type Props = {
   visible: boolean;
@@ -33,6 +34,7 @@ export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Prop
 
   return (
     <Modal visible={visible} transparent animationType="fade">
+      <KeyboardDoneAccessory />
       <KeyboardAvoidingView
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -40,7 +42,7 @@ export default function DeclineReasonModal({ visible, onCancel, onSubmit }: Prop
         <View style={styles.modal}>
           <Text style={styles.title}>{t('declineModal.title')}</Text>
 
-          <TextInput
+          <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
             placeholder={t('declineModal.placeholder')}
             placeholderTextColor="#9CA3AF"
             value={reason}

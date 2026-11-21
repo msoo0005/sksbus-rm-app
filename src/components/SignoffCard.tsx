@@ -27,6 +27,8 @@ function formatDateTime(iso?: string | null) {
 export default function SignoffCard({ signoffs }: { signoffs: Signoff[] }) {
   const { t } = useI18n();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // Every selfie on the card, so the full-screen view swipes between them.
+  const shots = signoffs.filter((so) => !!so.at && !!so.selfieUrl);
 
   return (
     <View>
@@ -55,7 +57,9 @@ export default function SignoffCard({ signoffs }: { signoffs: Signoff[] }) {
 
       <ImageViewerOverlay
         visible={!!previewUrl}
-        imageUrls={previewUrl ? [{ url: previewUrl }] : []}
+        imageUrls={shots.map((so) => ({ url: so.selfieUrl! }))}
+        captions={shots.map((so) => [so.label, so.name].filter(Boolean).join(" · "))}
+        startIndex={Math.max(0, shots.findIndex((so) => so.selfieUrl === previewUrl))}
         onClose={() => setPreviewUrl(null)}
       />
     </View>

@@ -28,6 +28,8 @@ import { useFormDraft } from "../../../hooks/useFormDraft";
 import { useI18n } from "../../../i18n/i18n-ctx";
 import { uploadTyrePhoto } from "../../../utils/tyrePhotoUpload";
 import type { TyreSectionData } from "../../../hooks/useTyreSectionData";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 // Every tyre in the fleet as a thing in its own right — fitted, spare, away for
 // retreading or scrapped — plus the way new casings enter stock.
@@ -174,7 +176,7 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
 
   return (
     <View style={s.fill}>
-      <FlatList
+      <FlatList keyboardDismissMode={KEYBOARD_DISMISS_MODE}
         data={inventory}
         keyExtractor={(item) => String(item.tyre_id)}
         contentContainerStyle={{ paddingBottom: 40 }}
@@ -266,6 +268,7 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
         transparent
         onRequestClose={() => !submitting && setAddVisible(false)}
       >
+        <KeyboardDoneAccessory />
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : "height"}>
           <View style={s.modalOverlay}>
             <View style={s.modalSheet}>
@@ -276,7 +279,7 @@ export default function TyresPanel({ data, filter, onFilterChange }: Props) {
                 </Pressable>
               </View>
 
-              <ScrollView keyboardShouldPersistTaps="handled">
+              <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled">
                 {draft.pending && (
                   <DraftRestoreBar
                     savedAt={draft.savedAt}

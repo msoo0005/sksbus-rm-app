@@ -12,6 +12,7 @@ import { usePrecheck } from "@/hooks/usePrecheck";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { TECH_PILL_TONE, addDays, fmtDateTime, fmtDayDate, mytDate } from "@/utils/puspakom";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const ACCENT = ROLE_COLORS.technician.accent;
 
@@ -40,7 +41,7 @@ export default function PrecheckBooking() {
 
   return (
     <View style={s.page}>
-      <ScrollView contentContainerStyle={s.content}>
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
         <Section>
           <PuspakomMark />
           <Text style={s.plate}>

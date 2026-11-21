@@ -4,7 +4,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -13,9 +12,10 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 
 import type { AfterSlot, JobDetails, JobMedia, PartUnit, ReportMedia } from "@/api/client";
-import { AFTER_SLOTS, api } from "@/api/client";
+import { AFTER_SLOTS, AFTER_SLOTS_ALL, api } from "@/api/client";
 import { uploadJobKindPhoto, uploadVerificationSelfie } from "@/api/media";
 import FollowupCard from "@/components/job/FollowupCard";
 import FollowupEditorCard, { type FollowupDraft } from "@/components/job/FollowupEditorCard";
@@ -29,6 +29,7 @@ import type { LocalMedia } from "@/components/ImagePicker";
 import TaskEditorCard, { emptyTaskDraft, taskDraftProblem, taskNameFor, type TaskDraft } from "@/components/TaskEditorCard";
 import { busSystemLabel } from "@/utils/busSystems";
 import ImageViewerOverlay from "@/components/ImageViewerOverlay";
+import PhotoStrip, { PhotoIndexBadge } from "@/components/PhotoStrip";
 import InstrumentClusterIcon from "@/components/icons/InstrumentClusterIcon";
 import JobTaskCard from "@/components/JobTaskCard";
 import JobTimeline, { TimelineEvent } from "@/components/JobTimeline";
@@ -42,6 +43,7 @@ import { buildJobTimelineEvents, ODOMETER_TASK_NAME } from "@/utils/jobSignoffs"
 import { formatBusLabel } from "@/utils/busLabel";
 import { reportTypeTitleLabel } from "@/utils/reportType";
 import { usePdfDownload } from "@/hooks/usePdfDownload";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 
@@ -50,12 +52,12 @@ type TaskStatus = "pending" | "in_progress" | "blocked" | "done";
 // bookkeeping row, not a real repair task, so it's surfaced only in the
 // timeline and excluded from the Tasks list.
 
-// Completing a job requires exactly one after-photo per side of the bus,
-// plus one of the instrument cluster — these are the 5 fixed slots shown in
+// Completing a job requires an after photo of the instrument cluster
+// (dashboard) and one of the front of the bus: the 2 fixed slots shown in
 // the "After Photos" section. Built from translations (like
 // buildPriorityOptions in form.tsx) since the labels need to switch with
 // the selected language.
-type AfterPhotoSlot = "dashboard" | "front" | "back" | "left" | "right";
+type AfterPhotoSlot = "dashboard" | "front";
 function buildAfterPhotoSlots(
   t: (key: string) => string,
 ): { key: AfterPhotoSlot; label: string; icon?: string; iconElement?: React.ReactNode }[] {
@@ -66,9 +68,6 @@ function buildAfterPhotoSlots(
       iconElement: <InstrumentClusterIcon size={18} color="#9CA3AF" />,
     },
     { key: "front", label: t("jobDetail.photoSlotFront"), icon: "arrow-up" },
-    { key: "back", label: t("jobDetail.photoSlotBack"), icon: "arrow-down" },
-    { key: "left", label: t("jobDetail.photoSlotLeft"), icon: "arrow-left" },
-    { key: "right", label: t("jobDetail.photoSlotRight"), icon: "arrow-right" },
   ];
 }
 
@@ -228,9 +227,6 @@ export default function TechnicianJobDetailsScreen() {
   const [afterPhotoSlots] = useState<Record<AfterPhotoSlot, LocalMedia[]>>({
     dashboard: [],
     front: [],
-    back: [],
-    left: [],
-    right: [],
   });
   const [reportPhotoUrls, setReportPhotoUrls] = useState<string[]>([]);
   const [loadingReportPhotos, setLoadingReportPhotos] = useState(false);
@@ -427,10 +423,10 @@ export default function TechnicianJobDetailsScreen() {
     loadParts();
   }, [jobId]);
 
-  const doSaveOdometer = async (n: number) => {
+  const doSaveOdometer = async (n: number, confirmHigh = false) => {
     setSavingOdometer(true);
     try {
-      await api.patchJob(jobId, { job_odometer: n });
+      await api.patchJob(jobId, confirmHigh ? { job_odometer: n, confirm_high: true } : { job_odometer: n });
       // Saving the odometer also creates a "Recorded odometer reading" task
       // server-side and unlocks the rest of the job — refetch everything
       // rather than just patching jobSummary locally, so that task shows up
@@ -438,6 +434,25 @@ export default function TechnicianJobDetailsScreen() {
       await fetchAll();
       Alert.alert(t("common.saved"), t("jobDetail.odometerSavedMessage"));
     } catch (e: unknown) {
+      // More than 2,000 km past the bus's last reading: allowed once the
+      // technician says it is right.
+      const err = e as { code?: string; body?: { last_odometer?: number | null } };
+      if (err?.code === "ODOMETER_HIGH" && !confirmHigh) {
+        const last = Number(err.body?.last_odometer ?? 0);
+        Alert.alert(
+          t("job2.odometer.highTitle"),
+          t("job2.odometer.highBody", {
+            value: n.toLocaleString(),
+            last: last.toLocaleString(),
+            diff: (n - last).toLocaleString(),
+          }),
+          [
+            { text: t("job2.odometer.highEdit"), style: "cancel", onPress: scrollToOdometerAndFocus },
+            { text: t("job2.odometer.highConfirm"), onPress: () => doSaveOdometer(n, true) },
+          ],
+        );
+        return;
+      }
       handleApiError(e, t("jobDetail.failedToSaveOdometer"));
     } finally {
       setSavingOdometer(false);
@@ -710,7 +725,7 @@ export default function TechnicianJobDetailsScreen() {
     }
   };
 
-  // The 5 after-photo slots as they are on the server.
+  // The after-photo slots as they are on the server.
   const slotValue = useMemo(() => {
     const out = {} as Record<AfterSlot, LocalMedia[]>;
     for (const k of AFTER_SLOTS) {
@@ -810,12 +825,9 @@ export default function TechnicianJobDetailsScreen() {
     <>
       <Stack.Screen options={{ title: "Job Details" }} />
 
-      <KeyboardAvoidingView
-        style={s.page}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <ScrollView
+      <KeyboardAwareScrollView
           ref={scrollRef}
+          bottomOffset={24}
           style={s.page}
           contentContainerStyle={s.content}
           keyboardShouldPersistTaps="handled"
@@ -1013,7 +1025,7 @@ export default function TechnicianJobDetailsScreen() {
                     {t("jobDetail.odometerInstructions")}
                   </Text>
                   <View style={[s.inputWrap, { marginTop: 12 }]}>
-                    <TextInput
+                    <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                       ref={odometerInputRef}
                       value={odometerInput}
                       onChangeText={setOdometerInput}
@@ -1053,15 +1065,7 @@ export default function TechnicianJobDetailsScreen() {
               <Field label={t("job2.jobOrderCard.requiredAction")} value={details.job.required_action} />
               {!!details.job.remarks && <Field label={t("job2.jobOrderCard.remarks")} value={details.job.remarks} />}
               {!!details.followup_origin?.photos.length && (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.photoStrip}>
-                  {details.followup_origin.photos.map((ph) =>
-                    ph.url ? (
-                      <View key={ph.media_id} style={s.thumb}>
-                        <Image source={{ uri: ph.url }} style={s.thumbImg} />
-                      </View>
-                    ) : null,
-                  )}
-                </ScrollView>
+                <PhotoStrip urls={details.followup_origin.photos.map((ph) => ph.url)} size={96} />
               )}
             </SectionCard>
           ) : (
@@ -1114,6 +1118,7 @@ export default function TechnicianJobDetailsScreen() {
                           color="#fff"
                         />
                       </View>
+                      <PhotoIndexBadge index={idx} total={reportPhotoUrls.length} />
                     </Pressable>
                   ))}
                 </ScrollView>
@@ -1225,7 +1230,7 @@ export default function TechnicianJobDetailsScreen() {
             )}
           </SectionCard>
 
-          {/* ── After Photos: 5 fixed slots, each uploaded as it is taken (C3) ── */}
+          {/* ── After Photos: dashboard and front, each uploaded as it is taken (C3) ── */}
           {showWork && details && (
             <SectionCard title={t("job2.afterPhotos.title")} icon="camera">
               <Text style={[s.helperText, { marginBottom: 6 }]}>
@@ -1238,17 +1243,16 @@ export default function TechnicianJobDetailsScreen() {
                 readOnly={!workOpen || !!uploadingSlot}
               />
               {!!uploadingSlot && <Text style={s.helperText}>{t("job2.afterPhotos.uploading")}</Text>}
-              {details.after_photos_unslotted.length > 0 && (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.photoStrip}>
-                  {details.after_photos_unslotted.map((ph) =>
-                    ph.url ? (
-                      <View key={ph.media_id} style={s.thumb}>
-                        <Image source={{ uri: ph.url }} style={s.thumbImg} />
-                      </View>
-                    ) : null,
-                  )}
-                </ScrollView>
-              )}
+              {/* Older jobs: back and side photos from when those were asked
+                  for, and photos from before the slots. */}
+              <PhotoStrip
+                urls={[
+                  ...AFTER_SLOTS_ALL.filter((k) => !AFTER_SLOTS.includes(k)).map((k) => details.after_photos?.[k]?.url),
+                  ...details.after_photos_unslotted.map((ph) => ph.url),
+                ]}
+                size={96}
+                style={{ marginTop: 10 }}
+              />
             </SectionCard>
           )}
 
@@ -1259,6 +1263,7 @@ export default function TechnicianJobDetailsScreen() {
                 {afterPhotoUrls.map((uri, idx) => (
                   <Pressable key={`${uri}-${idx}`} onPress={() => openAfterViewer(idx)} style={s.thumb}>
                     <Image source={{ uri }} style={s.thumbImg} />
+                    <PhotoIndexBadge index={idx} total={afterPhotoUrls.length} />
                   </Pressable>
                 ))}
               </ScrollView>
@@ -1288,8 +1293,7 @@ export default function TechnicianJobDetailsScreen() {
               {!!details?.sent_back && !completeHint && <Text style={s.helperText}>{t("job2.complete.sentBackNote")}</Text>}
             </View>
           )}
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </KeyboardAwareScrollView>
 
       <ImageViewerOverlay
         visible={viewerVisible}

@@ -1,5 +1,6 @@
 import React from "react";
 import { StyleSheet, Text, TextInput, View } from "react-native";
+import { KEYBOARD_DONE_ID } from "@/components/KeyboardDone";
 
 type Props = {
   values: string[];
@@ -25,7 +26,7 @@ export default function ThicknessInputRow({ values, onChange, editable = true, p
     <View>
       <View style={s.row}>
         {values.map((v, i) => (
-          <TextInput
+          <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
             key={i}
             value={v}
             onChangeText={(t) => set(i, t)}

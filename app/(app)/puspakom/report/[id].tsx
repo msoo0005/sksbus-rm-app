@@ -4,8 +4,9 @@
 import { FontAwesome5 } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { PspDetail, PspEvent, puspakomApi } from "@/api/puspakom";
+import ImageViewerOverlay from "@/components/ImageViewerOverlay";
 import { eventDetail } from "@/components/puspakom/BusInspectionView";
 import Pill from "@/components/puspakom/Pill";
 import PuspakomMark from "@/components/puspakom/PuspakomMark";
@@ -15,6 +16,7 @@ import { usePdfDownload } from "@/hooks/usePdfDownload";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { STATUS_TONE, fmtDate, fmtDateTime } from "@/utils/puspakom";
 import { ROLE_COLORS } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const EV_ICON: Record<PspEvent["type"], [string, string]> = {
   REGISTERED: ["calendar-alt", "#2563EB"],
@@ -75,7 +77,7 @@ export default function InspectionReportScreen() {
 
   return (
     <View style={s.page}>
-      <ScrollView contentContainerStyle={s.content}>
+      <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
         <Section>
           <PuspakomMark />
           <Text style={s.kicker}>{t("puspakom.reports.reportKicker")}</Text>
@@ -157,15 +159,7 @@ export default function InspectionReportScreen() {
         </View>
       )}
 
-      <Modal visible={!!photos} transparent animationType="fade" onRequestClose={() => setPhotos(null)}>
-        <Pressable style={s.zoomBg} onPress={() => setPhotos(null)}>
-          <ScrollView contentContainerStyle={{ gap: 12, padding: 20, paddingTop: 60 }}>
-            {(photos ?? []).map((u) => (
-              <Image key={u} source={{ uri: u }} style={s.zoomImg} resizeMode="contain" />
-            ))}
-          </ScrollView>
-        </Pressable>
-      </Modal>
+      <ImageViewerOverlay visible={!!photos?.length} imageUrls={(photos ?? []).map((url) => ({ url }))} onClose={() => setPhotos(null)} />
     </View>
   );
 }
@@ -214,6 +208,4 @@ const s = StyleSheet.create({
   shareText: { fontSize: 15, fontWeight: "700", color: "#374151" },
   dl: { flex: 1, flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center", borderRadius: 12, paddingVertical: 14 },
   dlText: { color: "#fff", fontSize: 15, fontWeight: "800" },
-  zoomBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.92)" },
-  zoomImg: { width: "100%", height: 480 },
 });

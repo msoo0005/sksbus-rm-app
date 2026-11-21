@@ -5,15 +5,14 @@ import React from "react";
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { api } from "@/api/client";
 import { LocalMedia, pickImage, SELFIE_SIZE } from "@/components/ImagePicker";
 import UserAvatar from "@/components/UserAvatar";
@@ -21,6 +20,7 @@ import { useSession } from "@/ctx";
 import { useI18n } from "@/i18n/i18n-ctx";
 import { ALL_PROJECTS, useProject } from "@/project-ctx";
 import { roleColorsFor } from "@/utils/roles";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 // The avatar is a small round picture; it doesn't need more than a selfie does.
 const AVATAR_SIZE = SELFIE_SIZE;
@@ -123,8 +123,8 @@ export default function MyProfileScreen() {
     projectId === ALL_PROJECTS ? t("account.allProjects") : projectId ? String(projectId) : "—";
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScrollView style={s.screen} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+    <>
+      <KeyboardAwareScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} style={s.screen} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled" bottomOffset={24}>
         <View style={s.card}>
           <View style={s.avatarWrap}>
             <View style={[s.avatarRing, { borderColor: `${color.accent}55` }]}>
@@ -213,8 +213,8 @@ export default function MyProfileScreen() {
             {saving ? <ActivityIndicator color="#fff" /> : <Text style={s.saveText}>{t("profile.save")}</Text>}
           </Pressable>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardAwareScrollView>
+    </>
   );
 }
 

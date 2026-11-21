@@ -3,7 +3,6 @@ import React, { useEffect, useState } from "react";
 import {
   KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +18,8 @@ import ImagePickerField, { type LocalMedia } from "./ImagePicker";
 import type { TyrePosition } from "./TyreReplacementModal";
 import { evaluateTyre, wearLabelKey, wearToneFor } from "../utils/tyreWear";
 import { useI18n } from "../i18n/i18n-ctx";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
+import { KEYBOARD_DONE_ID, KeyboardDoneAccessory } from "@/components/KeyboardDone";
 
 // One tyre's inspection, opened from the wheel diagram — the same shape as the
 // replacement form (readings + profile + sidewall + photoless detail), so a
@@ -135,9 +136,10 @@ export default function TyreInspectionModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <KeyboardDoneAccessory />
       <KeyboardAvoidingView
         style={s.overlay}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         <View style={s.sheet}>
           <View style={s.header}>
@@ -156,13 +158,13 @@ export default function TyreInspectionModal({
             </Pressable>
           </View>
 
-          <ScrollView contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
+          <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} contentContainerStyle={s.body} keyboardShouldPersistTaps="handled">
             <Text style={s.fieldLabel}>
               {t("tyres.inspectionForm.treadThickness", { count: state.treads.length })}
             </Text>
             <View style={s.treadRow}>
               {state.treads.map((v, i) => (
-                <TextInput
+                <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                   key={i}
                   value={v}
                   onChangeText={(t) => setTread(i, t)}
@@ -211,7 +213,7 @@ export default function TyreInspectionModal({
                 <Text style={s.fieldLabel}>
                   {t("tyres.inspectionForm.sidewallProblem")} <Text style={{ color: "#EF4444" }}>*</Text>
                 </Text>
-                <TextInput
+                <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
                   value={state.sidewallNote}
                   onChangeText={(v) => patch({ sidewallNote: v })}
                   placeholder={t("tyres.inspectionForm.sidewallProblemPlaceholder")}
@@ -236,7 +238,7 @@ export default function TyreInspectionModal({
             )}
 
             <Text style={s.fieldLabel}>{t("tyres.inspectionForm.pressure")}</Text>
-            <TextInput
+            <TextInput inputAccessoryViewID={KEYBOARD_DONE_ID}
               value={state.pressure}
               onChangeText={(v) => patch({ pressure: v })}
               placeholder={t("tyres.inspectionForm.pressurePlaceholder")}

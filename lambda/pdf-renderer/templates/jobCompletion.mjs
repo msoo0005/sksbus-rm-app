@@ -155,13 +155,15 @@ export function photoGroups(d) {
       photos: f.photos,
     });
   }
-  // v2.0.0: the 5 labelled after photos (dashboard, front, back, left side,
-  // right side); jobs from before then have an unlabelled set.
+  // v2.0.0: the labelled after photos (dashboard and front; jobs from before
+  // the change also have back, left side and right side); jobs from before then have an unlabelled set.
   const after = [...(d.after_slots ?? []), ...(d.after_photos ?? [])];
   if (after.length) {
     groups.push({
       title: "After photos",
-      indexTitle: d.after_slots?.length ? "After photos (dashboard, front, back, left side, right side)" : "After repair (bus after rectification)",
+      indexTitle: d.after_slots?.length
+        ? `After photos (${d.after_slots.map((p) => String(p.caption ?? "").toLowerCase()).filter(Boolean).join(", ")})`
+        : "After repair (bus after rectification)",
       by: d.technician,
       at: after[after.length - 1].at,
       photos: after,

@@ -13,6 +13,7 @@ import { useI18n } from "@/i18n/i18n-ctx";
 import { busSystemLabel } from "@/utils/busSystems";
 import { fmtDur, periodFor, PeriodKind } from "@/utils/kpiPeriod";
 import { reportTypeTitleLabel } from "@/utils/reportType";
+import { KEYBOARD_DISMISS_MODE } from "@/utils/keyboard";
 
 const PAGE = 10;
 type StatusFilter = "all" | "open" | "closed";
@@ -88,7 +89,7 @@ export default function BusHistoryScreen() {
   };
 
   return (
-    <ScrollView style={s.page} contentContainerStyle={s.content}>
+    <ScrollView keyboardDismissMode={KEYBOARD_DISMISS_MODE} keyboardShouldPersistTaps="handled" style={s.page} contentContainerStyle={s.content}>
       <View style={s.topRow}>
         <View style={{ flex: 1 }} />
         <Pressable
